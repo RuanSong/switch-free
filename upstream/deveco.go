@@ -1,0 +1,240 @@
+package upstream
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"switchfree/creds"
+)
+
+// DevEcoUpstream DevEco Code 华为 MaaS 网关适配器
+type DevEcoUpstream struct {
+	mgr    *creds.DevEcoCredManager
+	client *http.Client
+}
+
+func NewDevEcoUpstream(mgr *creds.DevEcoCredManager) *DevEcoUpstream {
+	return &DevEcoUpstream{
+		mgr: mgr,
+		client: &http.Client{
+			Timeout: 120 * time.Second,
+		},
+	}
+}
+
+func (u *DevEcoUpstream) Name() string { return "deveco" }
+
+func (u *DevEcoUpstream) EnsureCreds(ctx context.Context) error {
+	_, err := u.mgr.EnsureCreds()
+	return err
+}
+
+func (u *DevEcoUpstream) InvalidateCreds() { u.mgr.InvalidateCreds() }
+
+func (u *DevEcoUpstream) VerifyCreds(ctx context.Context) (*VerifyResult, error) {
+	cred := u.mgr.GetCred()
+	if cred == nil {
+		c, err := u.mgr.LoadCreds()
+		if err != nil {
+			return &VerifyResult{Valid: false, Status: -1}, err
+		}
+		cred = c
+	}
+	valid, status, err := u.mgr.VerifyCreds(cred)
+	if err != nil {
+		return &VerifyResult{Valid: false, Status: -1}, err
+	}
+	return &VerifyResult{Valid: valid, Status: status}, nil
+}
+
+func (u *DevEcoUpstream) CredStatus() *creds.CredStatusInfo {
+	return u.mgr.CredStatus()
+}
+
+// HasValidCreds 凭据是否可用
+// 宽松判定：access token 过期但 JWT 有效（可刷新）时仍返回 true，让 Call 触发刷新
+// 仅当凭据未加载或 JWT 也过期时才返回 false（需重登）
+func (u *DevEcoUpstream) HasValidCreds() bool {
+	cred := u.mgr.GetCred()
+	if cred == nil {
+		return false
+	}
+	if cred.Valid {
+		return true
+	}
+	// access 过期但 JWT 仍有效 -> 可刷新，不跳过
+	if cred.JWTExp > 0 && time.Now().UnixMilli() < cred.JWTExp {
+		return true
+	}
+	return false
+}
+
+// FetchModels 调 GET /codeGenie/modelConfig 拉取可用模型列表
+func (u *DevEcoUpstream) FetchModels(ctx context.Context) ([]FetchedModel, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/codeGenie/modelConfig?localVersion=0&pluginVersion=%s",
+		u.mgr.Config().Origin, u.mgr.Config().PluginVersion)
+
+	body, _, err := httpGet(url, map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", cred.AccessToken),
+		"Accept":        "application/json",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Body    struct {
+			InnerModels []struct {
+				ModelConfigs []struct {
+					ModelID          string   `json:"model_id"`
+					ContextWindow    int      `json:"context_window"`
+					Output           int      `json:"output"`
+					InputModalities  []string `json:"input_modalities"`
+					ThinkingMode     string   `json:"thinking_mode"`
+					ToolCallMode     string   `json:"tool_call_mode"`
+				} `json:"model_configs"`
+			} `json:"inner_models"`
+		} `json:"body"`
+	}
+	if err := creds.ParseJSONPublic(body, &resp); err != nil {
+		return nil, err
+	}
+
+	result := make([]FetchedModel, 0)
+	for _, im := range resp.Body.InnerModels {
+		for _, mc := range im.ModelConfigs {
+			if mc.ModelID == "" {
+				continue
+			}
+			fm := FetchedModel{
+				ID:        mc.ModelID, // 接口返回的 model_id（如 GLM-5.1）
+				Label:     mc.ModelID,
+				Context:   mc.ContextWindow,
+				Output:    mc.Output,
+				Stream:    true, // DevEco 都支持流式
+				Vision:    containsStr(mc.InputModalities, "image"),
+				ToolCall:  mc.ToolCallMode != "none" && mc.ToolCallMode != "",
+				Reasoning: mc.ThinkingMode == "on" || mc.ThinkingMode == "configurable",
+			}
+			result = append(result, fm)
+		}
+	}
+	return result, nil
+}
+
+// containsStr 检查字符串切片是否包含某值
+func containsStr(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// Call 调用 DevEco MaaS 网关（带 token 失效自动刷新重试）
+func (u *DevEcoUpstream) Call(ctx context.Context, body []byte) (*Response, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := u.doCall(ctx, body, cred)
+	if err != nil {
+		return nil, err
+	}
+
+	// token 失效 -> 刷新并重试一次
+	if isDevEcoTokenInvalid(resp) {
+		fmt.Println("[switch-free] DevEco 收到 token 失效信号，触发刷新并重试一次")
+		u.mgr.InvalidateCreds()
+		oldToken := cred.AccessToken
+		newCred, err := u.mgr.EnsureCreds() // 预检失败会自动用 jwtToken 刷新
+		if err != nil {
+			return resp, nil
+		}
+		if newCred.AccessToken != oldToken {
+			return u.doCall(ctx, body, newCred)
+		}
+	}
+	return resp, nil
+}
+
+func (u *DevEcoUpstream) doCall(ctx context.Context, body []byte, cred *creds.DevEcoCred) (*Response, error) {
+	// 非流式端点
+	url := fmt.Sprintf("%s%s/no-stream/chat/completions",
+		u.mgr.Config().Origin, u.mgr.Config().MaasPath)
+	reqID := fmt.Sprintf("req-%d-%s", time.Now().Unix(), randString(6))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cred.AccessToken))
+	req.Header.Set("Chat-Id", randomChatID()) // 必须 32 位无横杠 UUID
+	req.Header.Set("X-DevEco-Improvement-Enabled", fmt.Sprintf("%v", u.mgr.ReadImprovementEnabled()))
+	req.Header.Set("lang", "en")
+	req.Header.Set("Accept", "application/json")
+
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Response{
+		StatusCode: httpResp.StatusCode,
+		Body:       respBody,
+		ReqID:      reqID,
+	}, nil
+}
+
+// isDevEcoTokenInvalid DevEco access token 失效判断
+func isDevEcoTokenInvalid(resp *Response) bool {
+	if resp.StatusCode == 401 {
+		return true
+	}
+	var o struct {
+		ErrorCode int `json:"errorCode"`
+		Error     struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if creds.ParseJSONPublic(resp.Body, &o) == nil {
+		if o.ErrorCode == 4016 {
+			return true
+		}
+		if o.Error.Message != "" {
+			msg := strings.ToLower(o.Error.Message)
+			if strings.Contains(msg, "accesstoken") || strings.Contains(msg, "unauthor") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// randomChatID 生成 32 位无横杠 UUID（DevEco Chat-Id 要求）
+func randomChatID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b) // 32 hex 字符
+}

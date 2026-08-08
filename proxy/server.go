@@ -1,0 +1,227 @@
+package proxy
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"switchfree/pricing"
+	"switchfree/upstream"
+)
+
+// EventLogger 事件日志接口（由 service 层实现，用于记录日志 + 推送 Wails 事件）
+type EventLogger interface {
+	RecordLog(entry *LogEntry)
+	EmitEvent(event string, data interface{})
+}
+
+// Server 代理 HTTP 服务
+type Server struct {
+	JoyCode  *upstream.JoyCodeUpstream
+	DevEco   *upstream.DevEcoUpstream
+	OpenCode *upstream.OpenCodeUpstream
+
+	Logger         EventLogger
+	ConfigResolver ConfigResolver // ★ 配置解析器（由 main 注入）
+	Pricing        *pricing.Manager // ★ 费率管理器（由 main 注入）
+	httpSrv        *http.Server
+	Host           string
+	Port           int
+	requests       int64
+	running        atomic.Bool
+}
+
+// NewServer 创建代理服务
+func NewServer(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, host string, port int) *Server {
+	return &Server{
+		JoyCode:  jy,
+		DevEco:   de,
+		OpenCode: oc,
+		Host:     host,
+		Port:     port,
+	}
+}
+
+// Start 启动 HTTP 服务（非阻塞）
+func (s *Server) Start() error {
+	if s.running.Load() {
+		return fmt.Errorf("代理已在运行")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleDispatch)
+
+	s.httpSrv = &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", s.Host, s.Port),
+		Handler: mux,
+	}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.Host, s.Port))
+	if err != nil {
+		return fmt.Errorf("端口 %d 监听失败: %w", s.Port, err)
+	}
+
+	s.running.Store(true)
+	s.emitStatus()
+	go func() {
+		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("[switch-free] HTTP 服务退出: %v\n", err)
+		}
+		s.running.Store(false)
+		s.emitStatus()
+	}()
+	return nil
+}
+
+// Stop 停止 HTTP 服务
+func (s *Server) Stop() error {
+	if !s.running.Load() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := s.httpSrv.Shutdown(ctx)
+	s.running.Store(false)
+	s.emitStatus()
+	return err
+}
+
+// IsRunning 是否运行中
+func (s *Server) IsRunning() bool { return s.running.Load() }
+
+// GetStatus 返回代理状态
+func (s *Server) GetStatus() *ProxyStatus {
+	mode := "auto"
+	if s.ConfigResolver != nil {
+		mode = s.ConfigResolver.GetMode()
+	}
+	return &ProxyStatus{
+		Running:   s.running.Load(),
+		Port:      s.Port,
+		Host:      s.Host,
+		AutoModel: AutoModel,
+		Mode:      mode,
+		Requests:  atomic.LoadInt64(&s.requests),
+	}
+}
+
+// emitStatus 推送代理状态变化事件
+func (s *Server) emitStatus() {
+	if s.Logger != nil {
+		s.Logger.EmitEvent("proxy:status", s.GetStatus())
+	}
+}
+
+// handleDispatch 统一入口分发
+func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
+	// CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "*")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/health"):
+		s.handleHealth(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+		s.handleModels(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/messages"):
+		s.handleAnthropicMessages(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/chat/completions"):
+		s.handleOpenAIChatCompletions(w, r)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}
+}
+
+// handleHealth 健康检查（显示三上游凭据状态）
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	jcStatus := s.JoyCode.CredStatus()
+	deStatus := s.DevEco.CredStatus()
+	ocStatus := s.OpenCode.CredStatus()
+
+	resp := map[string]interface{}{
+		"ok":                jcStatus.Valid || deStatus.Valid || ocStatus.Valid,
+		"service":           "switch-free",
+		"autoResolvesTo":    AutoModel,
+		"joycodeCredValid":  jcStatus.Valid,
+		"joycodeUserId":     jcStatus.UserID,
+		"devecoCredValid":   deStatus.Valid,
+		"devecoTokenExpiry": deStatus.ExpiresAt,
+		"opencodeCredValid": ocStatus.Valid,
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleModels 模型列表
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var data []ModelInfo
+
+	// auto 虚拟模型
+	data = append(data, ModelInfo{
+		ID: "auto", Object: "model", Created: 1700000000, OwnedBy: "multi",
+		Label: "Auto（DevEco GLM-5.1，失败降级 JoyCode）",
+		Stream: true, Upstream: "deveco",
+	})
+
+	// OpenCode Zen 模型
+	for _, m := range OpenCodeModels {
+		data = append(data, ModelInfo{
+			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "opencode",
+			Label: m.Label, Stream: true, Upstream: "opencode",
+			Context: m.Context, Output: m.Output, ToolCall: true,
+		})
+	}
+
+	// DevEco 模型
+	for _, m := range DevEcoModels {
+		data = append(data, ModelInfo{
+			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "huawei",
+			Label: m.Label, Stream: true, Upstream: "deveco",
+			Context: m.Context, Output: m.Output, ToolCall: true,
+		})
+	}
+
+	// JoyCode 模型
+	for _, m := range JoyCodeModels {
+		data = append(data, ModelInfo{
+			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "jd",
+			Label: m.Label, Stream: m.Stream, Upstream: "joycode", ToolCall: true,
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+// recordLog 记录请求日志（entry 由 handlers 填充业务字段，server 补 ID/时间戳）
+func (s *Server) recordLog(entry *LogEntry) {
+	atomic.AddInt64(&s.requests, 1)
+	if s.Logger == nil {
+		return
+	}
+	now := time.Now()
+	if entry.ID == "" {
+		entry.ID = fmt.Sprintf("log-%d-%d", now.UnixNano(), atomic.LoadInt64(&s.requests))
+	}
+	if entry.Timestamp == "" {
+		entry.Timestamp = now.Format("15:04:05")
+	}
+	entry.DateTime = now.Format("2006-01-02 15:04:05")
+	entry.Date = now.Format("2006-01-02")
+	s.Logger.RecordLog(entry)
+}

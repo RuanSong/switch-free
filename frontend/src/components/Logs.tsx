@@ -1,0 +1,340 @@
+import { useEffect, useState, useCallback } from "react";
+import { LogService } from "../../bindings/switchfree/service";
+import type { LogStats } from "../../bindings/switchfree/service/models";
+import type { LogEntry } from "../../bindings/switchfree/proxy/models";
+import UsageTrendChart from "./UsageTrendChart";
+
+interface Props {
+  logs: LogEntry[]; // 内存实时日志（最新）
+  stats: LogStats | null;
+}
+
+type Range = "today" | "week" | "month";
+
+type Filter = "all" | "success" | "error" | "auth_error" | "fallback";
+
+// 日期工具（本应用内纯函数，不依赖外部库）
+const pad = (n: number) => String(n).padStart(2, "0");
+function fmtDate(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function dateAddDays(d: Date, days: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
+}
+function startOfWeek(d: Date): Date {
+  // 周一为一周开始
+  const day = d.getDay() || 7; // 0=周日 -> 7
+  return dateAddDays(d, 1 - day);
+}
+
+export default function Logs({ logs, stats }: Props) {
+  const [range, setRange] = useState<Range>("today");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [history, setHistory] = useState<LogEntry[]>([]);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // 计算当前范围对应的日期区间
+  const calcRange = useCallback((): { start: string; end: string } => {
+    const today = new Date();
+    const todayStr = fmtDate(today);
+    if (range === "today") return { start: todayStr, end: todayStr };
+    if (range === "week") {
+      const start = startOfWeek(today);
+      return { start: fmtDate(start), end: todayStr };
+    }
+    // month
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { start: fmtDate(start), end: todayStr };
+  }, [range]);
+
+  // 拉取历史日志（按范围）
+  const loadHistory = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { start, end } = calcRange();
+      const list = await LogService.GetLogsByRange(start, end, 500);
+      setHistory((list ?? []).filter((l): l is LogEntry => l !== null));
+      const dates = await LogService.GetLogDates();
+      setAvailableDates((dates ?? []).filter((d): d is string => d !== null));
+    } catch (e) {
+      console.error("加载日志失败", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [calcRange]);
+
+  // range 变化时重新加载
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory, range]);
+
+  // 实时新日志（当前范围是今天时合并）
+  useEffect(() => {
+    if (range === "today" && logs.length > 0) {
+      setHistory((prev) => {
+        const ids = new Set(prev.map((l) => l.id));
+        const fresh = logs.filter((l) => !ids.has(l.id));
+        return [...fresh, ...prev].slice(0, 500);
+      });
+    }
+  }, [logs, range]);
+
+  const filtered =
+    filter === "all" ? history : history.filter((l) => l.status === filter);
+
+  const clear = async () => {
+    await LogService.ClearLogs();
+    setHistory([]);
+  };
+
+  return (
+    <div className="p-6 space-y-4">
+      {/* 时间范围切换 + 刷新/清空（同一行，右侧） */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <RangeBtn label="今天" active={range === "today"} onClick={() => setRange("today")} />
+        <RangeBtn label="本周" active={range === "week"} onClick={() => setRange("week")} />
+        <RangeBtn label="本月" active={range === "month"} onClick={() => setRange("month")} />
+        <span className="text-xs text-[var(--color-text-dim)] ml-2">
+          范围：{calcRange().start} ~ {calcRange().end}
+        </span>
+        <div className="flex gap-2 ml-auto">
+          <button
+            onClick={loadHistory}
+            disabled={loading}
+            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
+          >
+            {loading ? "加载中..." : "🔄 刷新"}
+          </button>
+          <button
+            onClick={clear}
+            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+          >
+            🗑 清空
+          </button>
+        </div>
+      </div>
+
+      {/* 状态筛选 + 统计 */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <FilterBtn label="全部" count={stats?.total ?? 0} active={filter === "all"} onClick={() => setFilter("all")} color="text-[var(--color-text)]" />
+        <FilterBtn label="成功" count={stats?.success ?? 0} active={filter === "success"} onClick={() => setFilter("success")} color="text-[var(--color-success)]" />
+        <FilterBtn label="错误" count={stats?.error ?? 0} active={filter === "error"} onClick={() => setFilter("error")} color="text-[var(--color-warning)]" />
+        <FilterBtn label="鉴权失败" count={stats?.authError ?? 0} active={filter === "auth_error"} onClick={() => setFilter("auth_error")} color="text-[var(--color-danger)]" />
+        <FilterBtn label="降级" count={0} active={filter === "fallback"} onClick={() => setFilter("fallback")} color="text-[var(--color-text-dim)]" />
+      </div>
+
+      {/* 使用趋势：按天->按小时，按周/月->按天 */}
+      <UsageTrendChart
+        startDate={calcRange().start}
+        endDate={calcRange().end}
+        granularity={range === "today" ? "hour" : "day"}
+      />
+
+      {/* 日志列表 */}
+      <div className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden">
+        {filtered.length > 0 && (
+          <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)] font-medium uppercase tracking-wide whitespace-nowrap">
+            <span className="w-20">时间</span>
+            <span className="w-28 truncate">请求模型</span>
+            <span className="w-28 truncate">实际模型</span>
+            <span className="w-24 truncate">代理</span>
+            <span className="w-28 truncate">真实模型</span>
+            <span className="w-24 text-right">输入/输出</span>
+            <span className="w-24 text-right">费用</span>
+            <span className="w-16">状态</span>
+            <span className="w-14 text-right">用时</span>
+            <span className="w-6"></span>
+          </div>
+        )}
+        {filtered.length === 0 ? (
+          <div className="p-8 text-center text-[var(--color-text-dim)] text-sm">
+            {loading ? "加载中..." : "该时间范围暂无日志"}
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--color-border)] max-h-[calc(100vh-320px)] overflow-y-auto">
+            {filtered.map((log) => (
+              <LogRow
+                key={log.id}
+                log={log}
+                expanded={expandedId === log.id}
+                onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 历史日期提示 */}
+      {availableDates.length > 1 && (
+        <div className="text-xs text-[var(--color-text-dim)]">
+          历史日志日期：{availableDates.join(" / ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RangeBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+        active
+          ? "bg-[var(--color-primary)] text-white"
+          : "bg-[var(--color-surface)] hover:bg-[var(--color-surface-2)] text-[var(--color-text)]"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function FilterBtn({
+  label,
+  count,
+  active,
+  onClick,
+  color,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  color: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-2 transition-colors ${
+        active ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-surface)] hover:bg-[var(--color-surface-2)]"
+      }`}
+    >
+      <span>{label}</span>
+      <span className={`font-mono text-xs ${active ? "text-white/80" : color}`}>{count}</span>
+    </button>
+  );
+}
+
+function LogRow({ log, expanded, onToggle }: { log: LogEntry; expanded: boolean; onToggle: () => void }) {
+  const color =
+    log.status === "success"
+      ? "text-[var(--color-success)]"
+      : log.status === "auth_error"
+      ? "text-[var(--color-danger)]"
+      : log.status === "fallback"
+      ? "text-[var(--color-text-dim)]"
+      : "text-[var(--color-warning)]";
+
+  return (
+    <div>
+      {/* 概要行（点击展开详情） */}
+      <button onClick={onToggle} className="w-full px-4 py-2.5 hover:bg-[var(--color-surface-2)]/50 text-left">
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-[var(--color-text-dim)] font-mono text-xs w-20">{log.timestamp}</span>
+          <span className="font-mono text-xs w-28 truncate text-[var(--color-text-dim)]" title={log.model}>{log.model}</span>
+          <span className="font-mono text-xs w-28 truncate" title={log.usedModel || log.realModel || ""}>
+            {log.usedModel || log.realModel || "-"}
+          </span>
+          <span className="text-[var(--color-text-dim)] text-xs w-24 truncate" title={log.upstream}>
+            {agentLabel(log.upstream)}
+          </span>
+          <span className="font-mono text-xs w-28 truncate text-[var(--color-text-dim)]" title={log.realModel}>
+            {log.realModel || "-"}
+          </span>
+          <span className="font-mono text-xs w-24 text-right">{tokenText(log)}</span>
+          <span className="font-mono text-xs w-24 text-right text-[var(--color-primary)]" title={log.costText}>
+            {costText(log)}
+          </span>
+          <span className={`w-16 truncate ${color}`} title={log.errorMsg}>
+            {log.status === "success" ? "成功" : log.status === "auth_error" ? "鉴权失败" : log.status === "fallback" ? "降级" : "错误"}
+          </span>
+          <span className="text-[var(--color-text-dim)] text-xs font-mono w-14 text-right">{log.duration}ms</span>
+          <span className="text-[var(--color-text-dim)] text-xs w-6 text-center">{expanded ? "▲" : "▼"}</span>
+        </div>
+      </button>
+
+      {/* 详情（展开时显示） */}
+      {expanded && (
+        <div className="px-4 pb-3 space-y-2 border-t border-[var(--color-border)]/50">
+          <div className="flex gap-3 text-xs text-[var(--color-text-dim)] pt-2 flex-wrap">
+            <span>时间：{log.dateTime || log.timestamp}</span>
+            <span>接口：{log.method || "?"} {log.path || "?"}</span>
+            <span>代理：{agentLabel(log.upstream)}</span>
+            <span>请求模型：{log.model}</span>
+            <span>实际模型：{log.usedModel || "-"}</span>
+            <span>真实模型：{log.realModel || "-"}</span>
+            <span>输入/输出：{log.inputTokens ?? 0} / {log.outputTokens ?? 0} tokens</span>
+            <span>费用：{costText(log)}</span>
+            <span>耗时：{log.duration}ms</span>
+            {(log.firstByteMs ?? 0) > 0 && <span>首字：{log.firstByteMs}ms</span>}
+            <span>状态码：{log.code || "-"}</span>
+          </div>
+          {log.costText && (
+            <div className="text-xs text-[var(--color-text-dim)]">费率：{log.costText}</div>
+          )}
+          {log.errorMsg && (
+            <div className="text-xs text-[var(--color-danger)]">错误：{log.errorMsg}</div>
+          )}
+          {log.requestBody && (
+            <div>
+              <div className="text-xs text-[var(--color-text-dim)] mb-1">请求体：</div>
+              <pre className="text-xs font-mono p-2 rounded bg-[var(--color-bg)] overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
+                {prettyJSON(log.requestBody)}
+              </pre>
+            </div>
+          )}
+          {log.responseBody && (
+            <div>
+              <div className="text-xs text-[var(--color-text-dim)] mb-1">响应体：</div>
+              <pre className="text-xs font-mono p-2 rounded bg-[var(--color-bg)] overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">
+                {prettyJSON(log.responseBody)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// prettyJSON 尝试美化 JSON，失败原样返回
+function prettyJSON(s: string): string {
+  try {
+    const parsed = JSON.parse(s);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return s;
+  }
+}
+
+// agentLabel 上游显示名
+function agentLabel(upstream: string): string {
+  switch (upstream) {
+    case "joycode":
+      return "京东 JoyCode";
+    case "deveco":
+      return "华为 DevEco";
+    case "opencode":
+      return "OpenCode";
+    default:
+      return upstream || "-";
+  }
+}
+
+// tokenText token 用量文本
+function tokenText(log: LogEntry): string {
+  if (log.inputTokens !== undefined && log.outputTokens !== undefined) {
+    return `↑${log.inputTokens} ↓${log.outputTokens}`;
+  }
+  return "-";
+}
+
+// costText 费用文本（$，3 位小数）
+function costText(log: LogEntry): string {
+  if (log.cost !== undefined && log.cost > 0) {
+    return `$${log.cost.toFixed(5)}`;
+  }
+  return "-";
+}

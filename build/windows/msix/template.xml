@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MsixPackagingToolTemplate
+    xmlns="http://schemas.microsoft.com/msix/packaging/msixpackagingtool/template/2022">
+    <Settings
+        AllowTelemetry="false"
+        ApplyACLsToPackageFiles="true"
+        GenerateCommandLineFile="true"
+        AllowPromptForPassword="false">
+    </Settings>
+    <Installer
+        Path="switch-free"
+        Arguments=""
+        InstallLocation="C:\Program Files\Local\Switch Free">
+    </Installer>
+    <PackageInformation
+        PackageName="Switch Free"
+        PackageDisplayName="Switch Free"
+        PublisherName="CN=Local"
+        PublisherDisplayName="Local"
+        Version="0.1.0.0"
+        PackageDescription="Multi-upstream AI model proxy with visual management">
+        <Capabilities>
+            <Capability Name="runFullTrust" />
+            
+        </Capabilities>
+        <Applications>
+            <Application
+                Id="com.switchfree.app"
+                Description="Multi-upstream AI model proxy with visual management"
+                DisplayName="Switch Free"
+                ExecutableName="switch-free"
+                EntryPoint="Windows.FullTrustApplication">
+                
+            </Application>
+        </Applications>
+        <Resources>
+            <Resource Language="en-us" />
+        </Resources>
+        <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+        </Dependencies>
+        <Properties>
+            <Framework>false</Framework>
+            <DisplayName>Switch Free</DisplayName>
+            <PublisherDisplayName>Local</PublisherDisplayName>
+            <Description>Multi-upstream AI model proxy with visual management</Description>
+            <Logo>Assets\AppIcon.png</Logo>
+        </Properties>
+    </PackageInformation>
+    <SaveLocation PackagePath="switch-free.msix" />
+    <PackageIntegrity>
+        <CertificatePath></CertificatePath>
+    </PackageIntegrity>
+</MsixPackagingToolTemplate>

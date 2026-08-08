@@ -1,0 +1,86 @@
+name: Build & Release
+
+# 触发：打 tag（v*）时构建三平台并上传资产到 Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-amd64
+            os: macos-13 # Intel
+            asset: switch-free-darwin-amd64
+            artifact: switch-free-darwin-amd64
+          - target: darwin-arm64
+            os: macos-14 # Apple Silicon
+            asset: switch-free-darwin-arm64
+            artifact: switch-free-darwin-arm64
+          - target: windows-amd64
+            os: windows-latest
+            asset: switch-free-windows-amd64.exe
+            artifact: switch-free-windows-amd64.exe
+          - target: linux-amd64
+            os: ubuntu-22.04
+            asset: switch-free-linux-amd64
+            artifact: switch-free-linux-amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
+
+      # Linux 需要 webkit2gtk 依赖
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build (${{ matrix.target }})
+        run: wails3 build
+
+      # 重命名二进制为统一资产名（windows 产 .exe，其他产裸二进制）
+      - name: Rename binary
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp bin/switch-free.exe "bin/${{ matrix.asset }}"
+          else
+            cp bin/switch-free "bin/${{ matrix.asset }}"
+          fi
+
+      - name: Upload asset to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/${{ matrix.asset }}
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin/${{ matrix.asset }}

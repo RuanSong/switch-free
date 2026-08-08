@@ -1,0 +1,262 @@
+package upstream
+
+import (
+	"bytes"
+	"context"
+	"compress/gzip"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"switchfree/creds"
+)
+
+// JoyCodeUpstream JoyCode Color 网关适配器
+type JoyCodeUpstream struct {
+	mgr    *creds.JoyCodeCredManager
+	client *http.Client
+}
+
+func NewJoyCodeUpstream(mgr *creds.JoyCodeCredManager) *JoyCodeUpstream {
+	return &JoyCodeUpstream{
+		mgr: mgr,
+		client: &http.Client{
+			Timeout: 120 * time.Second, // 模型推理可能慢
+		},
+	}
+}
+
+func (u *JoyCodeUpstream) Name() string { return "joycode" }
+
+func (u *JoyCodeUpstream) EnsureCreds(ctx context.Context) error {
+	_, err := u.mgr.EnsureCreds()
+	return err
+}
+
+func (u *JoyCodeUpstream) InvalidateCreds() { u.mgr.InvalidateCreds() }
+
+func (u *JoyCodeUpstream) VerifyCreds(ctx context.Context) (*VerifyResult, error) {
+	cred := u.mgr.GetCred()
+	if cred == nil {
+		c, err := u.mgr.LoadCredsFromVscdb()
+		if err != nil {
+			return &VerifyResult{Valid: false, Code: -1}, err
+		}
+		cred = c
+	}
+	valid, code, err := u.mgr.VerifyCreds(cred)
+	if err != nil {
+		return &VerifyResult{Valid: false, Code: -1}, err
+	}
+	return &VerifyResult{Valid: valid, Code: code}, nil
+}
+
+func (u *JoyCodeUpstream) CredStatus() *creds.CredStatusInfo {
+	return u.mgr.CredStatus()
+}
+
+// HasValidCreds 凭据是否可用
+// 宽松判定：凭据已加载（ptKey 非空）就返回 true，让 Call 内部的重读+重试逻辑处理失效
+// 仅当凭据未加载时才返回 false
+func (u *JoyCodeUpstream) HasValidCreds() bool {
+	cred := u.mgr.GetCred()
+	return cred != nil && cred.PtKey != ""
+}
+
+// FetchModels 调 joycode_modelList 拉取可用模型列表
+func (u *JoyCodeUpstream) FetchModels(ctx context.Context) ([]FetchedModel, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+	t := time.Now().UnixMilli()
+	sign := creds.ColorSign("joycode_ide", "joycode_modelList", t, nil)
+	url := fmt.Sprintf("%s/api?appid=joycode_ide&functionId=joycode_modelList&t=%d&sign=%s",
+		cred.Origin, t, sign)
+
+	body, _, err := httpPost(url, "{}", map[string]string{
+		"Content-Type": "application/json; charset=UTF-8",
+		"ptKey":        cred.PtKey,
+		"loginType":    cred.LoginType,
+		"Accept":       "application/json",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code int `json:"code"`
+		Data []struct {
+			ChatApiModel   string   `json:"chatApiModel"`
+			Label          string   `json:"label"`
+			Features       []string `json:"features"`
+			RespMaxTokens  int      `json:"respMaxTokens"`
+			MaxTotalTokens int      `json:"maxTotalTokens"`
+			SupportStream  bool     `json:"supportStream"`
+		} `json:"data"`
+	}
+	if err := creds.ParseJSONPublic(body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("joycode_modelList 返回 code=%d", resp.Code)
+	}
+
+	result := make([]FetchedModel, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		if m.ChatApiModel == "" {
+			continue
+		}
+		fm := FetchedModel{
+			ID:       m.ChatApiModel,
+			Label:    m.Label,
+			Output:   m.RespMaxTokens,
+			Context:  m.MaxTotalTokens,
+			Stream:   m.SupportStream,
+			ToolCall: hasFeature(m.Features, "function_call"),
+			Vision:   hasFeature(m.Features, "vision"),
+			Reasoning: hasFeature(m.Features, "agent"),
+		}
+		if fm.Label == "" {
+			fm.Label = m.ChatApiModel
+		}
+		result = append(result, fm)
+	}
+	return result, nil
+}
+
+// hasFeature 检查 features 列表是否包含某特性
+func hasFeature(features []string, feat string) bool {
+	for _, f := range features {
+		if f == feat {
+			return true
+		}
+	}
+	return false
+}
+
+// Call 调用 JoyCode Color 网关（带 401 自动重试）
+func (u *JoyCodeUpstream) Call(ctx context.Context, body []byte) (*Response, error) {
+	resp, err := u.callWithRetry(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (u *JoyCodeUpstream) callWithRetry(ctx context.Context, body []byte) (*Response, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+
+	// 注入 JoyCode 业务字段（tenant/userId/client/clientVersion/language）
+	injectedBody := injectJoyCodeFields(body, cred)
+	resp, err := u.doCall(ctx, injectedBody, cred)
+	if err != nil {
+		return nil, err
+	}
+
+	// pt_key 失效 -> 重读 vscdb 并重试一次
+	if isPtKeyInvalid(resp) {
+		fmt.Println("[switch-free] JoyCode 收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
+		u.mgr.InvalidateCreds()
+		oldKey := cred.PtKey
+		newCred, err := u.mgr.EnsureCreds()
+		if err != nil {
+			return resp, nil // 返回原 401 响应，由上层处理
+		}
+		if newCred.PtKey != oldKey {
+			injectedBody = injectJoyCodeFields(body, newCred)
+			return u.doCall(ctx, injectedBody, newCred)
+		}
+	}
+	return resp, nil
+}
+
+// injectJoyCodeFields 往 OpenAI body 注入 JoyCode 网关必填业务字段
+func injectJoyCodeFields(body []byte, cred *creds.JoyCodeCred) []byte {
+	var req map[string]interface{}
+	if err := creds.ParseJSONPublic(body, &req); err != nil {
+		return body // 解析失败则原样返回
+	}
+	req["tenant"] = cred.Tenant
+	req["orgFullName"] = cred.OrgFullName
+	req["userId"] = cred.UserID
+	req["client"] = "JoyCodeIDE"
+	req["clientVersion"] = "3.8.67"
+	req["language"] = "UNKNOWN"
+	req["stream"] = false
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func (u *JoyCodeUpstream) doCall(ctx context.Context, body []byte, cred *creds.JoyCodeCred) (*Response, error) {
+	t := time.Now().UnixMilli()
+	sign := creds.ColorSign("joycode_ide", "chat_completions", t, nil)
+	url := fmt.Sprintf("%s/api?appid=joycode_ide&functionId=chat_completions&t=%d&sign=%s",
+		cred.Origin, t, sign)
+	reqID := fmt.Sprintf("req-%d-%s", t/1000, randString(6))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("x-ms-client-request-id", reqID)
+	req.Header.Set("ptKey", cred.PtKey)
+	req.Header.Set("loginType", cred.LoginType)
+	req.Header.Set("Accept", "application/json") // 不能用 text/event-stream！网关按 Accept 路由
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+
+	var reader io.Reader = httpResp.Body
+	if httpResp.Header.Get("Content-Encoding") == "gzip" {
+		gr, err := gzip.NewReader(httpResp.Body)
+		if err == nil {
+			reader = gr
+			defer gr.Close()
+		}
+	}
+
+	respBody, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Response{
+		StatusCode: httpResp.StatusCode,
+		Body:       respBody,
+		ReqID:      reqID,
+	}, nil
+}
+
+// isPtKeyInvalid 检测响应是否 pt_key 失效
+func isPtKeyInvalid(resp *Response) bool {
+	if resp.StatusCode == 401 {
+		return true
+	}
+	// 尝试解析 body
+	var o struct {
+		Code int `json:"code"`
+		Data struct {
+			PtKey interface{} `json:"ptKey"`
+		} `json:"data"`
+	}
+	if creds.ParseJSONPublic(resp.Body, &o) == nil {
+		if o.Code == 401 {
+			return true
+		}
+	}
+	return false
+}

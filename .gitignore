@@ -1,0 +1,67 @@
+# ==== Go ====
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# ==== 编译产物（本项目）====
+bin/
+switchfree
+switchfree.exe
+icons
+*.app
+*.dmg
+*.pkg
+
+# ==== Node / 前端 ====
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# ==== 构建缓存/临时 ====
+.task/
+build/linux/appimage/build/
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+build/darwin/*.dmg
+dist/
+
+# ==== 运行时数据（含凭据/日志，绝不提交）====
+# 配置、费率库、日志（本地数据，含个人凭据状态）
+*.jsonl
+*.log
+
+# ==== 凭据与敏感信息 ====
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+.env
+.env.*
+!.env.example
+.credentials*
+*credentials.md
+*credential*.md
+auth.json
+token.dek
+token.enc
+state.vscdb
+
+# ==== 系统/编辑器 ====
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml

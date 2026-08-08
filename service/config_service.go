@@ -1,0 +1,248 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+
+	"switchfree/config"
+	"switchfree/proxy"
+	"switchfree/upstream"
+)
+
+// ConfigService 配置管理服务（暴露给前端）
+type ConfigService struct {
+	mgr  *config.Manager
+	core *Core
+
+	// 模型列表缓存
+	modelsMu       sync.RWMutex
+	modelsCache    []UpstreamModels
+	modelsCacheAt  time.Time
+	modelsFetching bool
+}
+
+// NewConfigServiceWithCore 创建配置服务（持有 Core 以访问 upstream）
+func NewConfigServiceWithCore(mgr *config.Manager, core *Core) *ConfigService {
+	return &ConfigService{mgr: mgr, core: core}
+}
+
+// 兼容旧调用（无 core，模型列表退化为本地白名单）
+func NewConfigService(mgr *config.Manager) *ConfigService {
+	return &ConfigService{mgr: mgr}
+}
+
+// GetConfig 获取当前配置（克隆，前端可安全读取）
+func (s *ConfigService) GetConfig() *config.Config {
+	return s.mgr.Get()
+}
+
+// SaveConfig 保存配置（校验 + 写盘 + 热加载），端口变化时重启代理
+func (s *ConfigService) SaveConfig(cfg *config.Config) error {
+	oldPort := s.mgr.Get().Port
+	if err := s.mgr.SaveConfig(cfg); err != nil {
+		return err
+	}
+	// 端口变了：停旧代理，用新端口重启
+	if cfg.Port != oldPort {
+		if err := s.restartProxyOnPort(cfg.Port); err != nil {
+			return fmt.Errorf("配置已保存，但代理切换端口失败: %w", err)
+		}
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// ResetConfig 重置为默认配置，端口变化时重启代理
+func (s *ConfigService) ResetConfig() error {
+	oldPort := s.mgr.Get().Port
+	if err := s.mgr.ResetConfig(); err != nil {
+		return err
+	}
+	newPort := s.mgr.Get().Port
+	if newPort != oldPort {
+		if err := s.restartProxyOnPort(newPort); err != nil {
+			return fmt.Errorf("配置已重置，但代理切换端口失败: %w", err)
+		}
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// restartProxyOnPort 停止当前代理，用新端口重启
+func (s *ConfigService) restartProxyOnPort(port int) error {
+	if s.core == nil || s.core.server == nil {
+		return nil
+	}
+	s.core.server.Stop()
+	s.core.server.Port = port
+	return s.core.server.Start()
+}
+
+// emitConfigChange 推送配置变化事件，并同步推送代理状态（mode 等字段依赖 config）
+func (s *ConfigService) emitConfigChange() {
+	app := application.Get()
+	if app == nil {
+		return
+	}
+	app.Event.Emit("config:change", s.mgr.Get())
+	// 代理状态里的 mode 来自 config，需同步刷新让仪表盘立即更新
+	if s.core != nil && s.core.server != nil {
+		app.Event.Emit("proxy:status", s.core.server.GetStatus())
+	}
+}
+
+// UpstreamModels 单个 upstream 的可选模型
+type UpstreamModels struct {
+	Upstream string        `json:"upstream"`
+	Source   string        `json:"source"` // "live"（接口实时）| "local"（本地白名单兜底）
+	Models   []ModelOption `json:"models"`
+}
+
+// ModelOption 模型选项
+type ModelOption struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Context   int    `json:"context,omitempty"`
+	Output    int    `json:"output,omitempty"`
+	Stream    bool   `json:"stream"`
+	Vision    bool   `json:"vision,omitempty"`
+	ToolCall  bool   `json:"toolCall,omitempty"`
+	Reasoning bool   `json:"reasoning,omitempty"`
+}
+
+// GetAvailableModels 返回各 upstream 可选模型（实时合并 + 缓存 10 分钟）
+// 若 core 未注入，回退本地白名单
+func (s *ConfigService) GetAvailableModels() []UpstreamModels {
+	// 缓存命中（10 分钟内）
+	s.modelsMu.RLock()
+	if s.modelsCache != nil && time.Since(s.modelsCacheAt) < 10*time.Minute {
+		cache := s.modelsCache
+		s.modelsMu.RUnlock()
+		return cache
+	}
+	s.modelsMu.RUnlock()
+
+	if s.core == nil {
+		// 退化为本地白名单
+		return localOnlyModels()
+	}
+
+	// 并发拉取三个上游
+	result := s.fetchAllModels()
+
+	s.modelsMu.Lock()
+	s.modelsCache = result
+	s.modelsCacheAt = time.Now()
+	s.modelsMu.Unlock()
+	return result
+}
+
+// RefreshModels 强制刷新模型列表（忽略缓存）
+func (s *ConfigService) RefreshModels() []UpstreamModels {
+	s.modelsMu.Lock()
+	s.modelsCache = nil
+	s.modelsMu.Unlock()
+
+	if s.core == nil {
+		return localOnlyModels()
+	}
+	result := s.fetchAllModels()
+	s.modelsMu.Lock()
+	s.modelsCache = result
+	s.modelsCacheAt = time.Now()
+	s.modelsMu.Unlock()
+	return result
+}
+
+// fetchAllModels 并发拉取三上游模型，合并本地映射，返回结果
+func (s *ConfigService) fetchAllModels() []UpstreamModels {
+	jy, de, oc := s.core.Upstreams()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	type fetchResult struct {
+		upstream string
+		models   []upstream.FetchedModel
+		ok       bool
+	}
+
+	results := make([]fetchResult, 3)
+	var wg sync.WaitGroup
+
+	doFetch := func(idx int, name string, u upstream.Upstream) {
+		defer wg.Done()
+		if u == nil {
+			results[idx] = fetchResult{upstream: name}
+			return
+		}
+		fetched, err := u.FetchModels(ctx)
+		results[idx] = fetchResult{upstream: name, models: fetched, ok: err == nil}
+	}
+
+	wg.Add(3)
+	go doFetch(0, "joycode", jy)
+	go doFetch(1, "deveco", de)
+	go doFetch(2, "opencode", oc)
+	wg.Wait()
+
+	out := make([]UpstreamModels, 0, 3)
+	for _, r := range results {
+		merged := proxy.MergeModels(r.upstream, r.models, r.ok)
+		opts := make([]ModelOption, 0, len(merged))
+		for _, m := range merged {
+			opts = append(opts, ModelOption{
+				ID:        m.ID,
+				Label:     m.Label,
+				Context:   m.Context,
+				Output:    m.Output,
+				Stream:    m.Stream,
+				Vision:    m.Vision,
+				ToolCall:  m.ToolCall,
+				Reasoning: false,
+			})
+		}
+		source := "live"
+		if !r.ok {
+			source = "local"
+		}
+		out = append(out, UpstreamModels{Upstream: r.upstream, Source: source, Models: opts})
+	}
+	return out
+}
+
+// localOnlyModels 纯本地白名单（core 未注入时用）
+func localOnlyModels() []UpstreamModels {
+	return []UpstreamModels{
+		{Upstream: "joycode", Source: "local", Models: modelOptionsJoyCode()},
+		{Upstream: "deveco", Source: "local", Models: modelOptionsDevEco()},
+		{Upstream: "opencode", Source: "local", Models: modelOptionsOpenCode()},
+	}
+}
+
+func modelOptionsJoyCode() []ModelOption {
+	opts := make([]ModelOption, 0, len(proxy.JoyCodeModels))
+	for _, m := range proxy.JoyCodeModels {
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Output: m.OutputMaxTokens, Stream: m.Stream, ToolCall: true})
+	}
+	return opts
+}
+
+func modelOptionsDevEco() []ModelOption {
+	opts := make([]ModelOption, 0, len(proxy.DevEcoModels))
+	for _, m := range proxy.DevEcoModels {
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true})
+	}
+	return opts
+}
+
+func modelOptionsOpenCode() []ModelOption {
+	opts := make([]ModelOption, 0, len(proxy.OpenCodeModels))
+	for _, m := range proxy.OpenCodeModels {
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true})
+	}
+	return opts
+}
