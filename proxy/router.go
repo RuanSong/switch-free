@@ -110,6 +110,8 @@ func (s *Server) pickUpstream(name string) upstream.Upstream {
 		return s.DevEco
 	case "opencode":
 		return s.OpenCode
+	case "workbuddy":
+		return s.WorkBuddy
 	}
 	return nil
 }
@@ -137,6 +139,8 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) 
 		oaiBody = AnthropicToOpenAIDeveco(&cp)
 	case "opencode":
 		oaiBody = AnthropicToOpenAIOpencode(&cp)
+	case "workbuddy":
+		oaiBody = AnthropicToOpenAIWorkbuddy(&cp)
 	default:
 		return nil, fmt.Errorf("unknown upstream: %s", ref.Upstream)
 	}
@@ -155,6 +159,8 @@ func (s *Server) buildOpenAIPassthroughBody(body map[string]interface{}, ref Mod
 		if dm := DevEcoModelByID[ref.Model]; dm != nil {
 			model = dm.Upstream
 		}
+	} else if ref.Upstream == "workbuddy" {
+		model = stripWbPrefix(ref.Model)
 	}
 	cp["model"] = model
 	cp["stream"] = false

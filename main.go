@@ -35,11 +35,13 @@ func main() {
 	jyMgr := creds.NewJoyCodeCredManager(creds.DefaultJoyCodeConfig())
 	deMgr := creds.NewDevEcoCredManager(creds.DefaultDevEcoConfig())
 	ocMgr := creds.NewOpenCodeCredManager(creds.DefaultOpenCodeConfig())
+	wbMgr := creds.NewWorkBuddyCredManager(creds.DefaultWorkBuddyConfig())
 
 	// 2. 上游适配器
 	jyUp := upstream.NewJoyCodeUpstream(jyMgr)
 	deUp := upstream.NewDevEcoUpstream(deMgr)
 	ocUp := upstream.NewOpenCodeUpstream(ocMgr)
+	wbUp := upstream.NewWorkBuddyUpstream(wbMgr)
 
 	// 3. 配置管理器
 	cfgMgr, err := config.NewManager("")
@@ -52,7 +54,7 @@ func main() {
 	if serverPort == 0 {
 		serverPort = config.DefaultPort
 	}
-	server := proxy.NewServer(jyUp, deUp, ocUp, "127.0.0.1", serverPort)
+	server := proxy.NewServer(jyUp, deUp, ocUp, wbUp, "127.0.0.1", serverPort)
 	server.ConfigResolver = cfgMgr // 注入配置解析器
 
 	// 4.5 费率管理器（本地无费率文件时从内置硬编码还原）
@@ -66,7 +68,7 @@ func main() {
 
 	// 5. Core（共享状态）
 	core := service.NewCore()
-	core.Setup(jyMgr, deMgr, ocMgr, jyUp, deUp, ocUp, server)
+	core.Setup(jyMgr, deMgr, ocMgr, wbMgr, jyUp, deUp, ocUp, wbUp, server)
 
 	// 6. Wails 服务（暴露给前端）
 	proxySvc := service.NewProxyService(core)
@@ -135,10 +137,10 @@ func main() {
 	setupSystray(app, server)
 
 	// 9. 启动代理 + 凭据校验（非致命：失败仅警告，等待客户端登录后自动恢复）
-	go startProxyAndCreds(server, jyUp, deUp, ocUp, core)
+	go startProxyAndCreds(server, jyUp, deUp, ocUp, wbUp, core)
 
 	// 10. 后台定期预检凭据
-	go startBackgroundVerify(jyUp, deUp, ocUp, core)
+	go startBackgroundVerify(jyUp, deUp, ocUp, wbUp, core)
 
 	// 10.5 启动 3s 后后台检查更新（有新版本发事件给前端弹窗）
 	go startUpdateCheck(updaterSvc)
@@ -204,8 +206,8 @@ func setupSystray(app *application.App, server *proxy.Server) {
 }
 
 // startProxyAndCreds 启动时校验凭据（非致命）+ 启动代理
-func startProxyAndCreds(server *proxy.Server, jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, core *service.Core) {
-	// 启动时校验三上游凭据（失败仅警告）
+func startProxyAndCreds(server *proxy.Server, jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, wb *upstream.WorkBuddyUpstream, core *service.Core) {
+	// 启动时校验四上游凭据（失败仅警告）
 	if err := jy.EnsureCreds(nil); err != nil {
 		log.Printf("⚠️ JoyCode 凭据不可用: %v（JoyCode 作为 auto 降级兜底，缺失不影响 DevEco 直连）", err)
 	}
@@ -214,6 +216,9 @@ func startProxyAndCreds(server *proxy.Server, jy *upstream.JoyCodeUpstream, de *
 	}
 	if err := oc.EnsureCreds(nil); err != nil {
 		log.Printf("⚠️ OpenCode 凭据不可用: %v（仅显式选 *-free 模型时使用）", err)
+	}
+	if err := wb.EnsureCreds(nil); err != nil {
+		log.Printf("⚠️ WorkBuddy 凭据不可用: %v（仅显式选 wb/* 模型时使用）", err)
 	}
 	core.EmitEvent("cred:change", core.GetCredStatus())
 
@@ -226,7 +231,7 @@ func startProxyAndCreds(server *proxy.Server, jy *upstream.JoyCodeUpstream, de *
 }
 
 // startBackgroundVerify 后台定期预检凭据
-func startBackgroundVerify(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, core *service.Core) {
+func startBackgroundVerify(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, wb *upstream.WorkBuddyUpstream, core *service.Core) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
@@ -247,5 +252,6 @@ func startBackgroundVerify(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpst
 		go verify(jy)
 		go verify(de)
 		go verify(oc)
+		go verify(wb)
 	}
 }

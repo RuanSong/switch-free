@@ -22,9 +22,10 @@ type EventLogger interface {
 
 // Server 代理 HTTP 服务
 type Server struct {
-	JoyCode  *upstream.JoyCodeUpstream
-	DevEco   *upstream.DevEcoUpstream
-	OpenCode *upstream.OpenCodeUpstream
+	JoyCode   *upstream.JoyCodeUpstream
+	DevEco    *upstream.DevEcoUpstream
+	OpenCode  *upstream.OpenCodeUpstream
+	WorkBuddy *upstream.WorkBuddyUpstream
 
 	Logger         EventLogger
 	ConfigResolver ConfigResolver // ★ 配置解析器（由 main 注入）
@@ -37,13 +38,14 @@ type Server struct {
 }
 
 // NewServer 创建代理服务
-func NewServer(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, host string, port int) *Server {
+func NewServer(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, wb *upstream.WorkBuddyUpstream, host string, port int) *Server {
 	return &Server{
-		JoyCode:  jy,
-		DevEco:   de,
-		OpenCode: oc,
-		Host:     host,
-		Port:     port,
+		JoyCode:   jy,
+		DevEco:    de,
+		OpenCode:  oc,
+		WorkBuddy: wb,
+		Host:      host,
+		Port:      port,
 	}
 }
 
@@ -149,16 +151,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jcStatus := s.JoyCode.CredStatus()
 	deStatus := s.DevEco.CredStatus()
 	ocStatus := s.OpenCode.CredStatus()
+	wbStatus := s.WorkBuddy.CredStatus()
 
 	resp := map[string]interface{}{
-		"ok":                jcStatus.Valid || deStatus.Valid || ocStatus.Valid,
-		"service":           "switch-free",
-		"autoResolvesTo":    AutoModel,
-		"joycodeCredValid":  jcStatus.Valid,
-		"joycodeUserId":     jcStatus.UserID,
-		"devecoCredValid":   deStatus.Valid,
-		"devecoTokenExpiry": deStatus.ExpiresAt,
-		"opencodeCredValid": ocStatus.Valid,
+		"ok":                 jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid,
+		"service":            "switch-free",
+		"autoResolvesTo":     AutoModel,
+		"joycodeCredValid":   jcStatus.Valid,
+		"joycodeUserId":      jcStatus.UserID,
+		"devecoCredValid":    deStatus.Valid,
+		"devecoTokenExpiry":  deStatus.ExpiresAt,
+		"opencodeCredValid":  ocStatus.Valid,
+		"workbuddyCredValid": wbStatus.Valid,
+		"workbuddyUserId":    wbStatus.UserID,
 	}
 	json.NewEncoder(w).Encode(resp)
 }
@@ -199,6 +204,15 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		data = append(data, ModelInfo{
 			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "jd",
 			Label: m.Label, Stream: m.Stream, Upstream: "joycode", ToolCall: true,
+		})
+	}
+
+	// WorkBuddy 模型
+	for _, m := range WorkBuddyModels {
+		data = append(data, ModelInfo{
+			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "tencent",
+			Label: m.Label, Stream: true, Upstream: "workbuddy",
+			Context: m.Context, Output: m.Output, Vision: m.Vision, ToolCall: m.ToolCall,
 		})
 	}
 

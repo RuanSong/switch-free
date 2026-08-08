@@ -160,7 +160,7 @@ func (s *ConfigService) RefreshModels() []UpstreamModels {
 
 // fetchAllModels 并发拉取三上游模型，合并本地映射，返回结果
 func (s *ConfigService) fetchAllModels() []UpstreamModels {
-	jy, de, oc := s.core.Upstreams()
+	jy, de, oc, wb := s.core.Upstreams()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -170,7 +170,7 @@ func (s *ConfigService) fetchAllModels() []UpstreamModels {
 		ok       bool
 	}
 
-	results := make([]fetchResult, 3)
+	results := make([]fetchResult, 4)
 	var wg sync.WaitGroup
 
 	doFetch := func(idx int, name string, u upstream.Upstream) {
@@ -183,13 +183,14 @@ func (s *ConfigService) fetchAllModels() []UpstreamModels {
 		results[idx] = fetchResult{upstream: name, models: fetched, ok: err == nil}
 	}
 
-	wg.Add(3)
+	wg.Add(4)
 	go doFetch(0, "joycode", jy)
 	go doFetch(1, "deveco", de)
 	go doFetch(2, "opencode", oc)
+	go doFetch(3, "workbuddy", wb)
 	wg.Wait()
 
-	out := make([]UpstreamModels, 0, 3)
+	out := make([]UpstreamModels, 0, 4)
 	for _, r := range results {
 		merged := proxy.MergeModels(r.upstream, r.models, r.ok)
 		opts := make([]ModelOption, 0, len(merged))
@@ -220,6 +221,7 @@ func localOnlyModels() []UpstreamModels {
 		{Upstream: "joycode", Source: "local", Models: modelOptionsJoyCode()},
 		{Upstream: "deveco", Source: "local", Models: modelOptionsDevEco()},
 		{Upstream: "opencode", Source: "local", Models: modelOptionsOpenCode()},
+		{Upstream: "workbuddy", Source: "local", Models: modelOptionsWorkBuddy()},
 	}
 }
 
@@ -243,6 +245,14 @@ func modelOptionsOpenCode() []ModelOption {
 	opts := make([]ModelOption, 0, len(proxy.OpenCodeModels))
 	for _, m := range proxy.OpenCodeModels {
 		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true})
+	}
+	return opts
+}
+
+func modelOptionsWorkBuddy() []ModelOption {
+	opts := make([]ModelOption, 0, len(proxy.WorkBuddyModels))
+	for _, m := range proxy.WorkBuddyModels {
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, Vision: m.Vision, ToolCall: m.ToolCall})
 	}
 	return opts
 }

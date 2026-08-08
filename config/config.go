@@ -251,7 +251,7 @@ func (c *Config) GetMode() string {
 // isValidUpstream 检查 upstream 名是否合法
 func isValidUpstream(u string) bool {
 	switch u {
-	case "joycode", "deveco", "opencode":
+	case "joycode", "deveco", "opencode", "workbuddy":
 		return true
 	}
 	return false

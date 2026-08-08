@@ -13,6 +13,7 @@ const AGENT_ICON: Record<string, { initial: string; color: string }> = {
   joycode: { initial: "J", color: "bg-[var(--color-primary)]/20 text-[var(--color-primary)]" },
   deveco: { initial: "D", color: "bg-amber-500/20 text-amber-400" },
   opencode: { initial: "O", color: "bg-purple-500/20 text-purple-400" },
+  workbuddy: { initial: "W", color: "bg-pink-500/20 text-pink-400" },
 };
 
 export default function Credentials({ creds }: Props) {
@@ -22,6 +23,7 @@ export default function Credentials({ creds }: Props) {
         <CredCard upstream="joycode" status={creds?.joycode ?? null} />
         <CredCard upstream="deveco" status={creds?.deveco ?? null} />
         <CredCard upstream="opencode" status={creds?.opencode ?? null} />
+        <CredCard upstream="workbuddy" status={creds?.workbuddy ?? null} />
       </div>
     </div>
   );
@@ -210,6 +212,8 @@ function nameFromUpstream(upstream: string): string {
       return "DevEco Code";
     case "opencode":
       return "OpenCode Zen";
+    case "workbuddy":
+      return "WorkBuddy";
     default:
       return upstream;
   }

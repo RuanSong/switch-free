@@ -68,6 +68,19 @@ var AgentRegistry = []AgentInfo{
 			"~/.local/share/opencode/auth.json",
 		},
 	},
+	{
+		Name:        "WorkBuddy",
+		Upstream:    "workbuddy",
+		Type:        AgentTypeGUI,
+		Desc:        "腾讯 CodeBuddy 桌面版，OAuth token 明文存本地，免费模型通道",
+		DownloadURL: "https://workbuddy.app",
+		InstallCmd:  "", // GUI 应用，无 CLI 安装命令
+		LoginCmd:    "打开 WorkBuddy 客户端登录",
+		LoginURL:    "https://copilot.tencent.com/login?platform=workbuddy",
+		ProbePaths: []string{
+			"~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
+		},
+	},
 }
 
 // FindAgent 按 upstream 名查 agent 元数据，找不到返回 nil

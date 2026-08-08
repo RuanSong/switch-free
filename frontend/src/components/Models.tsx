@@ -7,12 +7,14 @@ const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
   opencode: "OpenCode",
+  workbuddy: "WorkBuddy",
 };
 
 const UPSTREAM_COLOR: Record<string, string> = {
   joycode: "bg-[var(--color-success)]/20 text-[var(--color-success)]",
   deveco: "bg-[var(--color-danger)]/20 text-[var(--color-danger)]",
   opencode: "bg-[var(--color-primary)]/20 text-[var(--color-primary)]",
+  workbuddy: "bg-pink-500/20 text-pink-400",
 };
 
 export default function Models({ config }: { config: Config | null }) {

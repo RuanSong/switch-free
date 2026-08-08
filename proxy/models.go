@@ -102,6 +102,56 @@ func init() {
 	}
 }
 
+// ====== WorkBuddy 模型白名单（腾讯 CodeBuddy，免费档） ======
+// 内部 id 用 wb/ 前缀隔离，避免与 DevEco 的 glm-5.1 等重名；发上游前 stripWbPrefix 还原
+
+type WorkBuddyModel struct {
+	ID        string `json:"id"` // wb/ 前缀内部 id
+	Label     string `json:"label"`
+	Context   int    `json:"context"`
+	Output    int    `json:"output"`
+	Vision    bool   `json:"vision"`
+	ToolCall  bool   `json:"toolCall"`
+	Reasoning bool   `json:"reasoning"`
+}
+
+var WorkBuddyModels = []WorkBuddyModel{
+	{ID: "wb/auto", Label: "Auto (WorkBuddy)", Output: 32000, ToolCall: true},
+	{ID: "wb/glm-5.0", Label: "GLM-5.0 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/glm-5.1", Label: "GLM-5.1 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/glm-5.0-turbo", Label: "GLM-5.0-Turbo (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/glm-4.7", Label: "GLM-4.7 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/minimax-m2.5", Label: "MiniMax-M2.5 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/minimax-m2.7", Label: "MiniMax-M2.7 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/kimi-k2.5", Label: "Kimi-K2.5 (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/kimi-k2.6", Label: "Kimi-K2.6 (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/kimi-k2-thinking", Label: "Kimi-K2-Thinking (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/deepseek-v3-2-volc", Label: "DeepSeek-V3-2-Volc (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/hunyuan-2.0-thinking", Label: "Hunyuan-2.0-Thinking (WorkBuddy)", Output: 16000, ToolCall: true, Reasoning: true},
+	{ID: "wb/hunyuan-2.0-instruct", Label: "Hunyuan-2.0-Instruct (WorkBuddy)", Output: 24000, ToolCall: true},
+}
+
+var WorkBuddyModelIDs map[string]bool
+var WorkBuddyModelByID map[string]*WorkBuddyModel
+
+func init() {
+	WorkBuddyModelIDs = make(map[string]bool)
+	WorkBuddyModelByID = make(map[string]*WorkBuddyModel)
+	for i := range WorkBuddyModels {
+		m := &WorkBuddyModels[i]
+		WorkBuddyModelIDs[m.ID] = true
+		WorkBuddyModelByID[m.ID] = m
+	}
+}
+
+// stripWbPrefix 去掉 wb/ 前缀，还原成发往上游的 model id
+func stripWbPrefix(id string) string {
+	if len(id) >= 3 && id[:3] == "wb/" {
+		return id[3:]
+	}
+	return id
+}
+
 // ====== Auto 模式 ======
 
 const (
@@ -113,6 +163,9 @@ const (
 func ResolveModel(requestedModel string) string {
 	if requestedModel == "" || lowerEqual(requestedModel, "auto") {
 		return AutoModel
+	}
+	if WorkBuddyModelIDs[requestedModel] {
+		return requestedModel
 	}
 	if OpenCodeModelIDs[requestedModel] {
 		return requestedModel
@@ -135,6 +188,9 @@ func ResolveModel(requestedModel string) string {
 // ResolveUpstream 判断 model 走哪个上游
 func ResolveUpstream(model string) string {
 	m := ResolveModel(model)
+	if WorkBuddyModelIDs[m] {
+		return "workbuddy"
+	}
 	if OpenCodeModelIDs[m] {
 		return "opencode"
 	}

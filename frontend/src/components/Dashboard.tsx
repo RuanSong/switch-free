@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { ProxyService, LogService } from "../../bindings/switchfree/service";
-import type { AllCredStatus } from "../../bindings/switchfree/service/models";
+import type { AllCredStatus, SpeedStats } from "../../bindings/switchfree/service/models";
 import type { ProxyStatus } from "../../bindings/switchfree/proxy/models";
 import type { Config } from "../../bindings/switchfree/config/models";
 
@@ -8,6 +8,7 @@ const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
   opencode: "OpenCode",
+  workbuddy: "WorkBuddy",
 };
 
 interface Props {
@@ -21,17 +22,22 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
   const [busy, setBusy] = useState(false);
   // 今日使用概览
   const [today, setToday] = useState<{ tokens: number; cost: number } | null>(null);
+  // 今日输出速率
+  const [speed, setSpeed] = useState<SpeedStats | null>(null);
 
   useEffect(() => {
     LogService.GetTodaySummary()
       .then((s) => setToday(s))
+      .catch(() => {});
+    LogService.GetTodaySpeed()
+      .then((s) => setSpeed(s))
       .catch(() => {});
   }, []);
 
   // 三上游是否全部无效（触发空状态引导）
   const allInvalid =
     !creds ||
-    (!creds.joycode?.valid && !creds.deveco?.valid && !creds.opencode?.valid);
+    (!creds.joycode?.valid && !creds.deveco?.valid && !creds.opencode?.valid && !creds.workbuddy?.valid);
 
   // 根据当前配置计算实际会用的模型链（用于显示）
   const { chainText, chainLength } = (() => {
@@ -196,7 +202,7 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
       </section>
 
       {/* 今日使用概览 */}
-      <section className="grid grid-cols-2 gap-4">
+      <section className="grid grid-cols-3 gap-4">
         <div className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
           <div className="text-sm text-[var(--color-text-dim)] mb-1">今日消耗 Token</div>
           <div className="text-2xl font-bold text-[var(--color-primary)]">{fmtTokens(today?.tokens ?? 0)}</div>
@@ -205,6 +211,42 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
           <div className="text-sm text-[var(--color-text-dim)] mb-1">今日消耗费用</div>
           <div className="text-2xl font-bold text-[var(--color-success)]">${(today?.cost ?? 0).toFixed(5)}</div>
         </div>
+        <div className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <div className="text-sm text-[var(--color-text-dim)] mb-1">今日输出速率</div>
+          <div className="text-2xl font-bold text-[var(--color-primary)]">
+            {(speed?.overallTps ?? 0).toFixed(1)}
+            <span className="text-sm font-normal text-[var(--color-text-dim)] ml-1">t/s</span>
+          </div>
+          <div className="text-xs text-[var(--color-text-dim)] mt-1">基于 {speed?.totalReqs ?? 0} 次请求</div>
+        </div>
+      </section>
+
+      {/* 今日模型输出速率明细 */}
+      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-medium">今日模型输出速率明细</h3>
+          <span className="text-xs text-[var(--color-text-dim)]">按输出速率排名</span>
+        </div>
+        {speed && speed.totalReqs > 0 ? (
+          <div>
+            <div className="grid grid-cols-12 text-xs text-[var(--color-text-dim)] pb-2 border-b border-[var(--color-border)]">
+              <div className="col-span-1">#</div>
+              <div className="col-span-6">模型</div>
+              <div className="col-span-3 text-right">速率</div>
+              <div className="col-span-2 text-right">次数</div>
+            </div>
+            {speed.byModel.map((m, i) => (
+              <div key={m.model} className="grid grid-cols-12 items-center text-sm py-2 border-b border-[var(--color-border)] last:border-0">
+                <div className="col-span-1">{rankBadge(i)}</div>
+                <div className="col-span-6 font-mono text-xs truncate" title={m.model}>{m.model}</div>
+                <div className="col-span-3 text-right font-mono">{m.tps.toFixed(1)} t/s</div>
+                <div className="col-span-2 text-right text-[var(--color-text-dim)]">{m.reqs}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-[var(--color-text-dim)] py-6 text-center">今日暂无输出数据</div>
+        )}
       </section>
     </div>
   );
@@ -220,5 +262,10 @@ function fmtTokens(n: number): string {
     out = s.slice(Math.max(0, i - 3), i) + out;
   }
   return out;
+}
+
+// rankBadge 排名标记：前三名奖牌，其余序号
+function rankBadge(i: number): string {
+  return ["🥇", "🥈", "🥉"][i] ?? String(i + 1);
 }
 

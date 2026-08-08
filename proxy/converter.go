@@ -123,6 +123,45 @@ func AnthropicToOpenAIOpencode(body *AnthropicRequest) *OpenAIRequest {
 	return openai
 }
 
+// AnthropicToOpenAIWorkbuddy 把 Anthropic 请求转成 WorkBuddy 的 OpenAI body
+// model 去掉 wb/ 前缀；stream 设 false（WorkBuddy 上游强制 stream:true，由 Call 内部覆盖）
+func AnthropicToOpenAIWorkbuddy(body *AnthropicRequest) *OpenAIRequest {
+	requestedModel := body.Model
+	resolvedModel := ResolveModel(requestedModel)
+
+	messages, tools := anthropicMessagesToOpenAI(body)
+	wbMeta := WorkBuddyModelByID[resolvedModel]
+
+	maxTokens := 4096
+	if body.MaxTokens > 0 {
+		maxTokens = body.MaxTokens
+	}
+	if wbMeta != nil && wbMeta.Output > 0 && maxTokens > wbMeta.Output {
+		maxTokens = wbMeta.Output
+	}
+
+	openai := &OpenAIRequest{
+		Model:     stripWbPrefix(resolvedModel),
+		Messages:  messages,
+		Stream:    false,
+		MaxTokens: maxTokens,
+	}
+
+	if body.Temperature != nil {
+		openai.Temperature = body.Temperature
+	}
+	if body.TopP != nil {
+		openai.TopP = body.TopP
+	}
+	if len(body.StopSequences) > 0 {
+		openai.Stop = body.StopSequences
+	}
+	if tools != nil {
+		openai.Tools = tools
+	}
+	return openai
+}
+
 // anthropicMessagesToOpenAI 共用：Anthropic body 的 messages/system/tools 转成 OpenAI 的 messages + tools
 func anthropicMessagesToOpenAI(body *AnthropicRequest) ([]OpenAIMessage, []OpenAITool) {
 	var messages []OpenAIMessage

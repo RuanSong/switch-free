@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**让你的 Claude Code / Codex 免费跑 GLM-5.1、Kimi、DeepSeek、MiniMax、豆包**
+**让你的 Claude Code / Codex 免费跑 GLM-5.1、Kimi、DeepSeek、MiniMax、豆包、混元**
 
 一个本地代理 + 桌面管理面板，复用你已安装的 AI 编程工具登录态，
 把免费模型额度暴露为标准 Anthropic / OpenAI 接口。
@@ -15,7 +15,7 @@
 
 > ## ⚠️ 重要免责声明（请先阅读）
 >
-> **本项目仅用于学习、研究、技术交流。** 它复用的是第三方 AI 编程工具（JoyCode / DevEco Code / OpenCode 等）自身提供的登录态与额度，**不归属本项目所有**。
+> **本项目仅用于学习、研究、技术交流。** 它复用的是第三方 AI 编程工具（JoyCode / DevEco Code / OpenCode / WorkBuddy 等）自身提供的登录态与额度，**不归属本项目所有**。
 >
 > - 🚫 **严禁商用**：不得将本项目或其产物用于任何商业用途、生产环境、盈利性服务，不得借助本项目绕过任何工具的付费机制或服务条款
 > - 📚 **仅限学习**：用于理解大型语言模型调用机制、本地代理原理、凭据与网关交互等技术研究
@@ -29,7 +29,7 @@
 
 **你已经有免费的大模型额度，只是用不上。**
 
-装过 JoyCode、DevEco Code 或 OpenCode 的开发者，后台都有免费模型额度（京东云的 JoyAI/Kimi/GLM、华为的 GLM-5.1、OpenCode Zen 的 free 模型）。但这些工具的凭据是**登录态**，请求要**动态签名**、要**注入业务字段**，没法直接配进 Claude Code / Codex。
+装过 JoyCode、DevEco Code、OpenCode 或 WorkBuddy 的开发者，后台都有免费模型额度（京东云的 JoyAI/Kimi/GLM、华为的 GLM-5.1、OpenCode Zen 的 free 模型、腾讯 CodeBuddy 的 GLM/MiniMax/Kimi/DeepSeek/混元）。但这些工具的凭据是**登录态**，请求要**动态签名**、要**注入业务字段**，没法直接配进 Claude Code / Codex。
 
 Switch Free 把这一切封装成一句话：
 
@@ -44,11 +44,11 @@ Switch Free 把这一切封装成一句话：
 | 成本 | 💸 按 token 付费 | **🆓 复用已有免费额度** |
 | API Key | 要申请、要绑定支付 | **不需要**，动态读登录态 |
 | 配置 | 每家一套 | **统一一个端口** |
-| 模型选择 | 单一供应商 | **三上游 18 模型随意切** |
+| 模型选择 | 单一供应商 | **四上游 31 模型随意切** |
 | 用量 | 官网查 | **本地可视化统计 + 费用** |
 
 **适合你，如果：**
-- 🧑💻 是开发者，装过 JoyCode / DevEco / OpenCode，想省 Claude Code 的钱
+- 🧑💻 是开发者，装过 JoyCode / DevEco / OpenCode / WorkBuddy，想省 Claude Code 的钱
 - 🔄 想要多模型自由切换，不锁死一个供应商
 - 📊 想看清每次请求用了多少 token、花了多少钱、缓存命中率多少
 - 🖥 想要一个桌面面板管凭据、看日志、做统计，而不是写配置文件
@@ -64,8 +64,9 @@ Switch Free 把这一切封装成一句话：
 | **JoyCode** | [官网下载](https://joycode.jd.com) | 打开客户端扫码 | 京东云 8 个（JoyAI/Kimi/GLM/DeepSeek/MiniMax/豆包）|
 | **DevEco Code** | `npm i -g @deveco/deveco-code` | `deveco auth login` | 华为 GLM-5.1 免费额度 |
 | **OpenCode** | `brew install opencode-ai/tap/opencode` | `opencode auth login` | OpenCode Zen 8 个 free |
+| **WorkBuddy** | [官网下载](https://workbuddy.app) | 打开客户端登录 | 腾讯 CodeBuddy 13 个免费（GLM/MiniMax/Kimi/DeepSeek/混元）|
 
-> 首次启动会自动弹引导，提示你装哪个、怎么登录。装一个就能用，三个全装就是"全家桶"。
+> 首次启动会自动弹引导，提示你装哪个、怎么登录。装一个就能用，四个全装就是"全家桶"。
 
 ### 第 2 步：启动
 
@@ -104,7 +105,7 @@ wire_api = "chat"
 
 ---
 
-## 🧩 可用模型（18 个）
+## 🧩 可用模型（31 个）
 
 ### JoyCode · 京东云（8 个）
 
@@ -136,6 +137,20 @@ wire_api = "chat"
 | `laguna-s-2.1-free` | 256k | 32k |
 | `ling-3.0-tiny-free` / `nemotron-3-ultra-free` / `longcat-2.0-free` | — | — |
 
+### WorkBuddy · 腾讯 CodeBuddy（13 个免费）
+
+模型 id 用 `wb/` 前缀（避免与 DevEco 的 `glm-5.1` 重名）；上游强制流式，代理内部聚合 SSE 成完整响应再转 Anthropic/OpenAI，对客户端透明。
+
+| 模型 ID | Output | 能力 |
+|---------|--------|------|
+| `wb/auto` | 32k | 自动选择 |
+| `wb/glm-5.0` / `wb/glm-5.1` / `wb/glm-5.0-turbo` / `wb/glm-4.7` | 48k | vision, tool, reasoning |
+| `wb/minimax-m2.5` / `wb/minimax-m2.7` | 48k | vision, tool, reasoning |
+| `wb/kimi-k2.5` / `wb/kimi-k2.6` / `wb/kimi-k2-thinking` | 32k | vision, tool, reasoning |
+| `wb/deepseek-v3-2-volc` | 32k | vision, tool, reasoning |
+| `wb/hunyuan-2.0-thinking` | 16k | tool, reasoning |
+| `wb/hunyuan-2.0-instruct` | 24k | tool |
+
 > 模型列表从上游接口**实时拉取**，上游新增模型会自动出现；费率内置 188 条，可编辑。
 
 ---
@@ -152,16 +167,16 @@ Claude Code / Codex / cc-switch
 │       ↕ Wails 绑定 + 事件推送                                     │
 │  Go 后端                                                          │
 │   ├ 代理核心：Anthropic↔OpenAI 转换 / 签名 / SSE / auto 降级      │
-│   ├ 三上游适配器：JoyCode(签名) / DevEco(Bearer+JWT刷新) / OpenCode │
-│   └ 凭据管理：动态读取 vscdb / 三层解密 / 预检 / 失效自动恢复      │
+│   ├ 四上游适配器：JoyCode / DevEco / OpenCode / WorkBuddy(流式聚合) │
+│   └ 凭据管理：vscdb / 三层解密 / 明文auth / 明文info+refresh       │
 │                                                                   │
 │  独立 HTTP 代理服务 :8787（与 GUI 共存，也可无界面运行）          │
 └───────────────────────────────────────────────────────────────────┘
-   │                    │                    │
-   ▼                    ▼                    ▼
-api-ai.jd.com    cn.devecostudio     opencode.ai
-(JoyCode)        .huawei.com         /zen/v1
-                 (DevEco)            (OpenCode)
+   │           │           │           │
+   ▼           ▼           ▼           ▼
+api-ai.jd.com  devecostudio  opencode.ai  copilot.tencent.com
+(JoyCode)      .huawei.com   /zen/v1      /v2
+               (DevEco)      (OpenCode)   (WorkBuddy)
 ```
 
 ### 核心设计
@@ -169,7 +184,7 @@ api-ai.jd.com    cn.devecostudio     opencode.ai
 | 机制 | 说明 |
 |------|------|
 | **代理与 GUI 共存** | HTTP 代理独立在 `8787`，关窗口后台继续服务 |
-| **三上游统一接口** | `Call / EnsureCreds / VerifyCreds / CredStatus`，路由层按配置链遍历 |
+| **四上游统一接口** | `Call / EnsureCreds / VerifyCreds / CredStatus`，路由层按配置链遍历 |
 | **auto 模式** | 优先级链依次尝试，凭据失效自动跳过，任意成功即返回 |
 | **手动模式** | 指定模型 + 该模型降级链 + 全局兜底 |
 | **凭据动态读取** | 启动时从本地存储读登录态，失效自动恢复，重登免重启 |
@@ -271,14 +286,17 @@ switch-free/
 │   ├── router.go          # 上游分发 + 配置链遍历
 │   ├── handlers.go        # HTTP 处理器 + 用量/费用/缓存统计
 │   └── server.go          # HTTP 服务 + /health /v1/models
-├── upstream/              # 三上游适配器（统一 Upstream 接口）
+├── upstream/              # 四上游适配器（统一 Upstream 接口）
 │   ├── joycode.go         # Color 网关签名 + 业务字段注入 + 401 重试 + 模型拉取
 │   ├── deveco.go          # Bearer + Chat-Id + JWT 刷新 + 模型拉取
-│   └── opencode.go        # 标准 OpenAI 兼容 + 模型拉取
+│   ├── opencode.go        # 标准 OpenAI 兼容 + 模型拉取
+│   ├── workbuddy.go       # 强制 stream:true + SSE 聚合 + 401 重试
+│   └── sse_aggregate.go   # OpenAI SSE chunk 聚合成完整响应（WorkBuddy 用）
 ├── creds/                 # 凭据管理
 │   ├── joycode.go         # vscdb 读取 + 预检
 │   ├── deveco.go          # AES-256-GCM 三层解密 + JWT 刷新
 │   ├── opencode.go        # 明文 auth.json 读取
+│   ├── workbuddy.go       # 明文 info 读取 + refreshToken 续期
 │   └── agents.go          # agent 注册表（安装/登录引导元数据）
 ├── config/                # 运行配置（模式/链/端口/更新）
 ├── pricing/               # 费率管理（内置 188 条硬编码 + 可编辑）
@@ -354,7 +372,7 @@ Switch Free 只调用你已登录工具自带的额度，不经过任何付费 A
 
 ### 2. 第三方资源归属
 
-本项目复用的模型能力与凭据**属于第三方 AI 编程工具**（JoyCode / DevEco Code / OpenCode 等）及其背后的云服务商：
+本项目复用的模型能力与凭据**属于第三方 AI 编程工具**（JoyCode / DevEco Code / OpenCode / WorkBuddy 等）及其背后的云服务商：
 
 - 本项目**不拥有、不售卖、不转授权**任何 token、额度或模型资源
 - 模型可用性、额度、价格由各原工具随时调整，本项目无法保证

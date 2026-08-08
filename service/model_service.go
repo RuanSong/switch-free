@@ -57,6 +57,15 @@ func (s *ModelService) GetModels() []*ModelDetail {
 		})
 	}
 
+	// WorkBuddy 模型
+	for _, m := range proxy.WorkBuddyModels {
+		result = append(result, &ModelDetail{
+			ID: m.ID, Label: m.Label, Upstream: "workbuddy",
+			Stream: true, Context: m.Context, Output: m.Output,
+			Vision: m.Vision, ToolCall: m.ToolCall,
+		})
+	}
+
 	return result
 }
 

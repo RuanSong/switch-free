@@ -15,14 +15,16 @@ import (
 type Core struct {
 	mu       sync.RWMutex
 	server   *proxy.Server
-	joycode  *upstream.JoyCodeUpstream
-	deveco   *upstream.DevEcoUpstream
-	opencode *upstream.OpenCodeUpstream
+	joycode   *upstream.JoyCodeUpstream
+	deveco    *upstream.DevEcoUpstream
+	opencode  *upstream.OpenCodeUpstream
+	workbuddy *upstream.WorkBuddyUpstream
 
 	// 凭据管理器（用于刷新操作）
-	joycodeMgr  *creds.JoyCodeCredManager
-	devecoMgr   *creds.DevEcoCredManager
-	opencodeMgr *creds.OpenCodeCredManager
+	joycodeMgr   *creds.JoyCodeCredManager
+	devecoMgr    *creds.DevEcoCredManager
+	opencodeMgr  *creds.OpenCodeCredManager
+	workbuddyMgr *creds.WorkBuddyCredManager
 
 	// 请求日志环形 buffer
 	logMu     sync.RWMutex
@@ -48,17 +50,21 @@ func (c *Core) Setup(
 	jyMgr *creds.JoyCodeCredManager,
 	deMgr *creds.DevEcoCredManager,
 	ocMgr *creds.OpenCodeCredManager,
+	wbMgr *creds.WorkBuddyCredManager,
 	jy *upstream.JoyCodeUpstream,
 	de *upstream.DevEcoUpstream,
 	oc *upstream.OpenCodeUpstream,
+	wb *upstream.WorkBuddyUpstream,
 	server *proxy.Server,
 ) {
 	c.joycodeMgr = jyMgr
 	c.devecoMgr = deMgr
 	c.opencodeMgr = ocMgr
+	c.workbuddyMgr = wbMgr
 	c.joycode = jy
 	c.deveco = de
 	c.opencode = oc
+	c.workbuddy = wb
 	c.server = server
 	// 把 Core 注册为代理的事件日志器
 	server.Logger = c
@@ -67,9 +73,9 @@ func (c *Core) Setup(
 // Server 暴露代理服务
 func (c *Core) Server() *proxy.Server { return c.server }
 
-// Upstreams 暴露三上游适配器（供 ConfigService 拉取模型列表）
-func (c *Core) Upstreams() (upstream.Upstream, upstream.Upstream, upstream.Upstream) {
-	return c.joycode, c.deveco, c.opencode
+// Upstreams 暴露四上游适配器（供 ConfigService 拉取模型列表）
+func (c *Core) Upstreams() (upstream.Upstream, upstream.Upstream, upstream.Upstream, upstream.Upstream) {
+	return c.joycode, c.deveco, c.opencode, c.workbuddy
 }
 
 // ====== proxy.EventLogger 实现 ======
@@ -158,19 +164,21 @@ func (c *Core) GetLogStats() *LogStats {
 
 // ====== 凭据状态汇总 ======
 
-// AllCredStatus 三上游凭据状态
+// AllCredStatus 四上游凭据状态
 type AllCredStatus struct {
 	JoyCode  *creds.CredStatusInfo `json:"joycode"`
 	DevEco   *creds.CredStatusInfo `json:"deveco"`
 	OpenCode *creds.CredStatusInfo `json:"opencode"`
+	WorkBuddy *creds.CredStatusInfo `json:"workbuddy"`
 }
 
-// GetCredStatus 获取三上游凭据状态
+// GetCredStatus 获取四上游凭据状态
 func (c *Core) GetCredStatus() *AllCredStatus {
 	return &AllCredStatus{
-		JoyCode:  c.joycode.CredStatus(),
-		DevEco:   c.deveco.CredStatus(),
-		OpenCode: c.opencode.CredStatus(),
+		JoyCode:   c.joycode.CredStatus(),
+		DevEco:    c.deveco.CredStatus(),
+		OpenCode:  c.opencode.CredStatus(),
+		WorkBuddy: c.workbuddy.CredStatus(),
 	}
 }
 
@@ -189,6 +197,10 @@ func (c *Core) RefreshCreds(name string) error {
 		c.opencode.InvalidateCreds()
 		_, err := c.opencodeMgr.EnsureCreds()
 		return err
+	case "workbuddy":
+		c.workbuddy.InvalidateCreds()
+		_, err := c.workbuddyMgr.EnsureCreds()
+		return err
 	}
 	return nil
 }
@@ -198,6 +210,7 @@ func (c *Core) RefreshAllCreds() {
 	c.RefreshCreds("joycode")
 	c.RefreshCreds("deveco")
 	c.RefreshCreds("opencode")
+	c.RefreshCreds("workbuddy")
 	// 推送状态更新
 	c.EmitEvent("cred:change", c.GetCredStatus())
 }

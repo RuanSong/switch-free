@@ -12,6 +12,7 @@ const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
   opencode: "OpenCode",
+  workbuddy: "WorkBuddy",
 };
 
 export default function Settings({ creds, config }: { creds: AllCredStatus | null; config: Config | null }) {
@@ -64,6 +65,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     joycode: creds?.joycode?.valid ?? false,
     deveco: creds?.deveco?.valid ?? false,
     opencode: creds?.opencode?.valid ?? false,
+    workbuddy: creds?.workbuddy?.valid ?? false,
   };
 
   if (!cfg) return <div className="p-6 text-[var(--color-text-dim)]">加载配置中...</div>;
