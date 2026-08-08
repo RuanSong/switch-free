@@ -15,9 +15,10 @@ import Logs from "./components/Logs";
 import SetupGuide from "./components/SetupGuide";
 import Settings from "./components/Settings";
 import UsageStats from "./components/UsageStats";
+import Benchmark from "./components/Benchmark";
 import ErrorBoundary from "./components/ErrorBoundary";
 
-type Tab = "dashboard" | "credentials" | "models" | "stats" | "logs" | "settings";
+type Tab = "dashboard" | "credentials" | "models" | "stats" | "logs" | "settings" | "benchmark";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -100,6 +101,7 @@ export default function App() {
     { key: "models", label: "模型", icon: "🤖" },
     { key: "stats", label: "统计", icon: "📈" },
     { key: "logs", label: "日志", icon: "📋" },
+    { key: "benchmark", label: "测评", icon: "🏁" },
     { key: "settings", label: "设置", icon: "⚙️" },
   ];
 
@@ -156,6 +158,8 @@ export default function App() {
             <Logs logs={logs} stats={stats} />
           ) : tab === "settings" ? (
             <Settings creds={creds} config={config} />
+          ) : tab === "benchmark" ? (
+            <Benchmark />
           ) : (
             <UsageStats />
           )}

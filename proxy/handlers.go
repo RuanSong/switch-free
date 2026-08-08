@@ -52,6 +52,14 @@ func (s *Server) enrichUsage(entry *LogEntry, respBody []byte, requestedModel st
 	if oai.Usage != nil {
 		entry.InputTokens = oai.Usage.PromptTokens
 		entry.OutputTokens = oai.Usage.CompletionTokens
+
+		// usage 合理性钳制：某些上游（如 OpenCode Zen）偶发返回远超 context 上限的 inputTokens
+		// 明显异常时清零，避免污染今日统计 / 趋势图 / 费率
+		limit := modelContextLimit(ResolveModel(requestedModel))
+		if limit > 0 && entry.InputTokens > limit {
+			entry.InputTokens = 0
+		}
+
 		// 缓存命中 token（两种格式兼容）
 		if oai.Usage.PromptTokensDetails.CachedTokens > 0 {
 			entry.CacheHitTokens = oai.Usage.PromptTokensDetails.CachedTokens

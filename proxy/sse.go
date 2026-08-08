@@ -77,6 +77,24 @@ func WriteAnthropicSSE(w io.Writer, openaiResp *OpenAIResponse, model string) {
 		}
 	}
 
+	// reasoning_content -> text block（推理模型思维链，如 JoyAI-Code-1.5 输出主要在此）
+	if msg.ReasoningContent != "" {
+		write("content_block_start", map[string]interface{}{
+			"type":          "content_block_start",
+			"index":         blockIndex,
+			"content_block": map[string]interface{}{"type": "text", "text": ""},
+		})
+		write("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": blockIndex,
+			"delta": map[string]interface{}{"type": "text_delta", "text": msg.ReasoningContent},
+		})
+		write("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": blockIndex,
+		})
+		blockIndex++
+	}
 	// text block
 	if msg.Content != nil && *msg.Content != "" {
 		write("content_block_start", map[string]interface{}{

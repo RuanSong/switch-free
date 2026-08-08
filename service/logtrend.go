@@ -8,7 +8,9 @@ import (
 // TrendPoint 趋势图一个数据点
 type TrendPoint struct {
 	Label          string `json:"label"`          // 展示标签（"00:00"、"08-01"、"07-01"）
-	Tokens         int64  `json:"tokens"`         // token 用量
+	Tokens         int64  `json:"tokens"`         // 总 token（input+output，兼容旧字段）
+	InputTokens    int64  `json:"inputTokens"`    // 输入 token
+	OutputTokens   int64  `json:"outputTokens"`   // 输出 token
 	Reqs           int64  `json:"reqs"`           // 请求数
 	CacheHitTokens int64  `json:"cacheHitTokens"` // 命中缓存的输入 token
 	CacheHitReqs   int64  `json:"cacheHitReqs"`   // 命中缓存的请求数
@@ -77,8 +79,8 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 			continue
 		}
 		var key string
-		var tokens int64
-		tokens = int64(log.InputTokens + log.OutputTokens)
+		in := int64(log.InputTokens)
+		out := int64(log.OutputTokens)
 
 		if granularity == "hour" {
 			// dateTime 格式 "2026-08-08 13:14:52"
@@ -92,7 +94,9 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 		}
 
 		if idx, ok := bucketIndex[key]; ok {
-			buckets[idx].Tokens += tokens
+			buckets[idx].Tokens += in + out
+			buckets[idx].InputTokens += in
+			buckets[idx].OutputTokens += out
 			buckets[idx].Reqs++
 			if log.CacheHitTokens > 0 {
 				buckets[idx].CacheHitTokens += int64(log.CacheHitTokens)

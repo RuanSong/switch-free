@@ -200,6 +200,20 @@ func ResolveUpstream(model string) string {
 	return "joycode"
 }
 
+// modelContextLimit 返回模型 context 窗口上限（token），用于 usage 合理性校验；未知返回 0
+func modelContextLimit(modelID string) int {
+	if m := WorkBuddyModelByID[modelID]; m != nil {
+		return m.Context
+	}
+	if m := OpenCodeModelByID[modelID]; m != nil {
+		return m.Context
+	}
+	if m := DevEcoModelByID[modelID]; m != nil {
+		return m.Context
+	}
+	return 0
+}
+
 // ClampMaxTokens 钳制 max_tokens 到模型上限
 func ClampMaxTokens(requested, limit int) int {
 	v := requested

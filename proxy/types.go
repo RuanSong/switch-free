@@ -82,10 +82,11 @@ type OpenAIRequest struct {
 }
 
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    *string          `json:"content,omitempty"`
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID *string          `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          *string          `json:"content,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"` // 推理模型思维链（JoyAI-Code-1.5 等输出在此）
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       *string          `json:"tool_call_id,omitempty"`
 }
 
 type OpenAIToolCall struct {

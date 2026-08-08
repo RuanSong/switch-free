@@ -79,6 +79,7 @@ func main() {
 	pricingSvc := service.NewPricingService(pricingMgr)
 	updaterMgr := updater.NewUpdater(cfgMgr.Get())
 	updaterSvc := service.NewUpdaterService(updaterMgr)
+	benchmarkSvc := service.NewBenchmarkService(core)
 
 	// 7. 创建 Wails 应用
 	app := application.New(application.Options{
@@ -92,6 +93,7 @@ func main() {
 			application.NewService(cfgSvc),
 			application.NewService(pricingSvc),
 			application.NewService(updaterSvc),
+			application.NewService(benchmarkSvc),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),

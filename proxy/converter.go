@@ -312,6 +312,13 @@ func OpenAIToAnthropic(oai *OpenAIResponse, reqID string) *AnthropicResponse {
 
 	var content []AnthropicContentBlock
 
+	// reasoning_content -> text block（推理模型思维链，如 JoyAI-Code-1.5 输出主要在此）
+	if msg.ReasoningContent != "" {
+		content = append(content, AnthropicContentBlock{
+			Type: "text",
+			Text: msg.ReasoningContent,
+		})
+	}
 	// tool_calls → tool_use blocks
 	if len(msg.ToolCalls) > 0 {
 		for _, tc := range msg.ToolCalls {
