@@ -13,8 +13,9 @@
 #   make version        # 显示当前版本号
 #   make tag            # 打 git tag（如 make tag v=0.1.0）
 #   make release        # 创建 GitHub Release
+#   make upload         # 上传本地构建产物到 GitHub Release
 #   make push           # 推送代码 + tag 到远程
-#   make deploy         # 推码 + 打 tag + 发 release（一键发布）
+#   make deploy         # 推码 + 打 tag + 发 release + 上传产物（一键发布）
 #   make clean          # 清理产物
 
 # 仓库信息（GitHub Actions 构建时由 release 触发）
@@ -29,7 +30,7 @@ DIST        := dist
 # 架构
 ARCH        ?= amd64
 
-.PHONY: build package dmg windows nsis dist build-server test fmt version tag release push deploy clean sync-version
+.PHONY: build package dmg windows nsis dist build-server test fmt version tag release upload push deploy clean sync-version
 
 ## 同步版本号：build/config.yml -> version/config.yml（version 包 embed 读取的唯一来源）
 sync-version:
@@ -163,14 +164,27 @@ release:
 		|| echo "⚠️ Release 可能已存在，尝试 upload 资产"
 	@echo "✅ Release $(TAG) 已创建"
 
+## 上传 dist/ 构建产物到 GitHub Release（仅安装包：DMG + NSIS）
+upload:
+	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
+	@test -n "$$(gh auth status 2>&1 | grep -o 'Logged in')" || (echo "❌ 请先运行 gh auth login" && exit 1)
+	@echo "🔄 上传 dist/ 产物到 Release $(TAG)..."
+	@assets=""; \
+	for f in dist/*; do \
+		[ -f "$$f" ] && assets="$$assets $$f"; \
+	done; \
+	if [ -z "$$assets" ]; then echo "❌ 未找到构建产物（先 make dist）"; exit 1; fi; \
+	gh release upload $(TAG) $$assets --repo $(REPO) --clobber; \
+	echo "✅ 已上传:$$assets"
+
 ## 推送代码 + tag 到远程
 push:
 	git push origin main
 	@echo "✅ 代码已推送"
 	git push origin $(TAG) 2>/dev/null || echo "ℹ️ tag $(TAG) 已存在或无新 tag 可推"
 
-## 一键发布：推码 + 打 tag + 发 release
-deploy: push tag release
+## 一键发布：推码 + 打 tag + 发 release + 上传产物
+deploy: push tag release upload
 	@echo "🎉 发布流程完成: https://github.com/$(REPO)/releases/tag/$(TAG)"
 
 ## 清理产物
