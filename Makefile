@@ -146,11 +146,15 @@ fmt:
 version:
 	@echo "版本: $(V) | tag: $(TAG)"
 
-## 打 git tag
+## 打 git tag（已存在则跳过）
 tag:
 	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
-	git tag -a $(TAG) -m "Release $(TAG)"
-	@echo "✅ 已打 tag: $(TAG)"
+	@if git rev-parse $(TAG) >/dev/null 2>&1; then \
+		echo "ℹ️ tag $(TAG) 已存在，跳过"; \
+	else \
+		git tag -a $(TAG) -m "Release $(TAG)"; \
+		echo "✅ 已打 tag: $(TAG)"; \
+	fi
 
 ## 创建 GitHub Release
 release:
