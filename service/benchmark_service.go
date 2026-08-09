@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -85,7 +88,7 @@ func (s *BenchmarkService) RunBenchmark(targets []BenchmarkTarget, prompt string
 	return results
 }
 
-// benchOne 测单个 target：走本代理 /v1/messages，计时 + 解析 usage
+// benchOne 测单个 target：走本代理 /v1/messages 流式，实时推送 content chunk 给前端
 func (s *BenchmarkService) benchOne(url string, target BenchmarkTarget, prompt string, maxTokens int) BenchmarkResult {
 	res := BenchmarkResult{
 		Upstream:      target.Upstream,
@@ -100,65 +103,88 @@ func (s *BenchmarkService) benchOne(url string, target BenchmarkTarget, prompt s
 			{"role": "user", "content": prompt},
 		},
 		"max_tokens": maxTokens,
-		"stream":     false,
+		"stream":     true,
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
+	client := &http.Client{} // 流式：不设整体超时，用 context 控制
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	// 带上配置的 apiKey（代理严格鉴权，不带会 401）
 	if srv := s.core.Server(); srv != nil && srv.ConfigResolver != nil {
 		if key := srv.ConfigResolver.GetAPIKey(); key != "" {
 			req.Header.Set("x-api-key", key)
 		}
 	}
+
 	start := time.Now()
 	httpResp, err := client.Do(req)
-	res.DurationMs = time.Since(start).Milliseconds()
 	if err != nil {
+		res.DurationMs = time.Since(start).Milliseconds()
 		res.ErrorMsg = fmt.Sprintf("请求失败: %v", err)
 		return res
 	}
 	defer httpResp.Body.Close()
 
-	var resp struct {
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
-		res.ErrorMsg = fmt.Sprintf("解析响应失败: %v", err)
-		return res
-	}
-	if httpResp.StatusCode != 200 || resp.Error.Message != "" {
-		res.ErrorMsg = resp.Error.Message
-		if res.ErrorMsg == "" {
-			res.ErrorMsg = fmt.Sprintf("HTTP %d", httpResp.StatusCode)
+	if httpResp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(httpResp.Body)
+		res.DurationMs = time.Since(start).Milliseconds()
+		snippet := string(errBody)
+		if len(snippet) > 100 {
+			snippet = snippet[:100]
 		}
+		res.ErrorMsg = fmt.Sprintf("HTTP %d: %s", httpResp.StatusCode, snippet)
 		return res
 	}
 
-	res.Success = true
-	res.OutputTokens = resp.Usage.OutputTokens
-	if res.DurationMs > 0 {
-		res.TPS = float64(res.OutputTokens) / (float64(res.DurationMs) / 1000.0)
-	}
-	var sb strings.Builder
-	for _, b := range resp.Content {
-		if b.Text != "" {
-			sb.WriteString(b.Text)
+	// 读 SSE 流，解析 Anthropic content_block_delta，累积 content 并实时推送 chunk 事件
+	var contentBuilder strings.Builder
+	var outputTokens int
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var ev struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+			Usage struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		if ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
+			contentBuilder.WriteString(ev.Delta.Text)
+			s.core.EmitEvent("benchmark:chunk", map[string]interface{}{
+				"upstream": target.Upstream,
+				"delta":    ev.Delta.Text,
+			})
+		}
+		if ev.Type == "message_delta" && ev.Usage.OutputTokens > 0 {
+			outputTokens = ev.Usage.OutputTokens
 		}
 	}
-	res.Content = sb.String()
+
+	res.DurationMs = time.Since(start).Milliseconds()
+	res.Success = true
+	res.OutputTokens = outputTokens
+	if res.DurationMs > 0 && outputTokens > 0 {
+		res.TPS = float64(outputTokens) / (float64(res.DurationMs) / 1000.0)
+	}
+	res.Content = contentBuilder.String()
 	return res
 }

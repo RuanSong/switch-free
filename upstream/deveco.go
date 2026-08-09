@@ -1,10 +1,12 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -203,6 +205,112 @@ func (u *DevEcoUpstream) doCall(ctx context.Context, body []byte, cred *creds.De
 	return &Response{
 		StatusCode: httpResp.StatusCode,
 		Body:       respBody,
+		ReqID:      reqID,
+	}, nil
+}
+
+// CallStream 真流式调用 DevEco（stream:true，走 /chat/completions 端点）
+func (u *DevEcoUpstream) CallStream(ctx context.Context, body []byte) (*StreamResponse, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+	sr, err := u.doCallStream(ctx, body, cred)
+	if err != nil {
+		return nil, err
+	}
+	// token 失效 -> 刷新并重试一次（流式下纯 status 判断）
+	if sr.StatusCode == 401 {
+		fmt.Println("[switch-free] DevEco 流式收到 401（token 失效），刷新并重试一次")
+		sr.Body.Close()
+		u.mgr.InvalidateCreds()
+		oldToken := cred.AccessToken
+		newCred, err := u.mgr.EnsureCreds()
+		if err != nil {
+			return sr, nil
+		}
+		if newCred.AccessToken != oldToken {
+			return u.doCallStream(ctx, body, newCred)
+		}
+	}
+	return sr, nil
+}
+
+// doCallStream 流式版 doCall：端点 /chat/completions（去掉 no-stream），200 返回 SSE 流
+func (u *DevEcoUpstream) doCallStream(ctx context.Context, body []byte, cred *creds.DevEcoCred) (*StreamResponse, error) {
+	// 流式端点：/sse/codeGenie/maas/v2/chat/completions（非流式是 /no-stream/chat/completions）
+	url := fmt.Sprintf("%s%s/chat/completions",
+		u.mgr.Config().Origin, u.mgr.Config().MaasPath)
+	reqID := fmt.Sprintf("req-%d-%s", time.Now().Unix(), randString(6))
+
+	// 覆盖 stream 字段为 true
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
+	}
+	m["stream"] = true
+	bodyBytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cred.AccessToken))
+	req.Header.Set("Chat-Id", randomChatID())
+	req.Header.Set("X-DevEco-Improvement-Enabled", fmt.Sprintf("%v", u.mgr.ReadImprovementEnabled()))
+	req.Header.Set("lang", "en")
+	req.Header.Set("Accept", "text/event-stream")
+
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if httpResp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		return &StreamResponse{
+			StatusCode: httpResp.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(errBody)),
+			ReqID:      reqID,
+		}, nil
+	}
+
+	// 200：peek 检测空流 + 非 SSE 内容，异常则虚拟 502 降级（含 peek 内容便于排查）
+	br := bufio.NewReader(httpResp.Body)
+	peeked, _ := br.Peek(256)
+	peekStr := string(peeked)
+	if len(peeked) == 0 {
+		httpResp.Body.Close()
+		fmt.Printf("[switch-free] deveco 流式上游返回空流，降级\n")
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
+			ReqID:      reqID,
+		}, nil
+	}
+	// SSE 流必含 data: + choices；错误 SSE（如 model overloaded 返回 data:{"error":...} 无 choices）降级
+	if !strings.Contains(peekStr, "data:") || !strings.Contains(peekStr, "choices") {
+		httpResp.Body.Close()
+		snippet := peekStr
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		fmt.Printf("[switch-free] deveco 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			ReqID:      reqID,
+		}, nil
+	}
+
+	return &StreamResponse{
+		StatusCode: 200,
+		Body:       &bufferedReadCloser{br: br, c: httpResp.Body},
 		ReqID:      reqID,
 	}, nil
 }

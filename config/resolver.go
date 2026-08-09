@@ -27,7 +27,7 @@ func (c *Config) expandAutoChain() []proxy.ModelRef {
 		}
 	}
 	// 追加上全局兜底（去重，避免重复尝试同一个模型）
-	if !c.isInChain(result, c.GlobalFallback) {
+	if c.GlobalFallback.Upstream != "" && c.GlobalFallback.Model != "" && !c.isInChain(result, c.GlobalFallback) {
 		result = append(result, c.GlobalFallback)
 	}
 	return result

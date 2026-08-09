@@ -93,13 +93,28 @@ wire_api = "chat"
 
 ---
 
+## 🆓 限时免费模型汇总
+
+各平台限时免费的模型（代理设置页模型名旁有 `free` 标识）：
+
+| 上游 | 模型 ID | 说明 |
+|------|---------|------|
+| **DevEco** | `glm-5.1` | 华为 GLM-5.1，auto 模式主力 |
+| **JoyCode** | `JoyAI-Code-1.5` | 京东 JoyAI，auto 模式降级 |
+| **OpenCode** | `deepseek-v4-flash-free` / `mimo-v2.5-free` / `ling-3.0-flash-free` / `north-mini-code-free` / `laguna-s-2.1-free` / `ling-3.0-tiny-free` / `nemotron-3-ultra-free` / `longcat-2.0-free` | OpenCode Zen 全部 8 个 free 模型 |
+| **WorkBuddy** | `wb/hy3` | 腾讯混元 Hy3 |
+
+> 免费额度由各平台提供，可能随时调整。建议在 auto 模式配置多个免费模型互为降级，单个失效也能继续用。
+
+---
+
 ## 🧩 可用模型（32 个）
 
 ### JoyCode · 京东云（8 个）
 
 | 模型 ID | 能力 |
 |---------|------|
-| `JoyAI-Code-1.5` | function_call, agent |
+| `JoyAI-Code-1.5` 🆓 | function_call, agent（限时免费）|
 | `MiniMax-M3-agent` | function_call, **vision**, agent |
 | `MiniMax-M2.7-agent` | function_call, agent |
 | `Kimi-K2.6-agent` | function_call, **vision**, agent |
@@ -112,7 +127,7 @@ wire_api = "chat"
 
 | 模型 ID | Context | Output |
 |---------|---------|--------|
-| `glm-5.1` | 170k | 131k |
+| `glm-5.1` 🆓 | 170k | 131k（限时免费）|
 
 ### OpenCode Zen · 开源 free（8 个）
 
@@ -131,6 +146,7 @@ wire_api = "chat"
 
 | 模型 ID | Output | 能力 |
 |---------|--------|------|
+| `wb/hy3` 🆓 | 32k | vision, tool, reasoning（限时免费）|
 | `wb/auto` | 32k | 自动选择 |
 | `wb/glm-5.0` / `wb/glm-5.1` / `wb/glm-5.0-turbo` / `wb/glm-4.7` | 48k | vision, tool, reasoning |
 | `wb/minimax-m2.5` / `wb/minimax-m2.7` | 48k | vision, tool, reasoning |
@@ -138,7 +154,6 @@ wire_api = "chat"
 | `wb/deepseek-v3-2-volc` | 32k | vision, tool, reasoning |
 | `wb/hunyuan-2.0-thinking` | 16k | tool, reasoning |
 | `wb/hunyuan-2.0-instruct` | 24k | tool |
-| `wb/hy3` | 32k | vision, tool, reasoning |
 
 > 模型列表从上游接口**实时拉取**，上游新增模型会自动出现；费率内置 188 条，可编辑。
 

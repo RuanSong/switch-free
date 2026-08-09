@@ -2,15 +2,16 @@ import { useState, useEffect } from "react";
 import { BenchmarkService, ModelService } from "../../bindings/switchfree/service";
 import type { BenchmarkResult, ModelDetail } from "../../bindings/switchfree/service/models";
 import { useWailsEvent } from "../hooks/useWailsEvent";
+import { ModelSelect } from "./ModelSelect";
 
 const DEFAULT_PROMPT = "请详细介绍 Go 语言的 goroutine 和 channel 并发模型，包括基本概念、使用示例和注意事项。";
 
-// 各上游默认测评模型
+// 各上游默认测评模型（均为 free 模型，useEffect 加载后会再次按 free 字段校准）
 const DEFAULT_TARGETS: Record<string, string> = {
   joycode: "JoyAI-Code-1.5",
   deveco: "glm-5.1",
   opencode: "deepseek-v4-flash-free",
-  workbuddy: "wb/glm-5.0",
+  workbuddy: "wb/hy3",
 };
 
 const UPSTREAM_LABEL: Record<string, string> = {
@@ -31,10 +32,23 @@ export default function Benchmark() {
   const [running, setRunning] = useState(false);
   const [singleRunning, setSingleRunning] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [streamingContent, setStreamingContent] = useState<Record<string, string>>({});
 
   useEffect(() => {
     ModelService.GetModels()
-      .then((m) => setModels((m ?? []).filter((x): x is ModelDetail => x !== null)))
+      .then((m) => {
+        const list = (m ?? []).filter((x): x is ModelDetail => x !== null);
+        setModels(list);
+        // 默认选每个上游的第一个 free 模型（无 free 则保留 DEFAULT_TARGETS）
+        setTargets((prev) => {
+          const updated = { ...prev };
+          for (const up of UPSTREAM_ORDER) {
+            const freeModel = list.find((md) => md.upstream === up && md.free);
+            if (freeModel) updated[up] = freeModel.id;
+          }
+          return updated;
+        });
+      })
       .catch(() => {});
   }, []);
 
@@ -46,11 +60,20 @@ export default function Benchmark() {
     }
   });
 
+  // 订阅流式 chunk 事件：实时追加 content（流式输出可见）
+  useWailsEvent("benchmark:chunk", (data) => {
+    const d = data as { upstream: string; delta: string };
+    if (d && d.upstream) {
+      setStreamingContent((prev) => ({ ...prev, [d.upstream]: (prev[d.upstream] || "") + d.delta }));
+    }
+  });
+
   const modelsFor = (up: string) => models.filter((m) => m.upstream === up);
 
   const run = async () => {
     setRunning(true);
     setResults({});
+    setStreamingContent({});
     try {
       const ts = UPSTREAM_ORDER.map((up) => ({ upstream: up, model: targets[up] }));
       await BenchmarkService.RunBenchmark(ts, prompt, maxTokens);
@@ -63,6 +86,7 @@ export default function Benchmark() {
   const runSingle = async (up: string) => {
     setSingleRunning((prev) => ({ ...prev, [up]: true }));
     setResults((prev) => ({ ...prev, [up]: null }));
+    setStreamingContent((prev) => ({ ...prev, [up]: "" }));
     try {
       await BenchmarkService.RunBenchmark([{ upstream: up, model: targets[up] }], prompt, maxTokens);
     } finally {
@@ -127,15 +151,12 @@ export default function Benchmark() {
             <div key={up} className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
               <div className="flex items-center gap-3 mb-3 flex-wrap">
                 <span className="font-semibold">{UPSTREAM_LABEL[up]}</span>
-                <select
+                <ModelSelect
+                  options={upModels}
                   value={targets[up]}
-                  onChange={(e) => setTargets({ ...targets, [up]: e.target.value })}
-                  className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
-                >
-                  {upModels.map((m) => (
-                    <option key={m.id} value={m.id}>{m.label}</option>
-                  ))}
-                </select>
+                  onChange={(id) => setTargets({ ...targets, [up]: id })}
+                  className="w-56"
+                />
                 <button
                   onClick={() => runSingle(up)}
                   disabled={running || !!singleRunning[up]}
@@ -190,6 +211,10 @@ export default function Benchmark() {
                 ) : (
                   <div className="text-sm text-[var(--color-danger)]">✗ {r.errorMsg || "测评失败"}</div>
                 )
+              ) : (singleRunning[up] || running) && streamingContent[up] ? (
+                <div className="mt-3 px-3 py-2 rounded-md bg-[var(--color-surface-2)] text-xs whitespace-pre-wrap max-h-60 overflow-y-auto">
+                  {streamingContent[up]}<span className="animate-pulse">▋</span>
+                </div>
               ) : (
                 <div className="text-xs text-[var(--color-text-dim)]">
                   {running ? "等待结果..." : "未测评"}

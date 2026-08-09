@@ -112,6 +112,7 @@ type ModelOption struct {
 	Vision    bool   `json:"vision,omitempty"`
 	ToolCall  bool   `json:"toolCall,omitempty"`
 	Reasoning bool   `json:"reasoning,omitempty"`
+	Free      bool   `json:"free,omitempty"` // 限时免费标识
 }
 
 // GetAvailableModels 返回各 upstream 可选模型（实时合并 + 缓存 10 分钟）
@@ -204,6 +205,7 @@ func (s *ConfigService) fetchAllModels() []UpstreamModels {
 				Vision:    m.Vision,
 				ToolCall:  m.ToolCall,
 				Reasoning: false,
+				Free:      m.Free,
 			})
 		}
 		source := "live"
@@ -228,7 +230,7 @@ func localOnlyModels() []UpstreamModels {
 func modelOptionsJoyCode() []ModelOption {
 	opts := make([]ModelOption, 0, len(proxy.JoyCodeModels))
 	for _, m := range proxy.JoyCodeModels {
-		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Output: m.OutputMaxTokens, Stream: m.Stream, ToolCall: true})
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Output: m.OutputMaxTokens, Stream: m.Stream, ToolCall: true, Free: m.Free})
 	}
 	return opts
 }
@@ -236,7 +238,7 @@ func modelOptionsJoyCode() []ModelOption {
 func modelOptionsDevEco() []ModelOption {
 	opts := make([]ModelOption, 0, len(proxy.DevEcoModels))
 	for _, m := range proxy.DevEcoModels {
-		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true})
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true, Free: m.Free})
 	}
 	return opts
 }
@@ -244,7 +246,7 @@ func modelOptionsDevEco() []ModelOption {
 func modelOptionsOpenCode() []ModelOption {
 	opts := make([]ModelOption, 0, len(proxy.OpenCodeModels))
 	for _, m := range proxy.OpenCodeModels {
-		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true})
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, ToolCall: true, Free: m.Free})
 	}
 	return opts
 }
@@ -252,7 +254,7 @@ func modelOptionsOpenCode() []ModelOption {
 func modelOptionsWorkBuddy() []ModelOption {
 	opts := make([]ModelOption, 0, len(proxy.WorkBuddyModels))
 	for _, m := range proxy.WorkBuddyModels {
-		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, Vision: m.Vision, ToolCall: m.ToolCall})
+		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, Vision: m.Vision, ToolCall: m.ToolCall, Free: m.Free})
 	}
 	return opts
 }

@@ -187,7 +187,7 @@ function Details({ status }: { status: CredStatusInfo | null }) {
   return (
     <div className="grid grid-cols-2 gap-3 text-sm">
       <Detail label="用户" value={status?.userId || "-"} />
-      <Detail label="来源" value={status?.source || "-"} />
+      <Detail label="来源" value={status?.source || "-"} noTruncate />
       <Detail label="key 预览" value={status?.keyPreview || "-"} mono />
       <Detail label="过期时间" value={status?.expiresAt || "-"} />
       <Detail label="最近校验" value={status?.lastCheck || "-"} />
@@ -195,11 +195,11 @@ function Details({ status }: { status: CredStatusInfo | null }) {
   );
 }
 
-function Detail({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Detail({ label, value, mono, noTruncate }: { label: string; value: string; mono?: boolean; noTruncate?: boolean }) {
   return (
     <div>
       <div className="text-xs text-[var(--color-text-dim)] mb-0.5">{label}</div>
-      <div className={`truncate ${mono ? "font-mono text-xs" : ""}`}>{value}</div>
+      <div className={`${noTruncate ? "" : "truncate"} ${mono ? "font-mono text-xs" : ""}`}>{value}</div>
     </div>
   );
 }

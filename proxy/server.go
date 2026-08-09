@@ -93,6 +93,18 @@ func (s *Server) Stop() error {
 	return err
 }
 
+// StopQuiet 停止 HTTP 服务但不推送状态事件（退出场景用，避免 Event.Emit 在 app 退出时卡死）
+func (s *Server) StopQuiet() error {
+	if !s.running.Load() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := s.httpSrv.Shutdown(ctx)
+	s.running.Store(false)
+	return err
+}
+
 // IsRunning 是否运行中
 func (s *Server) IsRunning() bool { return s.running.Load() }
 

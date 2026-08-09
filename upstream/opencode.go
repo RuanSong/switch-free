@@ -1,8 +1,10 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -154,6 +156,103 @@ func (u *OpenCodeUpstream) doCall(ctx context.Context, body []byte, cred *creds.
 	return &Response{
 		StatusCode: httpResp.StatusCode,
 		Body:       respBody,
+		ReqID:      reqID,
+	}, nil
+}
+
+// CallStream 真流式调用 OpenCode（stream:true，直接返回 SSE 流）
+func (u *OpenCodeUpstream) CallStream(ctx context.Context, body []byte) (*StreamResponse, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+	sr, err := u.doCallStream(ctx, body, cred)
+	if err != nil {
+		return nil, err
+	}
+	if sr.StatusCode == 401 {
+		fmt.Println("[switch-free] OpenCode 流式收到 401（apiKey 失效），重读 auth.json 并重试一次")
+		sr.Body.Close()
+		u.mgr.InvalidateCreds()
+		oldKey := cred.APIKey
+		newCred, err := u.mgr.EnsureCreds()
+		if err != nil {
+			return sr, nil
+		}
+		if newCred.APIKey != oldKey {
+			return u.doCallStream(ctx, body, newCred)
+		}
+	}
+	return sr, nil
+}
+
+// doCallStream 流式版 doCall：覆盖 stream:true，200 时直接返回 SSE 流
+func (u *OpenCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *creds.OpenCodeCred) (*StreamResponse, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
+	}
+	m["stream"] = true
+	bodyBytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
+	}
+
+	url := u.mgr.Config().BaseURL + "/chat/completions"
+	reqID := fmt.Sprintf("req-%d-%s", time.Now().Unix(), randString(6))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cred.APIKey))
+	req.Header.Set("Accept", "text/event-stream")
+
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if httpResp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		return &StreamResponse{
+			StatusCode: httpResp.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(errBody)),
+			ReqID:      reqID,
+		}, nil
+	}
+
+	// 200：peek 检测空流 + 非 SSE 内容，异常则虚拟 502 降级
+	br := bufio.NewReader(httpResp.Body)
+	peeked, _ := br.Peek(256)
+	peekStr := string(peeked)
+	if len(peeked) == 0 {
+		httpResp.Body.Close()
+		fmt.Printf("[switch-free] opencode 流式上游返回空流，降级\n")
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
+			ReqID:      reqID,
+		}, nil
+	}
+	if !strings.Contains(peekStr, "data:") || !strings.Contains(peekStr, "choices") {
+		httpResp.Body.Close()
+		snippet := peekStr
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		fmt.Printf("[switch-free] opencode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			ReqID:      reqID,
+		}, nil
+	}
+	return &StreamResponse{
+		StatusCode: 200,
+		Body:       &bufferedReadCloser{br: br, c: httpResp.Body},
 		ReqID:      reqID,
 	}, nil
 }

@@ -136,15 +136,15 @@ export default function Logs({ logs, stats }: Props) {
       <div className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden">
         {filtered.length > 0 && (
           <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)] font-medium uppercase tracking-wide whitespace-nowrap">
-            <span className="w-20">时间</span>
-            <span className="w-28 truncate">请求模型</span>
-            <span className="w-28 truncate">实际模型</span>
-            <span className="w-24 truncate">代理</span>
-            <span className="w-28 truncate">真实模型</span>
-            <span className="w-24 text-right">输入/输出</span>
-            <span className="w-24 text-right">费用</span>
+            <span className="w-24">时间</span>
+            <span className="w-28">请求模型</span>
+            <span className="w-28">实际模型</span>
+            <span className="w-24">代理</span>
+            <span className="w-28">真实模型</span>
+            <span className="w-24">输入/输出</span>
+            <span className="w-24">费用</span>
             <span className="w-16">状态</span>
-            <span className="w-14 text-right">用时</span>
+            <span className="w-14">用时</span>
             <span className="w-6"></span>
           </div>
         )}
@@ -232,7 +232,7 @@ function LogRow({ log, expanded, onToggle }: { log: LogEntry; expanded: boolean;
       {/* 概要行（点击展开详情） */}
       <button onClick={onToggle} className="w-full px-4 py-2.5 hover:bg-[var(--color-surface-2)]/50 text-left">
         <div className="flex items-center gap-3 text-sm">
-          <span className="text-[var(--color-text-dim)] font-mono text-xs w-20">{log.timestamp}</span>
+          <span className="text-[var(--color-text-dim)] font-mono text-xs w-24 whitespace-nowrap">{fmtLogTime(log)}</span>
           <span className="font-mono text-xs w-28 truncate text-[var(--color-text-dim)]" title={log.model}>{log.model}</span>
           <span className="font-mono text-xs w-28 truncate" title={log.usedModel || log.realModel || ""}>
             {log.usedModel || log.realModel || "-"}
@@ -243,14 +243,14 @@ function LogRow({ log, expanded, onToggle }: { log: LogEntry; expanded: boolean;
           <span className="font-mono text-xs w-28 truncate text-[var(--color-text-dim)]" title={log.realModel}>
             {log.realModel || "-"}
           </span>
-          <span className="font-mono text-xs w-24 text-right">{tokenText(log)}</span>
-          <span className="font-mono text-xs w-24 text-right text-[var(--color-primary)]" title={log.costText}>
+          <span className="font-mono text-xs w-24">{tokenText(log)}</span>
+          <span className="font-mono text-xs w-24 text-[var(--color-primary)]" title={log.costText}>
             {costText(log)}
           </span>
           <span className={`w-16 truncate ${color}`} title={log.errorMsg}>
             {log.status === "success" ? "成功" : log.status === "auth_error" ? "鉴权失败" : log.status === "fallback" ? "降级" : "错误"}
           </span>
-          <span className="text-[var(--color-text-dim)] text-xs font-mono w-14 text-right">{log.duration}ms</span>
+          <span className="text-[var(--color-text-dim)] text-xs font-mono w-14">{log.duration}ms</span>
           <span className="text-[var(--color-text-dim)] text-xs w-6 text-center">{expanded ? "▲" : "▼"}</span>
         </div>
       </button>
@@ -321,6 +321,32 @@ function agentLabel(upstream: string): string {
     default:
       return upstream || "-";
   }
+}
+
+// fmtLogTime 将日志时间格式化为 "MM/DD HH:mm"
+// dateTime: "2026-08-08 15:04:05" -> "08/08 15:04"
+// 兜底用 timestamp ("15:04:05") 或 date+timestamp 拼接
+function fmtLogTime(log: LogEntry): string {
+  if (log.dateTime && log.dateTime.length >= 16) {
+    // "2026-08-08 15:04:05" -> 取 "08/08 15:04"
+    const parts = log.dateTime.split(" ");
+    if (parts.length === 2) {
+      const dateParts = parts[0].split("-");
+      const timePart = parts[1].substring(0, 5); // "HH:mm"
+      if (dateParts.length === 3) {
+        return `${dateParts[1]}/${dateParts[2]} ${timePart}`;
+      }
+    }
+  }
+  // 兜底：用 date + timestamp
+  if (log.date && log.timestamp) {
+    const dateParts = log.date.split("-");
+    const timePart = log.timestamp.substring(0, 5);
+    if (dateParts.length === 3) {
+      return `${dateParts[1]}/${dateParts[2]} ${timePart}`;
+    }
+  }
+  return log.timestamp || "-";
 }
 
 // tokenText token 用量文本

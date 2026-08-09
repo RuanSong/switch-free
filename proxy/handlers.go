@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"switchfree/creds"
+	"switchfree/upstream"
 )
 
 // 请求/响应体记录上限（防日志膨胀）
@@ -98,6 +100,17 @@ func (s *Server) logRequest(entry *LogEntry, respBody []byte, requestedModel str
 
 // handleAnthropicMessages Anthropic /v1/messages 入口
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	// 调试：记录请求 header（排查 cc-switch 中转问题）
+	if f, err := os.OpenFile("/tmp/sf_headers.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		fmt.Fprintf(f, "%s POST /v1/messages ua=%s accept=%s accept-enc=%s cl=%d stream-in-body=%v\n",
+			time.Now().Format("15:04:05"),
+			r.Header.Get("User-Agent"),
+			r.Header.Get("Accept"),
+			r.Header.Get("Accept-Encoding"),
+			r.ContentLength,
+			r.URL.Query().Get("stream"))
+		f.Close()
+	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -119,6 +132,21 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	requestedModel := body.Model
 	if requestedModel == "" {
 		requestedModel = "auto"
+	}
+
+	// 流式：优先尝试真流式（上游支持 StreamCaller，如 WorkBuddy/OpenCode）
+	if stream {
+		sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), &body)
+		if sr != nil {
+			s.streamAnthropicResponse(w, sr, requestedModel, upName, usedModel, string(raw))
+			return
+		}
+		if err != nil {
+			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/messages", true, string(raw), ""))
+			writeAnthropicError(w, http.StatusBadGateway, "connection_error", err.Error())
+			return
+		}
+		// sr == nil：无流式上游可用，回退伪流式
 	}
 
 	start := time.Now()
@@ -230,6 +258,21 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		requestedModel = "auto"
 	}
 
+	// 流式：优先尝试真流式（上游支持 StreamCaller，如 WorkBuddy/OpenCode）
+	if stream {
+		sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), body)
+		if sr != nil {
+			s.streamOpenAIResponse(w, sr, requestedModel, upName, usedModel, string(raw))
+			return
+		}
+		if err != nil {
+			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/chat/completions", true, string(raw), ""))
+			writeOpenAIError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		// sr == nil：无流式上游可用，回退伪流式
+	}
+
 	start := time.Now()
 	resp, upName, usedModel, err := s.callUpstreamOpenAI(r.Context(), body)
 	duration := time.Since(start).Milliseconds()
@@ -292,4 +335,85 @@ func writeOpenAIError(w http.ResponseWriter, status int, message string) {
 			"message": message,
 		},
 	})
+}
+
+// fillStreamLog 填充流式日志的 usage/费用字段（从转换器捕获的 usage）
+func (s *Server) fillStreamLog(entry *LogEntry, usage *OpenAIUsage, requestedModel string) {
+	if usage != nil {
+		entry.InputTokens = usage.PromptTokens
+		entry.OutputTokens = usage.CompletionTokens
+		if usage.PromptTokensDetails.CachedTokens > 0 {
+			entry.CacheHitTokens = usage.PromptTokensDetails.CachedTokens
+		} else if usage.CacheReadInputTokens > 0 {
+			entry.CacheHitTokens = usage.CacheReadInputTokens
+		}
+	}
+	if s.Pricing != nil {
+		lookupModel := ResolveModel(requestedModel)
+		cost, price := s.Pricing.CalculateCost(lookupModel, entry.InputTokens, entry.OutputTokens)
+		if price != nil {
+			entry.Cost = cost
+			entry.CostText = fmt.Sprintf("%s", price.DisplayName)
+		}
+	}
+}
+
+// streamAnthropicResponse 真流式转发：上游 OpenAI SSE 流 -> Anthropic SSE 事件
+func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, reqBodyStr string) {
+	defer sr.Body.Close()
+	start := time.Now()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	usage, firstByteMs, streamErr := StreamOpenAIToAnthropic(w, sr.Body, requestedModel)
+	duration := time.Since(start).Milliseconds()
+
+	// 没发任何事件 -> 上游空流或连接中断（常见于客户端切换时 ctx 取消），
+	// 返回 502 错误，避免 200 + 空 body 让客户端报 "empty or malformed response"
+	if firstByteMs == 0 {
+		errMsg := fmt.Sprintf("empty stream (status=%d, dur=%dms)", sr.StatusCode, duration)
+		if streamErr != nil {
+			errMsg += ": " + streamErr.Error()
+		}
+		fmt.Printf("[switch-free] 流式空转: up=%s model=%s %s\n", upName, requestedModel, errMsg)
+		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
+		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, errMsg, "POST", "/v1/messages", true, reqBodyStr, "")
+		entry.UsedModel = usedModel
+		s.recordLog(entry)
+		return
+	}
+
+	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/messages", true, reqBodyStr, "")
+	entry.UsedModel = usedModel
+	entry.FirstByteMs = firstByteMs
+	s.fillStreamLog(entry, usage, requestedModel)
+	s.recordLog(entry)
+}
+
+// streamOpenAIResponse 真流式转发：上游 OpenAI SSE 流透传给客户端
+func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, reqBodyStr string) {
+	defer sr.Body.Close()
+	start := time.Now()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	usage, firstByteMs, _ := StreamOpenAIPassthrough(w, sr.Body)
+	duration := time.Since(start).Milliseconds()
+
+	// 没发任何事件 -> 上游空流或连接中断，返回 502（避免 200 + 空 body）
+	if firstByteMs == 0 {
+		writeOpenAIError(w, http.StatusBadGateway, "上游返回空流或连接中断")
+		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/chat/completions", true, reqBodyStr, "")
+		entry.UsedModel = usedModel
+		s.recordLog(entry)
+		return
+	}
+
+	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/chat/completions", true, reqBodyStr, "")
+	entry.UsedModel = usedModel
+	entry.FirstByteMs = firstByteMs
+	s.fillStreamLog(entry, usage, requestedModel)
+	s.recordLog(entry)
 }

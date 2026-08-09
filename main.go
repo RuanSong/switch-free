@@ -213,14 +213,22 @@ func setupSystray(app *application.App, server *proxy.Server) {
 	}
 
 	menu := application.NewMenu()
+	// 首项作为程序名标题（禁用，仅展示；macOS 托盘不支持 hover tooltip）
+	menu.Add("Switch Free").SetEnabled(false)
+	menu.AddSeparator()
 	menu.Add("打开面板").OnClick(func(*application.Context) {
 		showWindow()
 	})
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
-		_ = server.Stop()
-		realQuit.Store(true) // 标记允许真正退出（ShouldQuit 放行）
-		app.Quit()
+		// 异步执行退出：macOS 托盘菜单回调在主线程，同步调用 app.Quit() 会
+		// 触发 NSApp.terminate，而 terminate 需要 runloop 迭代才能完成，
+		// 此时主线程卡在菜单回调未返回 -> 死锁卡死。放到 goroutine 让回调立即返回。
+		go func() {
+			_ = server.StopQuiet() // 先关端口服务（不推事件，避免 Event.Emit 在退出时卡死）
+			realQuit.Store(true)   // 标记允许真正退出（ShouldQuit 放行）
+			app.Quit()
+		}()
 	})
 	tray.SetMenu(menu)
 

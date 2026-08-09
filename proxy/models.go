@@ -7,10 +7,11 @@ type JoyCodeModel struct {
 	Label           string `json:"label"`
 	Stream          bool   `json:"stream"`
 	OutputMaxTokens int    `json:"outputMaxTokens"`
+	Free            bool   `json:"free,omitempty"` // 限时免费
 }
 
 var JoyCodeModels = []JoyCodeModel{
-	{ID: "JoyAI-Code-1.5", Label: "JoyAI-Code-1.5", Stream: true, OutputMaxTokens: 64000},
+	{ID: "JoyAI-Code-1.5", Label: "JoyAI-Code-1.5", Stream: true, OutputMaxTokens: 64000, Free: true},
 	{ID: "MiniMax-M3-agent", Label: "MiniMax-M3", Stream: true, OutputMaxTokens: 64000},
 	{ID: "MiniMax-M2.7-agent", Label: "MiniMax-M2.7", Stream: false, OutputMaxTokens: 64000},
 	{ID: "Kimi-K2.6-agent", Label: "Kimi-K2.6", Stream: true, OutputMaxTokens: 64000},
@@ -40,15 +41,16 @@ func init() {
 // ====== DevEco 模型 ======
 
 type DevEcoModel struct {
-	ID      string `json:"id"`
-	Label   string `json:"label"`
+	ID       string `json:"id"`
+	Label    string `json:"label"`
 	Upstream string `json:"upstream"`
-	Context int    `json:"context"`
-	Output  int    `json:"output"`
+	Context  int    `json:"context"`
+	Output   int    `json:"output"`
+	Free     bool   `json:"free,omitempty"` // 限时免费
 }
 
 var DevEcoModels = []DevEcoModel{
-	{ID: "glm-5.1", Label: "GLM-5.1 (DevEco)", Upstream: "GLM-5.1", Context: 170000, Output: 131072},
+	{ID: "glm-5.1", Label: "GLM-5.1 (DevEco)", Upstream: "GLM-5.1", Context: 170000, Output: 131072, Free: true},
 }
 
 var DevEcoModelIDs map[string]bool
@@ -76,17 +78,18 @@ type OpenCodeModel struct {
 	Label   string `json:"label"`
 	Context int    `json:"context"`
 	Output  int    `json:"output"`
+	Free    bool   `json:"free,omitempty"` // 限时免费
 }
 
 var OpenCodeModels = []OpenCodeModel{
-	{ID: "deepseek-v4-flash-free", Label: "DeepSeek V4 Flash Free", Context: 200000, Output: 128000},
-	{ID: "mimo-v2.5-free", Label: "MiMo V2.5 Free", Context: 262144, Output: 64000},
-	{ID: "ling-3.0-flash-free", Label: "Ling 3.0 Flash Free", Context: 262144, Output: 32768},
-	{ID: "ling-3.0-tiny-free", Label: "Ling 3.0 Tiny Free", Context: 0, Output: 0},
-	{ID: "nemotron-3-ultra-free", Label: "Nemotron 3 Ultra Free", Context: 0, Output: 0},
-	{ID: "north-mini-code-free", Label: "North Mini Code Free", Context: 256000, Output: 64000},
-	{ID: "laguna-s-2.1-free", Label: "Laguna S 2.1 Free", Context: 256000, Output: 32000},
-	{ID: "longcat-2.0-free", Label: "LongCat 2.0 Free", Context: 0, Output: 0},
+	{ID: "deepseek-v4-flash-free", Label: "DeepSeek V4 Flash Free", Context: 200000, Output: 128000, Free: true},
+	{ID: "mimo-v2.5-free", Label: "MiMo V2.5 Free", Context: 262144, Output: 64000, Free: true},
+	{ID: "ling-3.0-flash-free", Label: "Ling 3.0 Flash Free", Context: 262144, Output: 32768, Free: true},
+	{ID: "ling-3.0-tiny-free", Label: "Ling 3.0 Tiny Free", Context: 0, Output: 0, Free: true},
+	{ID: "nemotron-3-ultra-free", Label: "Nemotron 3 Ultra Free", Context: 0, Output: 0, Free: true},
+	{ID: "north-mini-code-free", Label: "North Mini Code Free", Context: 256000, Output: 64000, Free: true},
+	{ID: "laguna-s-2.1-free", Label: "Laguna S 2.1 Free", Context: 256000, Output: 32000, Free: true},
+	{ID: "longcat-2.0-free", Label: "LongCat 2.0 Free", Context: 0, Output: 0, Free: true},
 }
 
 var OpenCodeModelIDs map[string]bool
@@ -113,6 +116,7 @@ type WorkBuddyModel struct {
 	Vision    bool   `json:"vision"`
 	ToolCall  bool   `json:"toolCall"`
 	Reasoning bool   `json:"reasoning"`
+	Free      bool   `json:"free,omitempty"` // 限时免费
 }
 
 var WorkBuddyModels = []WorkBuddyModel{
@@ -129,7 +133,7 @@ var WorkBuddyModels = []WorkBuddyModel{
 	{ID: "wb/deepseek-v3-2-volc", Label: "DeepSeek-V3-2-Volc (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "wb/hunyuan-2.0-thinking", Label: "Hunyuan-2.0-Thinking (WorkBuddy)", Output: 16000, ToolCall: true, Reasoning: true},
 	{ID: "wb/hunyuan-2.0-instruct", Label: "Hunyuan-2.0-Instruct (WorkBuddy)", Output: 24000, ToolCall: true},
-	{ID: "wb/hy3", Label: "Hunyuan Hy3 (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "wb/hy3", Label: "Hunyuan Hy3 (WorkBuddy)", Output: 32000, Vision: true, ToolCall: true, Reasoning: true, Free: true},
 }
 
 var WorkBuddyModelIDs map[string]bool
@@ -243,6 +247,7 @@ type ModelInfo struct {
 	Output    int    `json:"_output,omitempty"`
 	Vision    bool   `json:"_vision,omitempty"`
 	ToolCall  bool   `json:"_toolCall,omitempty"`
+	Free      bool   `json:"_free,omitempty"` // 限时免费标识
 }
 
 func lower(s string) string {

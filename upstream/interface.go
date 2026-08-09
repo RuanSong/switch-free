@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"io"
 
 	"switchfree/creds"
 )
@@ -31,6 +32,21 @@ type Response struct {
 	StatusCode int
 	Body       []byte
 	ReqID      string
+}
+
+// StreamResponse 流式响应
+// 200 时 Body 是 SSE 流（由调用方在转发结束后 Close）；
+// 非 200 时 Body 是已读入的错误体 reader，调用方可读后 Close
+type StreamResponse struct {
+	StatusCode int
+	Body       io.ReadCloser
+	ReqID      string
+}
+
+// StreamCaller 可选接口：支持真流式调用（上游 stream:true，返回 SSE 流）
+// 未实现该接口的上游走伪流式（Call + 代理拆 SSE）
+type StreamCaller interface {
+	CallStream(ctx context.Context, body []byte) (*StreamResponse, error)
 }
 
 // VerifyResult 预检结果

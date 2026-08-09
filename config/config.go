@@ -66,16 +66,13 @@ func generateAPIKey() string {
 	return "rs-" + uuid.NewString()
 }
 
-// Defaults 返回默认配置（等价于当前硬编码行为）
+// Defaults 返回默认配置（首次安装：不预设模型，用户按需配置）
 func Defaults() *Config {
 	return &Config{
-		Mode: "auto",
-		AutoChain: []AgentModels{
-			{Upstream: "deveco", Models: []string{proxy.AutoModel}},
-			{Upstream: "joycode", Models: []string{proxy.AutoModelJoyCodeFallback}},
-		},
+		Mode:            "auto",
+		AutoChain:       []AgentModels{},
 		ManualFallbacks: map[string][]proxy.ModelRef{},
-		GlobalFallback:  proxy.ModelRef{Upstream: "joycode", Model: proxy.AutoModelJoyCodeFallback},
+		GlobalFallback:  proxy.ModelRef{},
 		Port:            DefaultPort,
 		AutoUpdate: UpdateConfig{
 			Enabled:  true,
@@ -188,10 +185,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("无效的模式: %s，应为 auto 或 manual", c.Mode)
 	}
 
-	// auto 链
-	if len(c.AutoChain) == 0 {
-		return fmt.Errorf("autoChain 不能为空")
-	}
+	// auto 链（允许为空，首次安装时用户未配置）
 	for _, ag := range c.AutoChain {
 		if !isValidUpstream(ag.Upstream) {
 			return fmt.Errorf("无效的 upstream: %s", ag.Upstream)
@@ -215,8 +209,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// 全局兜底
-	if !isValidUpstream(c.GlobalFallback.Upstream) {
+	// 全局兜底（允许为空，首次安装时用户未配置）
+	if c.GlobalFallback.Upstream != "" && !isValidUpstream(c.GlobalFallback.Upstream) {
 		return fmt.Errorf("globalFallback 的 upstream 无效: %s", c.GlobalFallback.Upstream)
 	}
 

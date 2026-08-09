@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UpdaterService, ConfigService } from "../../bindings/switchfree/service";
 import type { Config, AgentModels } from "../../bindings/switchfree/config/models";
 import type { ModelRef } from "../../bindings/switchfree/proxy/models";
-import type { UpstreamModels, ModelOption } from "../../bindings/switchfree/service/models";
+import type { UpstreamModels } from "../../bindings/switchfree/service/models";
 import type { AllCredStatus } from "../../bindings/switchfree/service/models";
 import CopyButton from "./CopyButton";
 import PricingEditor from "./PricingEditor";
 import UpdatePanel from "./UpdatePanel";
+import { ModelSelect, FreeBadge } from "./ModelSelect";
 
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
@@ -14,6 +15,18 @@ const UPSTREAM_LABEL: Record<string, string> = {
   opencode: "OpenCode",
   workbuddy: "WorkBuddy",
 };
+
+type SettingsTab = "general" | "mode" | "pricing" | "update" | "about";
+
+// modeSnapshot 运行模式相关配置的快照字符串（用于检测未保存更改）
+function modeSnapshot(c: Config): string {
+  return JSON.stringify({
+    mode: c.mode,
+    autoChain: c.autoChain,
+    manualFallbacks: c.manualFallbacks,
+    globalFallback: c.globalFallback,
+  });
+}
 
 export default function Settings({ creds, config }: { creds: AllCredStatus | null; config: Config | null }) {
   // config 由 App 提供（已在启动时拉好），不再异步等待，避免"加载中"
@@ -29,8 +42,12 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const [savingPort, setSavingPort] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
   const [showKey, setShowKey] = useState(false);
-  // 设置页 tab：通用 / 运行模式 / 费率 / 更新
-  const [tab, setTab] = useState<"general" | "mode" | "pricing" | "update" | "about">("general");
+  // 设置页 tab：运行模式 / 通用 / 费率 / 更新 / 关于
+  const [tab, setTab] = useState<SettingsTab>("mode");
+  // 切换 tab 时的待确认目标（运行模式有未保存更改时弹窗）
+  const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
+  // 上次保存的运行模式配置快照（用于检测未保存更改）
+  const savedModeRef = useRef<string>("");
 
   const flash = (type: "ok" | "err", text: string) => {
     setMsg({ type, text });
@@ -46,7 +63,10 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   useEffect(() => {
     load();
     // config prop 变化时同步（App 刷新后）
-    if (config) setCfg(config);
+    if (config) {
+      setCfg(config);
+      savedModeRef.current = modeSnapshot(config);
+    }
   }, []);
 
   const refreshModels = async () => {
@@ -72,13 +92,16 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
 
   if (!cfg) return <div className="p-6 text-[var(--color-text-dim)]">加载配置中...</div>;
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     setSaving(true);
     try {
       await ConfigService.SaveConfig(cfg);
+      savedModeRef.current = modeSnapshot(cfg);
       flash("ok", "配置已保存并生效");
+      return true;
     } catch (e) {
       flash("err", `保存失败: ${e}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -88,10 +111,46 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     if (!confirm("确定重置为默认配置？")) return;
     try {
       await ConfigService.ResetConfig();
+      const fresh = await ConfigService.GetConfig();
+      if (fresh) {
+        setCfg(fresh);
+        savedModeRef.current = modeSnapshot(fresh);
+      }
       await load();
       flash("ok", "已重置为默认配置");
     } catch (e) {
       flash("err", `重置失败: ${e}`);
+    }
+  };
+
+  // hasModeChanges 运行模式配置是否有未保存的更改
+  const hasModeChanges = (): boolean => {
+    if (!cfg) return false;
+    return modeSnapshot(cfg) !== savedModeRef.current;
+  };
+
+  // 切换 tab：从运行模式切走且有未保存更改时弹窗确认
+  const handleTabChange = (target: SettingsTab) => {
+    if (tab === "mode" && target !== "mode" && hasModeChanges()) {
+      setPendingTab(target);
+    } else {
+      setTab(target);
+    }
+  };
+
+  // 弹窗：保存并切换（复用 save，保存失败则留在当前页）
+  const confirmSaveAndSwitch = async () => {
+    const target = pendingTab;
+    const ok = await save();
+    setPendingTab(null);
+    if (ok && target) setTab(target);
+  };
+
+  // 弹窗：不保存直接切换
+  const discardAndSwitch = () => {
+    if (pendingTab) {
+      setTab(pendingTab);
+      setPendingTab(null);
     }
   };
 
@@ -139,7 +198,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
 
   // ====== auto 链操作 ======
   const allModels = available.flatMap((u) =>
-    u.models.map((m) => ({ upstream: u.upstream, model: m.id, label: m.label }))
+    u.models.map((m) => ({ upstream: u.upstream, model: m.id, label: m.label, free: m.free }))
   );
 
   const addAutoItem = (upstream: string, model: string) => {
@@ -215,13 +274,52 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         </div>
       )}
 
+      {/* 切换 tab 时的未保存确认弹窗 */}
+      {pendingTab && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setPendingTab(null)}
+        >
+          <div
+            className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] shadow-xl max-w-sm w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-semibold mb-2">未保存的更改</h3>
+            <p className="text-sm text-[var(--color-text-dim)] mb-4">
+              运行模式配置有未保存的更改，是否保存后切换？
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingTab(null)}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+              >
+                取消
+              </button>
+              <button
+                onClick={discardAndSwitch}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+              >
+                不保存
+              </button>
+              <button
+                onClick={confirmSaveAndSwitch}
+                disabled={saving}
+                className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+              >
+                {saving ? "保存中..." : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 顶部 tab 导航 */}
       <div className="flex gap-1 border-b border-[var(--color-border)] pb-px">
-        <TabBtn label="⚙️ 通用" active={tab === "general"} onClick={() => setTab("general")} />
-        <TabBtn label="🚀 运行模式" active={tab === "mode"} onClick={() => setTab("mode")} />
-        <TabBtn label="💰 费率" active={tab === "pricing"} onClick={() => setTab("pricing")} />
-        <TabBtn label="🔄 更新" active={tab === "update"} onClick={() => setTab("update")} />
-        <TabBtn label="ℹ️ 关于" active={tab === "about"} onClick={() => setTab("about")} />
+        <TabBtn label="🚀 运行模式" active={tab === "mode"} onClick={() => handleTabChange("mode")} />
+        <TabBtn label="⚙️ 通用" active={tab === "general"} onClick={() => handleTabChange("general")} />
+        <TabBtn label="💰 费率" active={tab === "pricing"} onClick={() => handleTabChange("pricing")} />
+        <TabBtn label="🔄 更新" active={tab === "update"} onClick={() => handleTabChange("update")} />
+        <TabBtn label="ℹ️ 关于" active={tab === "about"} onClick={() => handleTabChange("about")} />
       </div>
 
       {/* ===== 通用：代理端口 + 配置 JSON ===== */}
@@ -404,6 +502,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                   <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{UPSTREAM_LABEL[item.upstream]}</span>
                   <span className="flex-1 text-sm font-mono truncate">{item.model}</span>
                   {opt && <span className="text-xs text-[var(--color-text-dim)] truncate">{opt.label}</span>}
+                  {opt?.free && <FreeBadge />}
                   <span className={`text-xs px-1.5 py-0.5 rounded ${valid ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}`}>
                     {valid ? "✓" : "✗"}
                   </span>
@@ -429,6 +528,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         </p>
         <ModelPicker
           available={available}
+          credValid={credValid}
           value={cfg.globalFallback}
           onChange={(ref) => setCfg({ ...cfg, globalFallback: ref })}
         />
@@ -480,7 +580,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
           >
             <option value="">选择模型...</option>
-            {allModels.map((m) => (
+            {allModels.filter((m) => credValid[m.upstream]).map((m) => (
               <option key={`${m.upstream}-${m.model}`} value={m.model}>
                 {UPSTREAM_LABEL[m.upstream]}/{m.model}
               </option>
@@ -492,20 +592,16 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             onChange={(e) => setNewManualUpstream(e.target.value)}
             className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
           >
-            {available.map((u) => (
+            {available.filter((u) => credValid[u.upstream]).map((u) => (
               <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream]}</option>
             ))}
           </select>
-          <select
+          <ModelSelect
+            options={available.find((u) => u.upstream === newManualUpstream && credValid[u.upstream])?.models ?? []}
             value={newManualModel}
-            onChange={(e) => setNewManualModel(e.target.value)}
-            className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
-          >
-            <option value="">选择模型...</option>
-            {available.find((u) => u.upstream === newManualUpstream)?.models.map((m: ModelOption) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+            onChange={(id) => setNewManualModel(id)}
+            placeholder="选择模型..."
+          />
           <button
             onClick={addManualFallback}
             disabled={!newManualKey || !newManualModel}
@@ -583,10 +679,11 @@ function AutoChainAdder({
   credValid: Record<string, boolean>;
   onAdd: (upstream: string, model: string) => void;
 }) {
-  const [upstream, setUpstream] = useState("deveco");
+  const validAvailable = available.filter((u) => credValid[u.upstream]);
+  const [upstream, setUpstream] = useState(validAvailable[0]?.upstream ?? "");
   const [model, setModel] = useState("");
 
-  const models = available.find((u) => u.upstream === upstream)?.models ?? [];
+  const models = validAvailable.find((u) => u.upstream === upstream)?.models ?? [];
 
   return (
     <div className="flex items-center gap-2 flex-wrap pt-3 border-t border-[var(--color-border)]">
@@ -598,22 +695,22 @@ function AutoChainAdder({
         }}
         className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
       >
-        {available.map((u) => (
+        {validAvailable.length === 0 && (
+          <option value="">无可用凭据</option>
+        )}
+        {validAvailable.map((u) => (
           <option key={u.upstream} value={u.upstream}>
-            {UPSTREAM_LABEL[u.upstream]} {credValid[u.upstream] ? "✓" : "✗"}
+            {UPSTREAM_LABEL[u.upstream]}
           </option>
         ))}
       </select>
-      <select
+      <ModelSelect
+        options={models}
         value={model}
-        onChange={(e) => setModel(e.target.value)}
-        className="flex-1 min-w-[200px] px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
-      >
-        <option value="">选择模型...</option>
-        {models.map((m: ModelOption) => (
-          <option key={m.id} value={m.id}>{m.label}</option>
-        ))}
-      </select>
+        onChange={(id) => setModel(id)}
+        placeholder="选择模型..."
+        className="flex-1 min-w-[200px]"
+      />
       <button
         onClick={() => {
           if (model) {
@@ -621,7 +718,7 @@ function AutoChainAdder({
             setModel("");
           }
         }}
-        disabled={!model}
+        disabled={!model || !upstream}
         className="px-3 py-1 text-xs rounded-md bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
       >
         + 添加到链
@@ -633,37 +730,41 @@ function AutoChainAdder({
 // ====== ModelPicker：单个模型选择器（兜底用） ======
 function ModelPicker({
   available,
+  credValid,
   value,
   onChange,
 }: {
   available: UpstreamModels[];
+  credValid: Record<string, boolean>;
   value: ModelRef;
   onChange: (ref: ModelRef) => void;
 }) {
-  const models = available.find((u) => u.upstream === value.upstream)?.models ?? [];
+  const validAvailable = available.filter((u) => credValid[u.upstream]);
+  const models = validAvailable.find((u) => u.upstream === value.upstream)?.models ?? [];
   return (
     <div className="flex items-center gap-2">
       <select
         value={value.upstream}
         onChange={(e) => {
-          const first = available.find((u) => u.upstream === e.target.value)?.models[0];
+          const first = validAvailable.find((u) => u.upstream === e.target.value)?.models[0];
           onChange({ upstream: e.target.value, model: first?.id ?? "" } as ModelRef);
         }}
         className="px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
       >
-        {available.map((u) => (
+        {validAvailable.length === 0 && (
+          <option value="">无可用凭据</option>
+        )}
+        {validAvailable.map((u) => (
           <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream]}</option>
         ))}
       </select>
-      <select
+      <ModelSelect
+        options={models}
         value={value.model}
-        onChange={(e) => onChange({ upstream: value.upstream, model: e.target.value } as ModelRef)}
-        className="flex-1 px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
-      >
-        {models.map((m: ModelOption) => (
-          <option key={m.id} value={m.id}>{m.label}</option>
-        ))}
-      </select>
+        onChange={(id) => onChange({ upstream: value.upstream, model: id } as ModelRef)}
+        placeholder="选择模型..."
+        className="flex-1"
+      />
     </div>
   );
 }
@@ -721,3 +822,4 @@ function AboutSection() {
     </section>
   );
 }
+

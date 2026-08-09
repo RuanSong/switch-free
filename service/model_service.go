@@ -21,6 +21,7 @@ type ModelDetail struct {
 	Output   int    `json:"output"`
 	Vision   bool   `json:"vision"`
 	ToolCall bool   `json:"toolCall"`
+	Free     bool   `json:"free,omitempty"` // 限时免费标识
 }
 
 // GetModels 获取全部可用模型
@@ -37,7 +38,7 @@ func (s *ModelService) GetModels() []*ModelDetail {
 	for _, m := range proxy.OpenCodeModels {
 		result = append(result, &ModelDetail{
 			ID: m.ID, Label: m.Label, Upstream: "opencode",
-			Stream: true, Context: m.Context, Output: m.Output, ToolCall: true,
+			Stream: true, Context: m.Context, Output: m.Output, ToolCall: true, Free: m.Free,
 		})
 	}
 
@@ -45,7 +46,7 @@ func (s *ModelService) GetModels() []*ModelDetail {
 	for _, m := range proxy.DevEcoModels {
 		result = append(result, &ModelDetail{
 			ID: m.ID, Label: m.Label, Upstream: "deveco",
-			Stream: true, Context: m.Context, Output: m.Output, ToolCall: true,
+			Stream: true, Context: m.Context, Output: m.Output, ToolCall: true, Free: m.Free,
 		})
 	}
 
@@ -53,7 +54,7 @@ func (s *ModelService) GetModels() []*ModelDetail {
 	for _, m := range proxy.JoyCodeModels {
 		result = append(result, &ModelDetail{
 			ID: m.ID, Label: m.Label, Upstream: "joycode",
-			Stream: m.Stream, Output: m.OutputMaxTokens, ToolCall: true,
+			Stream: m.Stream, Output: m.OutputMaxTokens, ToolCall: true, Free: m.Free,
 		})
 	}
 
@@ -62,7 +63,7 @@ func (s *ModelService) GetModels() []*ModelDetail {
 		result = append(result, &ModelDetail{
 			ID: m.ID, Label: m.Label, Upstream: "workbuddy",
 			Stream: true, Context: m.Context, Output: m.Output,
-			Vision: m.Vision, ToolCall: m.ToolCall,
+			Vision: m.Vision, ToolCall: m.ToolCall, Free: m.Free,
 		})
 	}
 

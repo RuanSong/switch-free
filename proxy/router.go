@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -100,6 +101,86 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 		return nil, lastUpstream, "", lastErr
 	}
 	return nil, "", "", fmt.Errorf("配置链全失败，且无有效凭据的 upstream")
+}
+
+// executeChainStream 流式版 executeChain：只走支持 StreamCaller 的上游
+// 返回 nil, "", "", nil 表示无流式上游可用（调用方回退伪流式）
+// 返回 nil, up, "", err 表示有流式上游但全部失败
+func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain []ModelRef, requestedModel string) (*upstream.StreamResponse, string, string, error) {
+	var lastErr error
+	var lastUpstream string
+	triedStream := false
+
+	for _, ref := range chain {
+		up := s.pickUpstream(ref.Upstream)
+		if up == nil {
+			continue
+		}
+		if !up.HasValidCreds() {
+			fmt.Printf("[switch-free] 跳过 %s/%s（凭据无效）\n", ref.Upstream, ref.Model)
+			s.recordSkipLog(requestedModel, ref, "cred_invalid")
+			continue
+		}
+		// 类型断言：只走支持真流式的上游（WorkBuddy/OpenCode）
+		sc, ok := up.(upstream.StreamCaller)
+		if !ok {
+			continue // 不支持流式，跳过（JoyCode/DevEco 走伪流式）
+		}
+		triedStream = true
+
+		oaiBytes, err := s.buildOpenAIBody(body, ref)
+		if err != nil {
+			lastErr = err
+			lastUpstream = ref.Upstream
+			continue
+		}
+
+		sr, err := sc.CallStream(ctx, oaiBytes)
+		if err != nil {
+			fmt.Printf("[switch-free] %s/%s 流式调用失败: %v，降级\n", ref.Upstream, ref.Model, err)
+			lastErr = err
+			lastUpstream = ref.Upstream
+			s.recordFallbackLog(requestedModel, ref, "call_error", err.Error())
+			continue
+		}
+
+		if sr.StatusCode != 200 {
+			errBody, _ := io.ReadAll(sr.Body)
+			sr.Body.Close()
+			snippet := string(errBody)
+			if len(snippet) > 120 {
+				snippet = snippet[:120]
+			}
+			fmt.Printf("[switch-free] %s/%s 流式上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, sr.StatusCode, snippet)
+			lastErr = fmt.Errorf("upstream error: %s", snippet)
+			lastUpstream = ref.Upstream
+			s.recordFallbackLog(requestedModel, ref, "upstream_error", snippet)
+			continue
+		}
+
+		return sr, ref.Upstream, ref.Model, nil
+	}
+
+	if !triedStream {
+		return nil, "", "", nil // 无流式上游可用，回退伪流式
+	}
+	return nil, lastUpstream, "", lastErr // 有流式上游但全失败
+}
+
+// callUpstreamStream 流式上游分发（Anthropic/OpenAI 入口共用）
+func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*upstream.StreamResponse, string, string, error) {
+	var requestedModel string
+	switch b := body.(type) {
+	case *AnthropicRequest:
+		requestedModel = b.Model
+	case map[string]interface{}:
+		requestedModel, _ = b["model"].(string)
+	}
+	if requestedModel == "" {
+		requestedModel = "auto"
+	}
+	chain := s.ConfigResolver.Resolve(requestedModel)
+	return s.executeChainStream(ctx, body, chain, requestedModel)
 }
 
 // pickUpstream 按 upstream 名获取适配器

@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"compress/gzip"
@@ -240,6 +241,160 @@ func (u *JoyCodeUpstream) doCall(ctx context.Context, body []byte, cred *creds.J
 		ReqID:      reqID,
 	}, nil
 }
+
+// CallStream 真流式调用 JoyCode（stream:true，Color 网关返回标准 OpenAI SSE）
+// 部分模型被网关灰度拒绝返回 COLOR_FORWARD_EXCEPTION 事件，doCallStream 通过 peek 检测后虚拟 406 降级
+func (u *JoyCodeUpstream) CallStream(ctx context.Context, body []byte) (*StreamResponse, error) {
+	cred, err := u.mgr.EnsureCreds()
+	if err != nil {
+		return nil, err
+	}
+	sr, err := u.doCallStream(ctx, body, cred)
+	if err != nil {
+		return nil, err
+	}
+	// 401 重试（纯 status 判断，流式下放弃 body code:401 检测）
+	if sr.StatusCode == 401 {
+		fmt.Println("[switch-free] JoyCode 流式收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
+		sr.Body.Close()
+		u.mgr.InvalidateCreds()
+		oldKey := cred.PtKey
+		newCred, err := u.mgr.EnsureCreds()
+		if err != nil {
+			return sr, nil
+		}
+		if newCred.PtKey != oldKey {
+			return u.doCallStream(ctx, body, newCred)
+		}
+	}
+	return sr, nil
+}
+
+// doCallStream 流式版 doCall
+// - 保持 Accept:application/json（流式由 body stream:true 触发，不改 Accept 避免网关路由风险）
+// - peek 检测 COLOR_FORWARD_EXCEPTION（406 灰度拒绝，HTTP 200 但流是错误事件）-> 虚拟 406 降级
+// - 正常则返回 gzip 解压后的 SSE 流（bufio.Reader 保留 peek 数据供转换器读取）
+func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *creds.JoyCodeCred) (*StreamResponse, error) {
+	// 注入业务字段 + 覆盖 stream:true
+	injected := injectJoyCodeFields(body, cred)
+	var m map[string]interface{}
+	if err := json.Unmarshal(injected, &m); err != nil {
+		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
+	}
+	m["stream"] = true
+	bodyBytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
+	}
+
+	t := time.Now().UnixMilli()
+	sign := creds.ColorSign("joycode_ide", "chat_completions", t, nil)
+	url := fmt.Sprintf("%s/api?appid=joycode_ide&functionId=chat_completions&t=%d&sign=%s",
+		cred.Origin, t, sign)
+	reqID := fmt.Sprintf("req-%d-%s", t/1000, randString(6))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("x-ms-client-request-id", reqID)
+	req.Header.Set("ptKey", cred.PtKey)
+	req.Header.Set("loginType", cred.LoginType)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	httpResp, err := u.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 非 200：读错误体返回
+	if httpResp.StatusCode != 200 {
+		errBody, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		return &StreamResponse{
+			StatusCode: httpResp.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(errBody)),
+			ReqID:      reqID,
+		}, nil
+	}
+
+	// 200：构造 reader（含 gzip 解压）
+	var rc io.ReadCloser = httpResp.Body
+	if httpResp.Header.Get("Content-Encoding") == "gzip" {
+		gr, err := gzip.NewReader(httpResp.Body)
+		if err != nil {
+			httpResp.Body.Close()
+			return nil, fmt.Errorf("gzip 解压失败: %w", err)
+		}
+		rc = &gzipReadCloser{gr: gr, underlying: httpResp.Body}
+	}
+
+	// peek 检测空流 + COLOR_FORWARD_EXCEPTION（406 灰度拒绝，HTTP 200 但流是错误事件）
+	br := bufio.NewReader(rc)
+	peeked, _ := br.Peek(256)
+	if len(peeked) == 0 {
+		rc.Close()
+		fmt.Printf("[switch-free] joycode 流式上游返回空流，降级\n")
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
+			ReqID:      reqID,
+		}, nil
+	}
+	if bytes.Contains(peeked, []byte("COLOR_FORWARD_EXCEPTION")) {
+		errBody, _ := io.ReadAll(br)
+		rc.Close()
+		fmt.Printf("[switch-free] JoyCode 流式收到 COLOR_FORWARD_EXCEPTION（406 灰度拒绝），降级到伪流式\n")
+		return &StreamResponse{
+			StatusCode: 406, // 虚拟 406，让 executeChainStream 降级到伪流式（Call 非流式）
+			Body:       io.NopCloser(bytes.NewReader(errBody)),
+			ReqID:      reqID,
+		}, nil
+	}
+	if !bytes.Contains(peeked, []byte("data:")) || !bytes.Contains(peeked, []byte("choices")) {
+		rc.Close()
+		snippet := string(peeked)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		fmt.Printf("[switch-free] joycode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		return &StreamResponse{
+			StatusCode: 502,
+			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			ReqID:      reqID,
+		}, nil
+	}
+
+	// 正常 SSE 流（bufio.Reader 包含 peek 的数据，转换器能读到完整流）
+	return &StreamResponse{
+		StatusCode: 200,
+		Body:       &bufferedReadCloser{br: br, c: rc},
+		ReqID:      reqID,
+	}, nil
+}
+
+// gzipReadCloser 包装 gzip.Reader + 底层 ReadCloser，Close 同时关闭两者
+type gzipReadCloser struct {
+	gr         *gzip.Reader
+	underlying io.Closer
+}
+
+func (g *gzipReadCloser) Read(b []byte) (int, error) { return g.gr.Read(b) }
+func (g *gzipReadCloser) Close() error {
+	g.gr.Close()
+	return g.underlying.Close()
+}
+
+// bufferedReadCloser 包装 bufio.Reader + ReadCloser，保留 peek 的数据供后续读取
+type bufferedReadCloser struct {
+	br *bufio.Reader
+	c  io.Closer
+}
+
+func (b *bufferedReadCloser) Read(p []byte) (int, error) { return b.br.Read(p) }
+func (b *bufferedReadCloser) Close() error               { return b.c.Close() }
 
 // isPtKeyInvalid 检测响应是否 pt_key 失效
 func isPtKeyInvalid(resp *Response) bool {

@@ -81,6 +81,7 @@ func applyLocalMeta(mi *ModelInfo, upstreamName string) {
 				mi.Label = lm.Label
 			}
 			mi.Stream = lm.Stream // 本地的 stream 标记更准（接口的 supportStream 对部分模型不准）
+			mi.Free = lm.Free
 		}
 	case "deveco":
 		// 接口返回 model_id（如 GLM-5.1），需反向映射到本地 id（如 glm-5.1）
@@ -93,6 +94,7 @@ func applyLocalMeta(mi *ModelInfo, upstreamName string) {
 				if mi.Label == "" || mi.Label == mi.ID {
 					mi.Label = lm.Label
 				}
+				mi.Free = lm.Free
 			}
 		}
 		// DevEco 本地白名单的 context/output 通常更准（接口实测一致）
@@ -103,6 +105,7 @@ func applyLocalMeta(mi *ModelInfo, upstreamName string) {
 			mi.Output = lm.Output
 			mi.Stream = true
 			mi.ToolCall = true
+			mi.Free = lm.Free
 		}
 	case "workbuddy":
 		// WorkBuddy 无实时接口，本地白名单即完整数据
@@ -118,6 +121,7 @@ func applyLocalMeta(mi *ModelInfo, upstreamName string) {
 			}
 			mi.Vision = lm.Vision
 			mi.ToolCall = lm.ToolCall
+			mi.Free = lm.Free
 		}
 	}
 }
@@ -131,7 +135,7 @@ func localModels(upstreamName string) []ModelInfo {
 			r = append(r, ModelInfo{
 				ID: m.ID, Label: m.Label, Upstream: "joycode",
 				Stream: m.Stream, Output: m.OutputMaxTokens, ToolCall: true,
-				Object: "model", Created: 1700000000,
+				Free: m.Free, Object: "model", Created: 1700000000,
 			})
 		}
 		return r
@@ -141,7 +145,7 @@ func localModels(upstreamName string) []ModelInfo {
 			r = append(r, ModelInfo{
 				ID: m.ID, Label: m.Label, Upstream: "deveco",
 				Stream: true, Context: m.Context, Output: m.Output, ToolCall: true,
-				Object: "model", Created: 1700000000,
+				Free: m.Free, Object: "model", Created: 1700000000,
 			})
 		}
 		return r
@@ -151,7 +155,7 @@ func localModels(upstreamName string) []ModelInfo {
 			r = append(r, ModelInfo{
 				ID: m.ID, Label: m.Label, Upstream: "opencode",
 				Stream: true, Context: m.Context, Output: m.Output, ToolCall: true,
-				Object: "model", Created: 1700000000,
+				Free: m.Free, Object: "model", Created: 1700000000,
 			})
 		}
 		return r
@@ -161,7 +165,7 @@ func localModels(upstreamName string) []ModelInfo {
 			r = append(r, ModelInfo{
 				ID: m.ID, Label: m.Label, Upstream: "workbuddy",
 				Stream: true, Context: m.Context, Output: m.Output,
-				Vision: m.Vision, ToolCall: m.ToolCall,
+				Vision: m.Vision, ToolCall: m.ToolCall, Free: m.Free,
 				Object: "model", Created: 1700000000,
 			})
 		}
