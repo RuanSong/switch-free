@@ -52,7 +52,7 @@ var AgentRegistry = []AgentInfo{
 		LoginCmd:    "deveco auth login",
 		LoginURL:    "https://cn.devecostudio.huawei.com",
 		ProbePaths: []string{
-			"~/.config/deveco/token.dek",
+			"~/.local/share/deveco/auth.json",
 		},
 	},
 	{

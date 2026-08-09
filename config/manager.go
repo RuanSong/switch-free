@@ -48,6 +48,13 @@ func (m *Manager) GetMode() string {
 	return m.config.GetMode()
 }
 
+// GetAPIKey 获取当前 apiKey（供代理鉴权使用）
+func (m *Manager) GetAPIKey() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.GetAPIKey()
+}
+
 // SaveConfig 保存并热加载新配置
 // 调用方提供新 *Config 对象（通常来自前端），由 Manager 校验 + 替换 + 写盘
 func (m *Manager) SaveConfig(newCfg *Config) error {
@@ -72,9 +79,18 @@ func (m *Manager) SaveConfig(newCfg *Config) error {
 	return nil
 }
 
-// ResetConfig 重置为默认配置
+// ResetConfig 重置为默认配置（保留现有 apiKey，避免客户端接入中断）
 func (m *Manager) ResetConfig() error {
-	return m.SaveConfig(Defaults())
+	m.mu.RLock()
+	oldKey := m.config.APIKey
+	m.mu.RUnlock()
+	d := Defaults()
+	if oldKey != "" {
+		d.APIKey = oldKey
+	} else {
+		d.APIKey = generateAPIKey()
+	}
+	return m.SaveConfig(d)
 }
 
 // GetConfig 获取当前配置（供前端 GetConfig 使用，返回指针）

@@ -1,13 +1,18 @@
-# Switch Free - 构建 / 发布 / 推码
+# Switch Free - 构建 / 打包 / 发布
 #
 # 用法:
 #   make build          # 构建本机 macOS 桌面版（bin/switch-free）
+#   make package        # 打包 .app（含图标 + plist，macOS）
+#   make dmg            # 打包 macOS DMG 安装镜像（含 .app + Applications 快捷方式）
+#   make windows        # 交叉编译 Windows .exe（含图标嵌入）
+#   make nsis           # 打包 Windows NSIS 安装程序（需 makensis）
+#   make dist           # 一键打包所有平台安装包（DMG + NSIS）
 #   make build-server   # 构建本机 server 版（无 GUI，bin/switch-free-server）
 #   make test           # 运行 Go 测试
 #   make fmt            # 格式化 Go 代码
 #   make version        # 显示当前版本号
 #   make tag            # 打 git tag（如 make tag v=0.1.0）
-#   make release        # 创建 GitHub Release（含全部平台资产，需 CI 先构建上传）
+#   make release        # 创建 GitHub Release
 #   make push           # 推送代码 + tag 到远程
 #   make deploy         # 推码 + 打 tag + 发 release（一键发布）
 #   make clean          # 清理产物
@@ -21,16 +26,109 @@ TAG         ?= v$(V)
 APP         := switch-free
 # 产物目录
 DIST        := dist
+# 架构
+ARCH        ?= amd64
 
-.PHONY: build build-server test fmt version tag release push deploy clean
+.PHONY: build package dmg windows nsis dist build-server test fmt version tag release push deploy clean sync-version
+
+## 同步版本号：build/config.yml -> version/config.yml（version 包 embed 读取的唯一来源）
+sync-version:
+	@perl -i -pe 's/version: "[0-9]+\.[0-9]+\.[0-9]+"/version: "$(V)"/' version/config.yml
+	@echo "✅ 同步版本号 $(V) -> version/config.yml"
 
 ## 构建本机 macOS 桌面版（wails3 完整 GUI）
-build:
+build: sync-version
 	wails3 build
 	@echo "✅ 构建完成: bin/$(APP)"
 
+## 打包 .app（含图标 + plist + codesign，仅 macOS）
+package: build
+	@mkdir -p bin/$(APP).app/Contents/MacOS
+	@mkdir -p bin/$(APP).app/Contents/Resources
+	@cp build/darwin/icons.icns bin/$(APP).app/Contents/Resources/
+	@if [ -f build/darwin/Assets.car ]; then cp build/darwin/Assets.car bin/$(APP).app/Contents/Resources/; fi
+	@cp bin/$(APP) bin/$(APP).app/Contents/MacOS/
+	@cp build/darwin/Info.plist bin/$(APP).app/Contents/
+	@codesign --force --deep --sign - bin/$(APP).app
+	@echo "✅ 打包完成: bin/$(APP).app"
+
+## 打包 macOS DMG 安装镜像
+dmg: package
+	@mkdir -p $(DIST)
+	@rm -f $(DIST)/$(APP)-darwin-$(ARCH).dmg
+	@# 清理上次失败可能残留的挂载与临时 DMG（hdiutil create 不覆盖已存在文件）
+	@hdiutil detach "/Volumes/Switch Free" 2>/dev/null || true
+	@hdiutil detach "/Volumes/Switch Free 1" 2>/dev/null || true
+	@rm -f /tmp/switch-free_rw.dmg
+	@# 创建可写 DMG
+	hdiutil create -size 50m -volname "Switch Free" \
+		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-free_rw.dmg
+	@# 挂载
+	hdiutil attach /tmp/switch-free_rw.dmg -readwrite -noverify -noautoopen
+	@# 复制 .app + Applications 快捷方式 + 卷图标
+	cp -R bin/$(APP).app "/Volumes/Switch Free/Switch Free.app"
+	ln -sf /Applications "/Volumes/Switch Free/Applications"
+	cp build/darwin/icons.icns "/Volumes/Switch Free/.VolumeIcon.icns"
+	SetFile -c 'icnC' "/Volumes/Switch Free/.VolumeIcon.icns"
+	SetFile -a C "/Volumes/Switch Free"
+	@# 设置窗口布局（图标 96px，左侧 .app 右侧 Applications）
+	osascript -e 'tell application "Finder"' \
+		-e 'set dmg to disk "Switch Free"' \
+		-e 'open dmg' \
+		-e 'set dmgWin to container window of dmg' \
+		-e 'set current view of dmgWin to icon view' \
+		-e 'set icon size of icon view options of dmgWin to 96' \
+		-e 'set arrangement of icon view options of dmgWin to not arranged' \
+		-e 'set label position of icon view options of dmgWin to bottom' \
+		-e 'set bounds of dmgWin to {100, 100, 620, 460}' \
+		-e 'set position of item "Switch Free.app" of dmgWin to {175, 190}' \
+		-e 'set position of item "Applications" of dmgWin to {435, 190}' \
+		-e 'close dmgWin' \
+		-e 'end tell'
+	@sync
+	@sleep 2
+	@# 卸载并压缩为只读 DMG
+	hdiutil detach "/Volumes/Switch Free"
+	hdiutil convert /tmp/switch-free_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-$(ARCH).dmg
+	@rm -f /tmp/switch-free_rw.dmg
+	@echo "✅ DMG 打包完成: $(DIST)/$(APP)-darwin-$(ARCH).dmg"
+
+## 交叉编译 Windows .exe（含图标嵌入）
+windows: sync-version
+	@mkdir -p bin
+	@# 生成 syso（将图标嵌入 .exe）
+	wails3 generate syso -arch $(ARCH) \
+		-icon build/windows/icon.ico \
+		-manifest build/windows/wails.exe.manifest \
+		-info build/windows/info.json \
+		-out wails_windows_$(ARCH).syso
+	@# 交叉编译
+	GOOS=windows CGO_ENABLED=0 GOARCH=$(ARCH) \
+		go build -tags production -trimpath -buildvcs=false \
+		-ldflags="-w -s -H windowsgui" -o bin/$(APP).exe .
+	@rm -f wails_windows_$(ARCH).syso
+	@echo "✅ Windows 构建完成: bin/$(APP).exe"
+
+## 打包 Windows NSIS 安装程序（需 makensis）
+nsis: windows
+	@mkdir -p $(DIST)
+	@# 生成 WebView2 引导程序
+	wails3 generate webview2bootstrapper -dir build/windows/nsis
+	@# 构建 NSIS 安装包
+	makensis -DARG_WAILS_$(shell echo $(ARCH) | tr 'a-z' 'A-Z')_BINARY="$(shell pwd)/bin/$(APP).exe" \
+		"$(shell pwd)/build/windows/nsis/project.nsi"
+	@# 复制到 dist
+	cp bin/$(APP)-$(ARCH)-installer.exe $(DIST)/$(APP)-windows-$(ARCH)-installer.exe
+	@echo "✅ NSIS 安装包完成: $(DIST)/$(APP)-windows-$(ARCH)-installer.exe"
+
+## 一键打包所有平台安装包（DMG + NSIS）
+dist: dmg nsis
+	@echo ""
+	@echo "🎉 全部安装包打包完成:"
+	@ls -lh $(DIST)/*
+
 ## 构建本机 server 版（无 GUI 纯 HTTP 代理）
-build-server:
+build-server: sync-version
 	wails3 task build:server
 	@echo "✅ server 构建完成: bin/$(APP)-server"
 
@@ -54,9 +152,6 @@ tag:
 	@echo "✅ 已打 tag: $(TAG)"
 
 ## 创建 GitHub Release
-# 说明: GitHub Actions 的 release 工作流会在 tag 触发时构建三平台二进制并上传资产。
-# 本命令只创建 release 骨架（含版本说明），等 CI 完成构建后资产会自动附上。
-# 如果资产未自动上传，可运行: gh release upload $(TAG) dist/*.tar.gz dist/*.exe
 release:
 	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
 	@test -n "$$(gh auth status 2>&1 | grep -o 'Logged in')" || (echo "❌ 请先运行 gh auth login" && exit 1)
@@ -66,7 +161,7 @@ release:
 		--title "Switch Free $(TAG)" \
 		--notes "Switch Free $(TAG)" \
 		|| echo "⚠️ Release 可能已存在，尝试 upload 资产"
-	@echo "✅ Release $(TAG) 已创建（CI 构建后资产会自动上传）"
+	@echo "✅ Release $(TAG) 已创建"
 
 ## 推送代码 + tag 到远程
 push:
@@ -77,7 +172,6 @@ push:
 ## 一键发布：推码 + 打 tag + 发 release
 deploy: push tag release
 	@echo "🎉 发布流程完成: https://github.com/$(REPO)/releases/tag/$(TAG)"
-	@echo "💡 等待 GitHub Actions 构建完成后，资产会自动上传到 release"
 
 ## 清理产物
 clean:

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+	"switchfree/paths"
 	"switchfree/proxy"
 )
 
@@ -43,6 +45,7 @@ type Config struct {
 	ManualFallbacks map[string][]proxy.ModelRef  `json:"manualFallbacks"` // 手动模式下模型的降级链
 	GlobalFallback  proxy.ModelRef               `json:"globalFallback"`  // 全局兜底
 	Port            int                          `json:"port"`            // 代理监听端口
+	APIKey          string                       `json:"apiKey"`          // 客户端接入密钥（严格校验）
 	AutoUpdate      UpdateConfig                 `json:"update"`          // 自动升级配置
 
 	mu   sync.RWMutex `json:"-"`
@@ -51,12 +54,17 @@ type Config struct {
 
 // DefaultConfigPath 默认配置文件路径
 func DefaultConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "switch-free", "config.json")
+	return filepath.Join(paths.AppConfigDir(), "config.json")
 }
 
 // DefaultPort 默认代理端口
 const DefaultPort = 8787
+
+// generateAPIKey 生成随机 apiKey，格式 rs-<uuid>
+// 首次启动或老配置无此字段时调用
+func generateAPIKey() string {
+	return "rs-" + uuid.NewString()
+}
 
 // Defaults 返回默认配置（等价于当前硬编码行为）
 func Defaults() *Config {
@@ -91,7 +99,8 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		// 文件不存在，写默认配置
+		// 文件不存在：生成 apiKey 后写默认配置
+		c.APIKey = generateAPIKey()
 		if err := c.Save(); err != nil {
 			return c, fmt.Errorf("保存默认配置失败: %w", err)
 		}
@@ -105,15 +114,29 @@ func Load(path string) (*Config, error) {
 		// 损坏的 JSON 用默认并覆盖
 		*c = *Defaults()
 		c.path = path
+		c.APIKey = generateAPIKey()
 		c.Save()
 		return c, fmt.Errorf("配置 JSON 解析失败，已重置为默认: %w", err)
+	}
+
+	// 老配置无 apiKey 字段：先补全，避免被 Validate 当作非法配置重置
+	keyGenerated := false
+	if c.APIKey == "" {
+		c.APIKey = generateAPIKey()
+		keyGenerated = true
 	}
 
 	if err := c.Validate(); err != nil {
 		*c = *Defaults()
 		c.path = path
+		c.APIKey = generateAPIKey()
 		c.Save()
 		return c, fmt.Errorf("配置校验失败，已重置为默认: %w", err)
+	}
+
+	// 补全的 apiKey 需持久化（升级用户首次启动）
+	if keyGenerated {
+		c.Save()
 	}
 
 	return c, nil
@@ -142,6 +165,11 @@ func (c *Config) Save() error {
 
 // Validate 校验配置合法性
 func (c *Config) Validate() error {
+	// apiKey
+	if strings.TrimSpace(c.APIKey) == "" {
+		return fmt.Errorf("apiKey 不能为空")
+	}
+
 	// 端口
 	if c.Port < 1024 || c.Port > 65535 {
 		return fmt.Errorf("无效的端口: %d，应在 1024-65535 之间", c.Port)
@@ -206,6 +234,7 @@ func (c *Config) Clone() *Config {
 		ManualFallbacks: make(map[string][]proxy.ModelRef, len(c.ManualFallbacks)),
 		GlobalFallback:  c.GlobalFallback,
 		Port:            c.Port,
+		APIKey:          c.APIKey,
 		AutoUpdate:      c.AutoUpdate,
 		path:            c.path,
 	}
@@ -235,6 +264,7 @@ func (c *Config) Update(newCfg *Config) error {
 	c.ManualFallbacks = newCfg.ManualFallbacks
 	c.GlobalFallback = newCfg.GlobalFallback
 	c.Port = newCfg.Port
+	c.APIKey = newCfg.APIKey
 	c.AutoUpdate = newCfg.AutoUpdate
 	c.mu.Unlock()
 
@@ -246,6 +276,13 @@ func (c *Config) GetMode() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Mode
+}
+
+// GetAPIKey 线程安全获取当前 apiKey
+func (c *Config) GetAPIKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.APIKey
 }
 
 // isValidUpstream 检查 upstream 名是否合法

@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"switchfree/paths"
 )
 
 // DevEco 配置
@@ -27,15 +29,14 @@ type DevEcoConfig struct {
 }
 
 func DefaultDevEcoConfig() DevEcoConfig {
-	home, _ := os.UserHomeDir()
 	return DevEcoConfig{
 		Origin:          "https://cn.devecostudio.huawei.com",
 		MaasPath:        "/sse/codeGenie/maas/v2",
 		ModelConfigPath: "/codeGenie/modelConfig",
 		PluginVersion:   "CLI.0.1.7",
-		KEKDir:          path.Join(home, ".config/deveco"),
-		AuthPath:        path.Join(home, ".local/share/deveco/auth.json"),
-		KVPath:          path.Join(home, ".local/state/deveco/kv.json"),
+		KEKDir:          filepath.Join(paths.XDGConfigDir(), "deveco"),
+		AuthPath:        paths.Resolve("DEVECO_AUTH_PATH", paths.DevEcoAuthCandidates()),
+		KVPath:          filepath.Join(paths.XDGStateDir(), "deveco", "kv.json"),
 		VerifyIntervalMs: 600000,
 	}
 }
@@ -69,7 +70,7 @@ func (m *DevEcoCredManager) Config() DevEcoConfig {
 // LoadCreds 从本地文件解密出 DevEco access token
 func (m *DevEcoCredManager) LoadCreds() (*DevEcoCred, error) {
 	kekDir := m.config.KEKDir
-	dekPath := path.Join(kekDir, "token.dek")
+	dekPath := filepath.Join(kekDir, "token.dek")
 
 	// 1. 读 DEK 描述文件
 	if _, err := os.Stat(dekPath); os.IsNotExist(err) {
@@ -92,7 +93,7 @@ func (m *DevEcoCredManager) LoadCreds() (*DevEcoCred, error) {
 	}
 
 	// 2. 读 KEK
-	kekPath := path.Join(kekDir, "keys", dekFile.KEKID+".bin")
+	kekPath := filepath.Join(kekDir, "keys", dekFile.KEKID+".bin")
 	if _, err := os.Stat(kekPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("找不到 KEK 文件: %s（token.dek 要求 kekId=%s）", kekPath, dekFile.KEKID)
 	}
@@ -160,7 +161,7 @@ func (m *DevEcoCredManager) LoadCreds() (*DevEcoCred, error) {
 	var jwtToken string
 	var jwtExp int64
 
-	tokenEncPath := path.Join(kekDir, "token.enc")
+	tokenEncPath := filepath.Join(kekDir, "token.enc")
 	if _, err := os.Stat(tokenEncPath); err == nil {
 		tokenEncData, err := os.ReadFile(tokenEncPath)
 		if err == nil {

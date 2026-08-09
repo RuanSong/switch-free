@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"switchfree/paths"
 )
 
 // OpenCode 配置
@@ -16,10 +18,9 @@ type OpenCodeConfig struct {
 }
 
 func DefaultOpenCodeConfig() OpenCodeConfig {
-	home, _ := os.UserHomeDir()
 	return OpenCodeConfig{
 		BaseURL:         "https://opencode.ai/zen/v1",
-		AuthPath:        home + "/.local/share/opencode/auth.json",
+		AuthPath:        paths.Resolve("OPENCODE_AUTH_PATH", paths.OpenCodeAuthCandidates()),
 		VerifyIntervalMs: 600000,
 	}
 }

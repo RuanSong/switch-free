@@ -9,7 +9,7 @@ type AnthropicRequest struct {
 	Messages  []AnthropicMsg  `json:"messages"`
 	System    json.RawMessage `json:"system,omitempty"` // string 或 []block
 	MaxTokens int             `json:"max_tokens,omitempty"`
-	Stream    bool            `json:"stream,omitempty"`
+	Stream    *bool           `json:"stream,omitempty"` // nil=未传(默认流式), false=显式非流式, true=显式流式
 	Temperature *float64      `json:"temperature,omitempty"`
 	TopP       *float64       `json:"top_p,omitempty"`
 	StopSequences []string    `json:"stop_sequences,omitempty"`

@@ -105,8 +105,16 @@ func (s *BenchmarkService) benchOne(url string, target BenchmarkTarget, prompt s
 	bodyBytes, _ := json.Marshal(reqBody)
 
 	client := &http.Client{Timeout: 120 * time.Second}
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	// 带上配置的 apiKey（代理严格鉴权，不带会 401）
+	if srv := s.core.Server(); srv != nil && srv.ConfigResolver != nil {
+		if key := srv.ConfigResolver.GetAPIKey(); key != "" {
+			req.Header.Set("x-api-key", key)
+		}
+	}
 	start := time.Now()
-	httpResp, err := client.Post(url, "application/json", bytes.NewReader(bodyBytes))
+	httpResp, err := client.Do(req)
 	res.DurationMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.ErrorMsg = fmt.Sprintf("请求失败: %v", err)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"switchfree/paths"
 )
 
 // WorkBuddy 配置
@@ -16,10 +18,9 @@ type WorkBuddyConfig struct {
 }
 
 func DefaultWorkBuddyConfig() WorkBuddyConfig {
-	home, _ := os.UserHomeDir()
 	return WorkBuddyConfig{
 		BaseURL:          "https://copilot.tencent.com/v2",
-		InfoPath:         home + "/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
+		InfoPath:         paths.Resolve("WORKBUDDY_INFO_PATH", paths.WorkBuddyInfoCandidates()),
 		VerifyIntervalMs: 600000,
 	}
 }

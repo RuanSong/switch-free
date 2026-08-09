@@ -21,6 +21,7 @@ type ModelRef struct {
 type ConfigResolver interface {
 	Resolve(requestedModel string) []ModelRef
 	GetMode() string
+	GetAPIKey() string
 }
 
 // callUpstreamAnthropic Anthropic 入口的上游分发（基于配置链遍历）

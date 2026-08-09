@@ -104,6 +104,21 @@ func applyLocalMeta(mi *ModelInfo, upstreamName string) {
 			mi.Stream = true
 			mi.ToolCall = true
 		}
+	case "workbuddy":
+		// WorkBuddy 无实时接口，本地白名单即完整数据
+		if lm := WorkBuddyModelByID[mi.ID]; lm != nil {
+			if mi.Label == "" || mi.Label == mi.ID {
+				mi.Label = lm.Label
+			}
+			if mi.Output == 0 {
+				mi.Output = lm.Output
+			}
+			if mi.Context == 0 {
+				mi.Context = lm.Context
+			}
+			mi.Vision = lm.Vision
+			mi.ToolCall = lm.ToolCall
+		}
 	}
 }
 
@@ -140,6 +155,17 @@ func localModels(upstreamName string) []ModelInfo {
 			})
 		}
 		return r
+	case "workbuddy":
+		var r []ModelInfo
+		for _, m := range WorkBuddyModels {
+			r = append(r, ModelInfo{
+				ID: m.ID, Label: m.Label, Upstream: "workbuddy",
+				Stream: true, Context: m.Context, Output: m.Output,
+				Vision: m.Vision, ToolCall: m.ToolCall,
+				Object: "model", Created: 1700000000,
+			})
+		}
+		return r
 	}
 	return nil
 }
@@ -166,6 +192,8 @@ func autoLabel(upstreamName string) string {
 		return "DevEco GLM-5.1"
 	case "joycode":
 		return "JoyCode 兜底"
+	case "workbuddy":
+		return "WorkBuddy"
 	}
 	return ""
 }

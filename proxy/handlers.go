@@ -111,7 +111,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	stream := body.Stream
+	// 默认流式：stream 未传(nil)时视为 true
+	stream := true
+	if body.Stream != nil {
+		stream = *body.Stream
+	}
 	requestedModel := body.Model
 	if requestedModel == "" {
 		requestedModel = "auto"
@@ -213,7 +217,14 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	stream, _ := body["stream"].(bool)
+	// 默认流式：stream 未传时视为 true
+	streamVal, hasStream := body["stream"]
+	stream := true
+	if hasStream {
+		if b, ok := streamVal.(bool); ok {
+			stream = b
+		}
+	}
 	requestedModel, _ := body["model"].(string)
 	if requestedModel == "" {
 		requestedModel = "auto"

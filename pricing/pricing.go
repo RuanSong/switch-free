@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"switchfree/paths"
 )
 
 // Price 单个模型的费率（每百万 token 的成本，美元）
@@ -35,8 +37,7 @@ type Manager struct {
 
 // DefaultPath 自有费率库默认路径
 func DefaultPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "switch-free", "pricing.json")
+	return filepath.Join(paths.AppConfigDir(), "pricing.json")
 }
 
 // NewManager 创建费率管理器

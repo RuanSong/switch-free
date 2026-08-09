@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"switchfree/paths"
 	"switchfree/proxy"
 )
 
@@ -18,8 +19,7 @@ const logRetentionDays = 30
 
 // logDir 日志目录（按天 JSONL 文件）
 func logDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "switch-free", "logs")
+	return filepath.Join(paths.AppConfigDir(), "logs")
 }
 
 // logFilePath 某天的日志文件路径

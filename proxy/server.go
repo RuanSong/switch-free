@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -129,6 +130,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 鉴权：除健康检查外，校验客户端 apiKey
+	if r.URL.Path != "/" && r.URL.Path != "/health" {
+		if !s.checkAPIKey(r) {
+			s.writeAuthError(w, r)
+			return
+		}
+	}
+
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/health"):
 		s.handleHealth(w, r)
@@ -142,6 +151,35 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("not found"))
 	}
+}
+
+// checkAPIKey 校验请求的 apiKey（支持 x-api-key 和 Authorization: Bearer）
+// 用恒定时间比较防时序攻击
+func (s *Server) checkAPIKey(r *http.Request) bool {
+	if s.ConfigResolver == nil {
+		return true
+	}
+	expected := s.ConfigResolver.GetAPIKey()
+	if expected == "" {
+		return true // 未配置 key 时放行（不应发生，Load 保证非空）
+	}
+	clientKey := r.Header.Get("x-api-key")
+	if clientKey == "" {
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			clientKey = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(clientKey), []byte(expected)) == 1
+}
+
+// writeAuthError 写 401 鉴权失败响应（按请求路径匹配 Anthropic/OpenAI 格式）
+func (s *Server) writeAuthError(w http.ResponseWriter, r *http.Request) {
+	msg := "invalid api key"
+	if strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+		writeOpenAIError(w, http.StatusUnauthorized, msg)
+		return
+	}
+	writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", msg)
 }
 
 // handleHealth 健康检查（显示三上游凭据状态）

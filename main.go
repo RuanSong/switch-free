@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"log"
+	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -22,10 +24,17 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// 托盘图标（32px，方案3 中转节点）
+// 托盘图标：macOS 用黑白模板（自动适配深浅色菜单栏），其他平台用彩色
 //
 //go:embed build/tray-icon.png
-var trayIcon []byte
+var trayIconColor []byte
+
+//go:embed build/tray-template.png
+var trayIconTemplate []byte
+
+// realQuit 标记：只有托盘「退出」菜单触发时为 true，允许真正退出；
+// Dock 右键退出 / Cmd+Q 走 ShouldQuit 钩子时为 false，改为隐藏窗口
+var realQuit atomic.Bool
 
 // 全局窗口引用（供托盘菜单使用）
 var mainWindow *application.WebviewWindow
@@ -97,6 +106,17 @@ func main() {
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
+		},
+		// 拦截退出请求：仅托盘「退出」(realQuit=true) 放行；
+		// Dock 右键退出 / Cmd+Q 改为隐藏窗口到托盘
+		ShouldQuit: func() bool {
+			if realQuit.Load() {
+				return true
+			}
+			if mainWindow != nil {
+				mainWindow.Hide()
+			}
+			return false
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false, // 关窗口留托盘
@@ -173,8 +193,13 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 // - 右键菜单：打开面板 / 退出（唯一真正退出途径）
 func setupSystray(app *application.App, server *proxy.Server) {
 	tray := app.SystemTray.New()
-	// 用方案3中转节点图标（彩色）
-	tray.SetIcon(trayIcon)
+	// macOS 用模板图（透明背景 + 黑色主体），系统按菜单栏明暗自动反色；
+	// 其他平台用彩色图标
+	if runtime.GOOS == "darwin" {
+		tray.SetTemplateIcon(trayIconTemplate)
+	} else {
+		tray.SetIcon(trayIconColor)
+	}
 	tray.SetTooltip("Switch Free - 双击打开")
 
 	// 显示并聚焦主窗口的公共方法
@@ -194,6 +219,7 @@ func setupSystray(app *application.App, server *proxy.Server) {
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
 		_ = server.Stop()
+		realQuit.Store(true) // 标记允许真正退出（ShouldQuit 放行）
 		app.Quit()
 	})
 	tray.SetMenu(menu)

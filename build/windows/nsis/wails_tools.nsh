@@ -8,16 +8,16 @@
     !define INFO_PROJECTNAME "switch-free"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "Local"
+    !define INFO_COMPANYNAME "Switch Free"
 !endif
 !ifndef INFO_PRODUCTNAME
     !define INFO_PRODUCTNAME "Switch Free"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "0.1.0"
+    !define INFO_PRODUCTVERSION "0.0.3"
 !endif
 !ifndef INFO_COPYRIGHT
-    !define INFO_COPYRIGHT "© 2026, My Company"
+    !define INFO_COPYRIGHT "© 2025-2026, Switch Free Contributors"
 !endif
 !ifndef PRODUCT_EXECUTABLE
     !define PRODUCT_EXECUTABLE "${INFO_PROJECTNAME}.exe"

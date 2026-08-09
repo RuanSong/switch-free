@@ -3,15 +3,17 @@ package creds
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
-	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
+	"switchfree/paths"
 )
 
 // JoyCode 凭据配置
@@ -26,7 +28,6 @@ type JoyCodeConfig struct {
 }
 
 func DefaultJoyCodeConfig() JoyCodeConfig {
-	home, _ := os.UserHomeDir()
 	return JoyCodeConfig{
 		AppID:         "joycode_ide",
 		Secret:        "0691a3f0b37b4a85aeb63ad0fc7db3ed",
@@ -34,7 +35,7 @@ func DefaultJoyCodeConfig() JoyCodeConfig {
 		Client:        "JoyCodeIDE",
 		ClientVersion: "3.8.67",
 		Language:      "UNKNOWN",
-		VscdbPath:     path.Join(home, "Library/Application Support/JoyCode/User/globalStorage/state.vscdb"),
+		VscdbPath:     paths.Resolve("JOYCODE_VSCDB", paths.JoyCodeVscdbCandidates()),
 	}
 }
 
@@ -68,14 +69,23 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 		return nil, fmt.Errorf("找不到 JoyCode state.vscdb: %s\n请确认 JoyCode 已安装并登录过，或用 JOYCODE_VSCDB 环境变量指定路径", dbPath)
 	}
 
-	// 用 sqlite3 CLI 读取（与 JS 版一致，后续可替换为 go-sqlite3 嵌入式）
-	cmd := exec.Command("sqlite3", dbPath, "SELECT value FROM ItemTable WHERE key='JoyCoder.IDE';")
-	output, err := cmd.Output()
+	// 用嵌入式 sqlite 读取（modernc.org/sqlite，纯 Go，无需外部 sqlite3 命令）
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取 state.vscdb 失败（sqlite3 命令不可用？）: %v", err)
+		return nil, fmt.Errorf("打开 state.vscdb 失败: %v", err)
+	}
+	defer db.Close()
+	db.Exec("PRAGMA busy_timeout = 5000") // 容忍 JoyCode 进程占用时的短暂锁
+
+	var rawBytes []byte
+	if err := db.QueryRow("SELECT value FROM ItemTable WHERE key='JoyCoder.IDE'").Scan(&rawBytes); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("state.vscdb 里没有 JoyCoder.IDE 登录信息。请先在 JoyCode 客户端登录。")
+		}
+		return nil, fmt.Errorf("读取 state.vscdb 失败: %v", err)
 	}
 
-	raw := strings.TrimSpace(string(output))
+	raw := strings.TrimSpace(string(rawBytes))
 	if raw == "" {
 		return nil, fmt.Errorf("state.vscdb 里没有 JoyCoder.IDE 登录信息。请先在 JoyCode 客户端登录。")
 	}

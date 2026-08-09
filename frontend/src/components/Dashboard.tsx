@@ -4,6 +4,8 @@ import type { AllCredStatus, SpeedStats } from "../../bindings/switchfree/servic
 import type { ProxyStatus } from "../../bindings/switchfree/proxy/models";
 import type { Config } from "../../bindings/switchfree/config/models";
 
+import CopyButton from "./CopyButton";
+
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
@@ -24,6 +26,8 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
   const [today, setToday] = useState<{ tokens: number; cost: number } | null>(null);
   // 今日输出速率
   const [speed, setSpeed] = useState<SpeedStats | null>(null);
+  // apiKey 显示/隐藏切换
+  const [showKey, setShowKey] = useState(false);
 
   useEffect(() => {
     LogService.GetTodaySummary()
@@ -194,9 +198,38 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
               <div className="font-mono">{chainLength}</div>
             </div>
           </div>
-          <div className="mt-4 pt-4 border-t border-[var(--color-border)] text-xs text-[var(--color-text-dim)]">
-            cc-switch 配置：baseURL = <span className="font-mono text-[var(--color-text)]">http://127.0.0.1:{proxy?.port ?? 8787}</span>
-            ，apiKey = <span className="font-mono text-[var(--color-text)]">sk-joycode</span>（任意值）
+          <div className="mt-4 pt-4 border-t border-[var(--color-border)]">
+            <div className="text-xs text-[var(--color-text-dim)] mb-2">🔗 接入地址</div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[var(--color-text-dim)] w-16 shrink-0">Anthropic</span>
+                <code className="flex-1 px-3 py-1.5 rounded-md bg-[var(--color-surface-2)] text-sm font-mono text-[var(--color-text)]">
+                  http://127.0.0.1:{proxy?.port ?? 8787}
+                </code>
+                <CopyButton text={`http://127.0.0.1:${proxy?.port ?? 8787}`} />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[var(--color-text-dim)] w-16 shrink-0">OpenAI</span>
+                <code className="flex-1 px-3 py-1.5 rounded-md bg-[var(--color-surface-2)] text-sm font-mono text-[var(--color-text)]">
+                  http://127.0.0.1:{proxy?.port ?? 8787}/v1
+                </code>
+                <CopyButton text={`http://127.0.0.1:${proxy?.port ?? 8787}/v1`} />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[var(--color-text-dim)] w-16 shrink-0">apiKey</span>
+                <code className="flex-1 px-3 py-1.5 rounded-md bg-[var(--color-surface-2)] text-sm font-mono text-[var(--color-text)] truncate">
+                  {showKey ? (config?.apiKey || "-") : maskKey(config?.apiKey || "")}
+                </code>
+                <button
+                  onClick={() => setShowKey((v) => !v)}
+                  className="px-2.5 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] text-[var(--color-text)]"
+                  title={showKey ? "隐藏" : "显示"}
+                >
+                  {showKey ? "🙈" : "👁"}
+                </button>
+                <CopyButton text={config?.apiKey || ""} />
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -267,5 +300,12 @@ function fmtTokens(n: number): string {
 // rankBadge 排名标记：前三名奖牌，其余序号
 function rankBadge(i: number): string {
   return ["🥇", "🥈", "🥉"][i] ?? String(i + 1);
+}
+
+// maskKey 隐藏 apiKey：显示前 10 位，其余用 *** 代替
+function maskKey(key: string): string {
+  if (!key) return "";
+  if (key.length <= 10) return key;
+  return key.slice(0, 10) + "***";
 }
 

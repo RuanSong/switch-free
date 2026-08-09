@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ConfigService } from "../../bindings/switchfree/service";
+import { UpdaterService, ConfigService } from "../../bindings/switchfree/service";
 import type { Config, AgentModels } from "../../bindings/switchfree/config/models";
 import type { ModelRef } from "../../bindings/switchfree/proxy/models";
 import type { UpstreamModels, ModelOption } from "../../bindings/switchfree/service/models";
@@ -27,8 +27,10 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const [newManualModel, setNewManualModel] = useState("");
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [savingPort, setSavingPort] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
+  const [showKey, setShowKey] = useState(false);
   // 设置页 tab：通用 / 运行模式 / 费率 / 更新
-  const [tab, setTab] = useState<"general" | "mode" | "pricing" | "update">("general");
+  const [tab, setTab] = useState<"general" | "mode" | "pricing" | "update" | "about">("general");
 
   const flash = (type: "ok" | "err", text: string) => {
     setMsg({ type, text });
@@ -105,6 +107,33 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       flash("err", `保存端口失败: ${e}`);
     } finally {
       setSavingPort(false);
+    }
+  };
+
+  // 重新生成 apiKey：二次确认告知风险 -> 生成 rs-<uuid> -> 保存立即生效
+  const regenKey = async () => {
+    if (
+      !confirm(
+        "重新生成后，原 apiKey 立即失效。\n" +
+          "所有正在使用旧 key 的客户端（如 cc-switch、Claude Code）将返回 401，需更新为新 key。\n\n" +
+          "确认重新生成？"
+      )
+    ) {
+      return;
+    }
+    setSavingKey(true);
+    try {
+      const newKey = "rs-" + crypto.randomUUID();
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      await ConfigService.SaveConfig({ ...cur, apiKey: newKey });
+      setCfg({ ...cfg, apiKey: newKey });
+      setShowKey(true); // 生成后显示新 key，方便复制
+      flash("ok", "apiKey 已重新生成并生效");
+    } catch (e) {
+      flash("err", `重新生成失败: ${e}`);
+    } finally {
+      setSavingKey(false);
     }
   };
 
@@ -192,6 +221,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         <TabBtn label="🚀 运行模式" active={tab === "mode"} onClick={() => setTab("mode")} />
         <TabBtn label="💰 费率" active={tab === "pricing"} onClick={() => setTab("pricing")} />
         <TabBtn label="🔄 更新" active={tab === "update"} onClick={() => setTab("update")} />
+        <TabBtn label="ℹ️ 关于" active={tab === "about"} onClick={() => setTab("about")} />
       </div>
 
       {/* ===== 通用：代理端口 + 配置 JSON ===== */}
@@ -230,6 +260,39 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
             >
               {savingPort ? "保存中..." : "💾 保存端口"}
+            </button>
+          </div>
+        </section>
+
+        {/* 接入 apiKey */}
+        <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <h2 className="font-semibold mb-1">接入 apiKey</h2>
+          <p className="text-xs text-[var(--color-text-dim)] mb-3">
+            客户端调用代理需在 <code className="font-mono">x-api-key</code> 或{" "}
+            <code className="font-mono">Authorization: Bearer</code> 头携带此 key，严格校验。重新生成后立即生效。
+          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <input
+              type="text"
+              value={showKey ? (cfg.apiKey ?? "") : maskKey(cfg.apiKey ?? "")}
+              readOnly
+              className="flex-1 min-w-[280px] px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono cursor-default"
+            />
+            <button
+              onClick={() => setShowKey((v) => !v)}
+              className="px-2.5 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+              title={showKey ? "隐藏" : "显示"}
+            >
+              {showKey ? "🙈" : "👁"}
+            </button>
+            <CopyButton text={cfg.apiKey ?? ""} />
+            <button
+              onClick={regenKey}
+              disabled={savingKey}
+              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-danger)]/80 hover:bg-[var(--color-danger)] disabled:opacity-50"
+              title="重新生成随机 key（原 key 立即失效）"
+            >
+              {savingKey ? "生成中..." : "🔄 重新生成"}
             </button>
           </div>
         </section>
@@ -480,8 +543,18 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         <UpdatePanel />
       </div>
       )}
+
+      {/* ===== 关于 ===== */}
+      {tab === "about" && <AboutSection />}
     </div>
   );
+}
+
+// maskKey 隐藏 apiKey：显示前 10 位，其余用 *** 代替
+function maskKey(key: string): string {
+  if (!key) return "";
+  if (key.length <= 10) return key;
+  return key.slice(0, 10) + "***";
 }
 
 // ====== TabBtn：设置页顶部 tab ======
@@ -592,5 +665,59 @@ function ModelPicker({
         ))}
       </select>
     </div>
+  );
+}
+
+// ====== AboutSection：关于页面 ======
+function AboutSection() {
+  const [version, setVersion] = useState<string>("");
+
+  useEffect(() => {
+    UpdaterService.GetCurrentVersion().then((v) => setVersion(v ?? ""));
+  }, []);
+
+  return (
+    <section className="bg-[var(--color-surface)] rounded-xl p-8 border border-[var(--color-border)]">
+      <div className="flex flex-col items-center text-center">
+        {/* Logo */}
+        <img
+          src="/switch-free-64.png"
+          alt="Switch Free"
+          className="w-16 h-16 mb-4"
+          draggable={false}
+        />
+
+        {/* 应用名 */}
+        <div className="mb-2">
+          <span className="text-2xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
+          <span className="text-lg font-semibold text-[var(--color-text-dim)] tracking-widest ml-1.5">FREE</span>
+        </div>
+
+        {/* 版本号 */}
+        <span className="text-sm text-[var(--color-text-dim)] font-mono mb-6">
+          v{version || "-"}
+        </span>
+
+        {/* 分隔线 */}
+        <div className="w-48 h-px bg-[var(--color-border)] mb-6" />
+
+        {/* 功能描述 */}
+        <p className="text-sm text-[var(--color-text-dim)] max-w-sm leading-relaxed mb-6">
+          本地多上游 LLM 代理，将 JoyCode / DevEco / OpenCode / WorkBuddy
+          模型能力暴露为标准 Anthropic / OpenAI 接口，供 Claude Code 等工具复用。
+        </p>
+
+        {/* 分隔线 */}
+        <div className="w-48 h-px bg-[var(--color-border)] mb-6" />
+
+        {/* 元信息 */}
+        <div className="space-y-2 text-xs text-[var(--color-text-dim)]">
+          <div className="flex items-center gap-2">
+            <span>🛠</span>
+            <span>Wails v3 + Go</span>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
