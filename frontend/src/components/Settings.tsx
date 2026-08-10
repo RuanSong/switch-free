@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { UpdaterService, ConfigService } from "../../bindings/switchfree/service";
-import type { Config, AgentModels } from "../../bindings/switchfree/config/models";
+import type { Config, AgentModels, Preset } from "../../bindings/switchfree/config/models";
 import type { ModelRef } from "../../bindings/switchfree/proxy/models";
 import type { UpstreamModels } from "../../bindings/switchfree/service/models";
 import type { AllCredStatus } from "../../bindings/switchfree/service/models";
 import CopyButton from "./CopyButton";
 import PricingEditor from "./PricingEditor";
 import UpdatePanel from "./UpdatePanel";
+import PresetSwitcher from "./PresetSwitcher";
+import ConfirmPopover from "./ConfirmPopover";
 import { ModelSelect, FreeBadge } from "./ModelSelect";
 
 const UPSTREAM_LABEL: Record<string, string> = {
@@ -18,22 +20,36 @@ const UPSTREAM_LABEL: Record<string, string> = {
 
 type SettingsTab = "general" | "mode" | "pricing" | "update" | "about";
 
-// modeSnapshot 运行模式相关配置的快照字符串（用于检测未保存更改）
-function modeSnapshot(c: Config): string {
-  return JSON.stringify({
-    mode: c.mode,
-    autoChain: c.autoChain,
-    manualFallbacks: c.manualFallbacks,
-    globalFallback: c.globalFallback,
-  });
+// modeFingerprint 运行模式四字段的规范化指纹，用于判断当前配置是否已偏离所选方案
+//
+// 必须规范化，不能直接 JSON.stringify 整个对象：
+//   1. manualFallbacks 是 map —— Go 序列化时排序 key，前端新增时是插入顺序，
+//      不排序会把「内容相同、key 顺序不同」误判为偏离
+//   2. Go 的空 slice 可能序列化成 null 而非 []，需归一
+function modeFingerprint(x: {
+  mode: string;
+  autoChain: AgentModels[] | null;
+  manualFallbacks: { [k: string]: ModelRef[] | undefined } | null;
+  globalFallback: ModelRef | null;
+}): string {
+  const chain = (x.autoChain ?? []).map((ag) => [ag.upstream, ag.models ?? []]);
+  const fb = Object.keys(x.manualFallbacks ?? {})
+    .sort()
+    .map((k) => [k, (x.manualFallbacks?.[k] ?? []).map((r) => [r.upstream, r.model])]);
+  const gf = [x.globalFallback?.upstream ?? "", x.globalFallback?.model ?? ""];
+  return JSON.stringify([x.mode, chain, fb, gf]);
+}
+
+// matchesPreset 当前配置是否与某方案内容完全一致
+function matchesPreset(cfg: Config, p: Preset): boolean {
+  return modeFingerprint(cfg) === modeFingerprint(p);
 }
 
 export default function Settings({ creds, config }: { creds: AllCredStatus | null; config: Config | null }) {
   // config 由 App 提供（已在启动时拉好），不再异步等待，避免"加载中"
   const [cfg, setCfg] = useState<Config | null>(config);
   const [available, setAvailable] = useState<UpstreamModels[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string; undo?: () => void } | null>(null);
   // 手动降级链添加器的 state（必须在早返回之前，遵守 Hooks 规则）
   const [newManualKey, setNewManualKey] = useState("");
   const [newManualUpstream, setNewManualUpstream] = useState("joycode");
@@ -44,14 +60,42 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const [showKey, setShowKey] = useState(false);
   // 设置页 tab：运行模式 / 通用 / 费率 / 更新 / 关于
   const [tab, setTab] = useState<SettingsTab>("mode");
-  // 切换 tab 时的待确认目标（运行模式有未保存更改时弹窗）
-  const [pendingTab, setPendingTab] = useState<SettingsTab | null>(null);
-  // 上次保存的运行模式配置快照（用于检测未保存更改）
-  const savedModeRef = useRef<string>("");
+  // 方案操作进行中（禁用下拉/按钮，避免并发写配置）
+  const [presetBusy, setPresetBusy] = useState(false);
+  // 标记是否已完成首次配置同步（跳过自动保存）
+  const mountedRef = useRef(false);
+  // 方案切换刚写过配置：跳过紧随其后的那次自动保存，避免重复写盘
+  const skipNextSaveRef = useRef(false);
+  // toast 自动消失定时器（连续 flash 时清掉上一个，避免提前关闭新消息）
+  const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 当前 toast 是否带撤销按钮（供自动保存判断要不要让位）
+  const undoActiveRef = useRef(false);
 
-  const flash = (type: "ok" | "err", text: string) => {
-    setMsg({ type, text });
-    setTimeout(() => setMsg(null), 3000);
+  // flash 顶部提示；undo 传入时额外渲染「撤销」按钮，展示时间延长到 6s
+  const flash = (type: "ok" | "err", text: string, undo?: () => void) => {
+    if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    undoActiveRef.current = !!undo;
+    setMsg({ type, text, undo });
+    msgTimerRef.current = setTimeout(() => {
+      setMsg(null);
+      undoActiveRef.current = false;
+    }, undo ? 6000 : 3000);
+  };
+
+  // 卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    };
+  }, []);
+
+  // flashUndo 破坏性操作后提示可撤销：点击撤销把 cfg 回滚到操作前的快照
+  // 回滚同样会触发自动保存 effect，所以配置文件也会跟着还原
+  const flashUndo = (text: string, snapshot: Config) => {
+    flash("ok", text, () => {
+      setCfg(snapshot);
+      flash("ok", "已撤销");
+    });
   };
 
   const load = async () => {
@@ -65,9 +109,138 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     // config prop 变化时同步（App 刷新后）
     if (config) {
       setCfg(config);
-      savedModeRef.current = modeSnapshot(config);
+      // 延迟标记已挂载，避免首次同步触发自动保存
+      requestAnimationFrame(() => { mountedRef.current = true; });
+    } else {
+      mountedRef.current = true;
     }
   }, []);
+
+  // 自动保存：运行模式配置变更时即时保存（跳过首次同步）
+  // 只提交运行模式四个字段，避免把「通用」tab 里未点保存的端口改动一起带上
+  useEffect(() => {
+    if (!cfg || !mountedRef.current) return;
+    // 方案切换/保存刚写过配置，这次变更是它引起的，不用再写一遍
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const cur = await ConfigService.GetConfig();
+        if (!cur) throw new Error("获取配置失败");
+        // 偏离检测：当前配置与激活方案不一致时清空激活标记（下拉显示「自定义」）
+        // 方案是快照，编辑当前配置不回写方案
+        let active = cur.activePreset ?? "";
+        if (active) {
+          const p = (cur.presets ?? []).find((x) => x?.name === active);
+          if (!p || !matchesPreset({ ...cfg } as Config, p)) active = "";
+        }
+        await ConfigService.SaveConfig({
+          ...cur,
+          mode: cfg.mode,
+          autoChain: cfg.autoChain,
+          manualFallbacks: cfg.manualFallbacks,
+          globalFallback: cfg.globalFallback,
+          activePreset: active,
+        });
+        // 本地同步激活标记，避免 UI 还显示旧方案名
+        if (active !== (cfg.activePreset ?? "")) {
+          setCfg((prev) => (prev ? { ...prev, activePreset: active } : prev));
+        }
+        // 保存成功的提示不要抢占正在展示的撤销提示（撤销窗口比保存耗时长）
+        if (!undoActiveRef.current) flash("ok", "已保存并生效");
+      } catch (e) {
+        flash("err", `保存失败: ${e}`);
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [cfg?.mode, cfg?.autoChain, cfg?.manualFallbacks, cfg?.globalFallback]);
+
+  // ====== 运行模式方案（快照语义）======
+  // 后端写盘后重新拉配置同步到本地，并置 skipNextSaveRef 防止自动保存重复写一遍
+
+  const syncAfterPreset = async () => {
+    const fresh = await ConfigService.GetConfig();
+    if (fresh) {
+      skipNextSaveRef.current = true;
+      setCfg(fresh);
+    }
+  };
+
+  const savePreset = async (name: string) => {
+    setPresetBusy(true);
+    try {
+      await ConfigService.SavePreset(name);
+      await syncAfterPreset();
+      flash("ok", `方案「${name}」已保存`);
+    } catch (e) {
+      flash("err", `保存方案失败: ${e}`);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const applyPreset = async (name: string) => {
+    setPresetBusy(true);
+    try {
+      await ConfigService.ApplyPreset(name);
+      await syncAfterPreset();
+      flash("ok", `已切换到方案「${name}」并生效`);
+    } catch (e) {
+      flash("err", `切换方案失败: ${e}`);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const deletePreset = async (name: string) => {
+    // 删前留一份快照，撤销时用 SavePreset 重建
+    const doomed = (cfg?.presets ?? []).find((p) => p?.name === name);
+    setPresetBusy(true);
+    try {
+      await ConfigService.DeletePreset(name);
+      await syncAfterPreset();
+      // 撤销：把当前配置临时换成被删方案的内容再存回去，然后恢复现场
+      flash("ok", `方案「${name}」已删除`, doomed ? () => restorePreset(doomed) : undefined);
+    } catch (e) {
+      flash("err", `删除方案失败: ${e}`);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  // restorePreset 重建被删的方案：直接把方案对象写回 presets 数组
+  // （不走 SavePreset —— 那个存的是「当前配置」，而当前配置可能已经变了）
+  const restorePreset = async (p: Preset) => {
+    setPresetBusy(true);
+    try {
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      const presets = [...(cur.presets ?? [])];
+      if (!presets.some((x) => x?.name === p.name)) presets.push(p);
+      await ConfigService.SaveConfig({ ...cur, presets });
+      await syncAfterPreset();
+      flash("ok", `已恢复方案「${p.name}」`);
+    } catch (e) {
+      flash("err", `恢复方案失败: ${e}`);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const renamePreset = async (oldName: string, newName: string) => {
+    setPresetBusy(true);
+    try {
+      await ConfigService.RenamePreset(oldName, newName);
+      await syncAfterPreset();
+      flash("ok", `方案已重命名为「${newName}」`);
+    } catch (e) {
+      flash("err", `重命名失败: ${e}`);
+    } finally {
+      setPresetBusy(false);
+    }
+  };
 
   const refreshModels = async () => {
     setRefreshingModels(true);
@@ -91,68 +264,6 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   };
 
   if (!cfg) return <div className="p-6 text-[var(--color-text-dim)]">加载配置中...</div>;
-
-  const save = async (): Promise<boolean> => {
-    setSaving(true);
-    try {
-      await ConfigService.SaveConfig(cfg);
-      savedModeRef.current = modeSnapshot(cfg);
-      flash("ok", "配置已保存并生效");
-      return true;
-    } catch (e) {
-      flash("err", `保存失败: ${e}`);
-      return false;
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const reset = async () => {
-    if (!confirm("确定重置为默认配置？")) return;
-    try {
-      await ConfigService.ResetConfig();
-      const fresh = await ConfigService.GetConfig();
-      if (fresh) {
-        setCfg(fresh);
-        savedModeRef.current = modeSnapshot(fresh);
-      }
-      await load();
-      flash("ok", "已重置为默认配置");
-    } catch (e) {
-      flash("err", `重置失败: ${e}`);
-    }
-  };
-
-  // hasModeChanges 运行模式配置是否有未保存的更改
-  const hasModeChanges = (): boolean => {
-    if (!cfg) return false;
-    return modeSnapshot(cfg) !== savedModeRef.current;
-  };
-
-  // 切换 tab：从运行模式切走且有未保存更改时弹窗确认
-  const handleTabChange = (target: SettingsTab) => {
-    if (tab === "mode" && target !== "mode" && hasModeChanges()) {
-      setPendingTab(target);
-    } else {
-      setTab(target);
-    }
-  };
-
-  // 弹窗：保存并切换（复用 save，保存失败则留在当前页）
-  const confirmSaveAndSwitch = async () => {
-    const target = pendingTab;
-    const ok = await save();
-    setPendingTab(null);
-    if (ok && target) setTab(target);
-  };
-
-  // 弹窗：不保存直接切换
-  const discardAndSwitch = () => {
-    if (pendingTab) {
-      setTab(pendingTab);
-      setPendingTab(null);
-    }
-  };
 
   // 只保存端口（不影响运行模式配置）
   const savePort = async () => {
@@ -213,6 +324,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   };
 
   const removeAutoItem = (upstream: string, model: string) => {
+    const prev = cfg;
     const chain = cfg.autoChain
       .map((c) => {
         if (c.upstream !== upstream) return c;
@@ -220,6 +332,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       })
       .filter((c) => c.models.length > 0);
     setCfg({ ...cfg, autoChain: chain });
+    flashUndo(`已从链中移除 ${model}`, prev);
   };
 
   const moveAutoItem = (upstream: string, model: string, dir: -1 | 1) => {
@@ -260,66 +373,38 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   };
 
   const removeManualFallback = (key: string, idx: number) => {
+    const prev = cfg;
+    const removed = (cfg.manualFallbacks?.[key] || [])[idx];
     const fb = { ...(cfg.manualFallbacks || {}) };
     fb[key] = (fb[key] || []).filter((_, i) => i !== idx);
     if (fb[key].length === 0) delete fb[key];
     setCfg({ ...cfg, manualFallbacks: fb });
+    flashUndo(`已移除 ${key} 的降级项${removed ? ` ${removed.model}` : ""}`, prev);
   };
 
   return (
     <div className="p-6 space-y-6">
       {msg && (
-        <div className={`px-4 py-2 rounded-lg text-sm ${msg.type === "ok" ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"}`}>
-          {msg.text}
-        </div>
-      )}
-
-      {/* 切换 tab 时的未保存确认弹窗 */}
-      {pendingTab && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setPendingTab(null)}
-        >
-          <div
-            className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] shadow-xl max-w-sm w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="font-semibold mb-2">未保存的更改</h3>
-            <p className="text-sm text-[var(--color-text-dim)] mb-4">
-              运行模式配置有未保存的更改，是否保存后切换？
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingTab(null)}
-                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-              >
-                取消
-              </button>
-              <button
-                onClick={discardAndSwitch}
-                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-              >
-                不保存
-              </button>
-              <button
-                onClick={confirmSaveAndSwitch}
-                disabled={saving}
-                className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
-              >
-                {saving ? "保存中..." : "保存"}
-              </button>
-            </div>
-          </div>
+        <div className={`flex items-center gap-3 px-4 py-2 rounded-lg text-sm ${msg.type === "ok" ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"}`}>
+          <span className="flex-1">{msg.text}</span>
+          {msg.undo && (
+            <button
+              onClick={msg.undo}
+              className="px-2.5 py-1 text-xs rounded-md bg-[var(--color-surface-2)] text-[var(--color-text)] hover:bg-[var(--color-border)] shrink-0"
+            >
+              撤销
+            </button>
+          )}
         </div>
       )}
 
       {/* 顶部 tab 导航 */}
       <div className="flex gap-1 border-b border-[var(--color-border)] pb-px">
-        <TabBtn label="🚀 运行模式" active={tab === "mode"} onClick={() => handleTabChange("mode")} />
-        <TabBtn label="⚙️ 通用" active={tab === "general"} onClick={() => handleTabChange("general")} />
-        <TabBtn label="💰 费率" active={tab === "pricing"} onClick={() => handleTabChange("pricing")} />
-        <TabBtn label="🔄 更新" active={tab === "update"} onClick={() => handleTabChange("update")} />
-        <TabBtn label="ℹ️ 关于" active={tab === "about"} onClick={() => handleTabChange("about")} />
+        <TabBtn label="🚀 运行模式" active={tab === "mode"} onClick={() => setTab("mode")} />
+        <TabBtn label="⚙️ 通用" active={tab === "general"} onClick={() => setTab("general")} />
+        <TabBtn label="💰 费率" active={tab === "pricing"} onClick={() => setTab("pricing")} />
+        <TabBtn label="🔄 更新" active={tab === "update"} onClick={() => setTab("update")} />
+        <TabBtn label="ℹ️ 关于" active={tab === "about"} onClick={() => setTab("about")} />
       </div>
 
       {/* ===== 通用：代理端口 + 配置 JSON ===== */}
@@ -400,37 +485,30 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       {/* ===== 运行模式：模式切换 + auto链/手动链 + 兜底 + 配置JSON ===== */}
       {tab === "mode" && (
       <div className="space-y-6">
-
-      {/* 运行模式操作按钮 */}
-      <div className="flex items-center justify-between">
-        <div className="flex gap-2">
-          <button
-            onClick={save}
-            disabled={saving}
-            className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
-          >
-            {saving ? "保存中..." : "💾 保存运行模式"}
-          </button>
-          <button
-            onClick={reset}
-            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-          >
-            重置默认
-          </button>
-        </div>
-        <button
-          onClick={refreshModels}
-          disabled={refreshingModels}
-          className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
-          title="从上游接口重新拉取模型列表"
-        >
-          {refreshingModels ? "刷新中..." : "🔄 刷新模型"}
-        </button>
-      </div>
-
       {/* 模式切换 */}
       <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
-        <h2 className="font-semibold mb-3">运行模式</h2>
+        <div className="flex items-center justify-between mb-3 gap-3">
+          <h2 className="font-semibold shrink-0">运行模式</h2>
+          <div className="flex items-center gap-2">
+            <PresetSwitcher
+              presets={(cfg.presets ?? []).filter((p): p is Preset => p !== null)}
+              activePreset={cfg.activePreset ?? ""}
+              busy={presetBusy}
+              onApply={applyPreset}
+              onSave={savePreset}
+              onDelete={deletePreset}
+              onRename={renamePreset}
+            />
+            <button
+              onClick={refreshModels}
+              disabled={refreshingModels}
+              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
+              title="从上游接口重新拉取模型列表"
+            >
+              {refreshingModels ? "刷新中..." : "🔄 刷新模型"}
+            </button>
+          </div>
+        </div>
         <div className="flex gap-4">
           <label className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border ${cfg.mode === "auto" ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10" : "border-[var(--color-border)]"}`}>
             <input
@@ -508,7 +586,11 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                   </span>
                   <button onClick={() => moveAutoItem(item.upstream, item.model, -1)} disabled={idx === 0} className="w-6 h-6 rounded hover:bg-[var(--color-surface-2)] disabled:opacity-30 text-xs">↑</button>
                   <button onClick={() => moveAutoItem(item.upstream, item.model, 1)} disabled={idx === flatChain.length - 1} className="w-6 h-6 rounded hover:bg-[var(--color-surface-2)] disabled:opacity-30 text-xs">↓</button>
-                  <button onClick={() => removeAutoItem(item.upstream, item.model)} className="w-6 h-6 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)] text-xs">✕</button>
+                  <ConfirmPopover
+                    title="移除该模型？"
+                    onConfirm={() => removeAutoItem(item.upstream, item.model)}
+                    triggerClassName="w-6 h-6 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)] text-xs"
+                  />
                 </div>
               );
             })}
@@ -561,7 +643,11 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                         <span className="text-xs text-[var(--color-text-dim)] w-4">{idx + 1}</span>
                         <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{UPSTREAM_LABEL[ref.upstream]}</span>
                         <code className="flex-1 font-mono text-xs">{ref.model}</code>
-                        <button onClick={() => removeManualFallback(key, idx)} className="w-5 h-5 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)] text-xs">✕</button>
+                        <ConfirmPopover
+                          title="移除该降级项？"
+                          onConfirm={() => removeManualFallback(key, idx)}
+                          triggerClassName="w-5 h-5 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)] text-xs"
+                        />
                       </div>
                     ))}
                   </div>

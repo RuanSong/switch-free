@@ -12,8 +12,16 @@
 - auto 模式：`Config.AutoChain []AgentModels` 按优先级排列，每个 AgentModels 按 upstream 分组包含模型列表；`expandAutoChain()` 扁平化为 `[]ModelRef` 执行，末尾追加 `GlobalFallback`（去重）
 - manual 模式：`Config.ManualFallbacks map[string][]ModelRef` 为每个模型单独配降级链，`expandManual()` 解析请求模型 → 查链 → 追加 GlobalFallback
 - 全局兜底：`Config.GlobalFallback ModelRef`，两种模式共享，所有链都失败时的最终保底
+- 方案（Preset）：`Config.Presets []Preset` + `Config.ActivePreset string`，把运行模式四字段（mode/autoChain/manualFallbacks/globalFallback）存为命名**快照**
+  - 快照语义：保存冻结当前配置，切换覆盖回当前配置；切换后继续编辑**不回写方案**，需再次同名保存才更新
+  - 方案**不含** port/apiKey/update（环境配置；apiKey 变了会让已接入客户端 401）
+  - `ActivePreset` 仅作 UI 提示、不参与 `Resolve`；前端检测到当前配置偏离方案时置空（下拉显示「自定义」）
+  - `Validate` 刻意**不校验** `ActivePreset` 存在性 —— `Load()` 校验失败会把整份配置重置为默认，悬空方案名不值得让用户丢配置
+  - Manager 的 `SavePreset/ApplyPreset/DeletePreset/RenamePreset` 一律走 `Get()` 取克隆 → 改 → `SaveConfig`；**不能自己持锁再调 SaveConfig**（后者会 `m.mu.Lock()`，死锁）
+  - 前端偏离检测的指纹（`Settings.tsx: modeFingerprint`）必须规范化：manualFallbacks 是 map，Go 序列化排序 key 而前端新增是插入顺序，直接 `JSON.stringify` 会把内容相同的误判为偏离；同时要归一 Go 空 slice 的 `null`
 - 降级执行：`router.executeChain` / `executeChainStream` 逐个尝试，跳过凭据无效的 upstream，任意成功即返回
 - 默认 auto 链为空（用户自行配置）；旧版硬编码的 DevEco→JoyCode 降级已废弃（`models.go` 中 `AutoModel`/`AutoModelJoyCodeFallback` 常量为遗留残留）
+- **改 `Config` 结构必须同步三处**：`Defaults()` / `Clone()` / `Update()` —— `Clone()` 是手写逐字段的，漏了新字段会静默丢数据（`config/preset_test.go: TestCloneIsolatesPresets` 守这条）
 - 上游统一非流式；下游要流式时代理把完整响应拆成 SSE（伪流式）
 - **WorkBuddy 例外**：上游强制 stream:true（非流式返回 `code:11101`），`Call` 内部读 SSE 流经 `aggregateOpenAISSE` 聚合成完整 OpenAIResponse JSON，对上层透明，复用非流式处理逻辑
 - 模型 id 隔离：WorkBuddy 模型用 `wb/` 前缀（如 `wb/glm-5.0`），避免与 DevEco 的 glm-5.1 重名；`ResolveUpstream` 识别前缀路由，发上游前 `stripWbPrefix` 还原
@@ -78,10 +86,12 @@ deploy 链：`build-binaries -> dist -> push -> tag -> release -> upload`
 ## 降级链关键文件
 | 文件 | 职责 |
 |---|---|
-| `config/config.go` | Config 数据结构（AutoChain/ManualFallbacks/GlobalFallback）、默认值、Validate 校验、加载/保存 |
+| `config/config.go` | Config 数据结构（AutoChain/ManualFallbacks/GlobalFallback/Presets）、默认值、Validate 校验、加载/保存、copyChain/copyFallbacks 深拷贝助手 |
 | `config/resolver.go` | Resolve/expandAutoChain/expandManual — 降级链展开逻辑 |
-| `config/manager.go` | Manager 线程安全包装、SaveConfig/ResetConfig |
+| `config/manager.go` | Manager 线程安全包装、SaveConfig/ResetConfig、方案 CRUD（SavePreset/ApplyPreset/DeletePreset/RenamePreset） |
+| `config/preset_test.go` | 方案快照语义测试（快照不被后续编辑污染、Clone 隔离、持久化、重命名撞名） |
 | `proxy/router.go` | executeChain/executeChainStream — 降级链遍历执行、ModelRef/ConfigResolver 定义 |
 | `proxy/models.go` | ResolveModel/ResolveUpstream — 模型名解析、AutoModel 常量（遗留） |
-| `service/config_service.go` | 前端-后端桥接，SaveConfig/GetConfig/GetAvailableModels |
-| `frontend/src/components/Settings.tsx` | 降级链编辑 UI（auto 链拖排、手动降级链、全局兜底选择器） |
+| `service/config_service.go` | 前端-后端桥接，SaveConfig/GetConfig/GetAvailableModels + 四个方案方法 |
+| `frontend/src/components/Settings.tsx` | 降级链编辑 UI（auto 链拖排、手动降级链、全局兜底选择器）、配置项改动自动保存（debounce 600ms）、偏离检测 |
+| `frontend/src/components/PresetSwitcher.tsx` | 方案下拉（切换/重命名/删除）+ 保存方案弹窗 |

@@ -19,8 +19,40 @@ type AgentModels struct {
 	Models   []string `json:"models"`
 }
 
+// Preset 运行模式方案快照
+// 只含降级链相关字段，不含 port/apiKey/update —— 那些是环境配置，
+// 不应随方案切换而变（apiKey 变了会让已接入的客户端 401）
+type Preset struct {
+	Name            string                      `json:"name"`
+	Mode            string                      `json:"mode"`
+	AutoChain       []AgentModels               `json:"autoChain"`
+	ManualFallbacks map[string][]proxy.ModelRef `json:"manualFallbacks"`
+	GlobalFallback  proxy.ModelRef              `json:"globalFallback"`
+}
+
 // ModelRef 复用 proxy.ModelRef，避免类型不一致
 // （config 包已 import proxy，无需重复定义）
+
+// copyChain 深拷贝 auto 链（Config 和 Preset 都要用）
+func copyChain(src []AgentModels) []AgentModels {
+	dst := make([]AgentModels, len(src))
+	for i, ag := range src {
+		dst[i] = AgentModels{
+			Upstream: ag.Upstream,
+			Models:   append([]string{}, ag.Models...),
+		}
+	}
+	return dst
+}
+
+// copyFallbacks 深拷贝手动降级链（Config 和 Preset 都要用）
+func copyFallbacks(src map[string][]proxy.ModelRef) map[string][]proxy.ModelRef {
+	dst := make(map[string][]proxy.ModelRef, len(src))
+	for k, v := range src {
+		dst[k] = append([]proxy.ModelRef{}, v...)
+	}
+	return dst
+}
 
 // UpdateConfig 自动升级配置
 type UpdateConfig struct {
@@ -47,6 +79,8 @@ type Config struct {
 	Port            int                          `json:"port"`            // 代理监听端口
 	APIKey          string                       `json:"apiKey"`          // 客户端接入密钥（严格校验）
 	AutoUpdate      UpdateConfig                 `json:"update"`          // 自动升级配置
+	Presets         []Preset                     `json:"presets"`         // 已保存的运行模式方案
+	ActivePreset    string                       `json:"activePreset"`    // 当前激活方案名（仅 UI 提示；偏离后置空 = 自定义）
 
 	mu   sync.RWMutex `json:"-"`
 	path string        `json:"-"`
@@ -74,6 +108,8 @@ func Defaults() *Config {
 		ManualFallbacks: map[string][]proxy.ModelRef{},
 		GlobalFallback:  proxy.ModelRef{},
 		Port:            DefaultPort,
+		Presets:         []Preset{},
+		ActivePreset:    "",
 		AutoUpdate: UpdateConfig{
 			Enabled:  true,
 			Provider: "github",
@@ -214,6 +250,39 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("globalFallback 的 upstream 无效: %s", c.GlobalFallback.Upstream)
 	}
 
+	// 方案列表：名字非空、不重名、mode 合法、upstream 合法
+	seenPreset := make(map[string]bool, len(c.Presets))
+	for _, p := range c.Presets {
+		if strings.TrimSpace(p.Name) == "" {
+			return fmt.Errorf("方案名不能为空")
+		}
+		if seenPreset[p.Name] {
+			return fmt.Errorf("方案名重复: %s", p.Name)
+		}
+		seenPreset[p.Name] = true
+		if p.Mode != "auto" && p.Mode != "manual" {
+			return fmt.Errorf("方案 %s 的模式无效: %s", p.Name, p.Mode)
+		}
+		for _, ag := range p.AutoChain {
+			if !isValidUpstream(ag.Upstream) {
+				return fmt.Errorf("方案 %s 中无效的 upstream: %s", p.Name, ag.Upstream)
+			}
+		}
+		for key, chain := range p.ManualFallbacks {
+			for _, ref := range chain {
+				if !isValidUpstream(ref.Upstream) {
+					return fmt.Errorf("方案 %s 的 manualFallbacks[%s] 中无效的 upstream: %s", p.Name, key, ref.Upstream)
+				}
+			}
+		}
+		if p.GlobalFallback.Upstream != "" && !isValidUpstream(p.GlobalFallback.Upstream) {
+			return fmt.Errorf("方案 %s 的 globalFallback upstream 无效: %s", p.Name, p.GlobalFallback.Upstream)
+		}
+	}
+
+	// ActivePreset 刻意不做存在性校验：
+	// Load() 在 Validate 失败时会把整份配置重置为默认（用户会丢掉所有配置），
+	// 一个悬空的方案名不值得付这个代价，UI 端降级显示「自定义」即可
 	return nil
 }
 
@@ -224,22 +293,25 @@ func (c *Config) Clone() *Config {
 
 	cp := &Config{
 		Mode:            c.Mode,
-		AutoChain:       make([]AgentModels, len(c.AutoChain)),
-		ManualFallbacks: make(map[string][]proxy.ModelRef, len(c.ManualFallbacks)),
+		AutoChain:       copyChain(c.AutoChain),
+		ManualFallbacks: copyFallbacks(c.ManualFallbacks),
 		GlobalFallback:  c.GlobalFallback,
 		Port:            c.Port,
 		APIKey:          c.APIKey,
 		AutoUpdate:      c.AutoUpdate,
+		ActivePreset:    c.ActivePreset,
 		path:            c.path,
 	}
-	for i, ag := range c.AutoChain {
-		cp.AutoChain[i] = AgentModels{
-			Upstream: ag.Upstream,
-			Models:   append([]string{}, ag.Models...),
+	// 方案列表必须深拷贝，否则前端改动会串到 Manager 持有的配置上
+	cp.Presets = make([]Preset, len(c.Presets))
+	for i, p := range c.Presets {
+		cp.Presets[i] = Preset{
+			Name:            p.Name,
+			Mode:            p.Mode,
+			AutoChain:       copyChain(p.AutoChain),
+			ManualFallbacks: copyFallbacks(p.ManualFallbacks),
+			GlobalFallback:  p.GlobalFallback,
 		}
-	}
-	for k, v := range c.ManualFallbacks {
-		cp.ManualFallbacks[k] = append([]proxy.ModelRef{}, v...)
 	}
 	return cp
 }
@@ -260,6 +332,8 @@ func (c *Config) Update(newCfg *Config) error {
 	c.Port = newCfg.Port
 	c.APIKey = newCfg.APIKey
 	c.AutoUpdate = newCfg.AutoUpdate
+	c.Presets = newCfg.Presets
+	c.ActivePreset = newCfg.ActivePreset
 	c.mu.Unlock()
 
 	return c.Save()

@@ -72,9 +72,49 @@ func (s *ConfigService) ResetConfig() error {
 	return nil
 }
 
+// ====== 运行模式方案（Preset）======
+//
+// 方案是快照语义：保存冻结当前配置，切换覆盖回当前配置。
+// 方案不含 port/apiKey，所以这几个操作都不需要重启代理。
+
+// SavePreset 把当前运行模式配置存为方案；同名覆盖
+func (s *ConfigService) SavePreset(name string) error {
+	if err := s.mgr.SavePreset(name); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// ApplyPreset 应用方案（立即生效）
+func (s *ConfigService) ApplyPreset(name string) error {
+	if err := s.mgr.ApplyPreset(name); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// DeletePreset 删除方案
+func (s *ConfigService) DeletePreset(name string) error {
+	if err := s.mgr.DeletePreset(name); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// RenamePreset 重命名方案
+func (s *ConfigService) RenamePreset(oldName, newName string) error {
+	if err := s.mgr.RenamePreset(oldName, newName); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
 // restartProxyOnPort 停止当前代理，用新端口重启
-func (s *ConfigService) restartProxyOnPort(port int) error {
-	if s.core == nil || s.core.server == nil {
+func (s *ConfigService) restartProxyOnPort(port int) error {	if s.core == nil || s.core.server == nil {
 		return nil
 	}
 	s.core.server.Stop()

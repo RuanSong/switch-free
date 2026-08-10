@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"switchfree/proxy"
@@ -96,4 +97,106 @@ func (m *Manager) ResetConfig() error {
 // GetConfig 获取当前配置（供前端 GetConfig 使用，返回指针）
 func (m *Manager) GetConfig() *Config {
 	return m.Get()
+}
+
+// ====== 运行模式方案（Preset）======
+//
+// 方案是快照语义：保存时冻结当前运行模式配置，切换时覆盖回当前配置。
+// 切换后继续编辑不会回写方案，需再次 SavePreset 同名覆盖。
+//
+// 以下方法一律走 Get() 取克隆 -> 改 -> SaveConfig 的模式。
+// 不能自己持 m.mu 再调 SaveConfig —— 后者会 m.mu.Lock()，会死锁。
+
+// findPreset 返回方案在切片中的下标，不存在返回 -1
+func findPreset(presets []Preset, name string) int {
+	for i, p := range presets {
+		if p.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// SavePreset 把当前运行模式配置存为方案快照；同名则覆盖
+func (m *Manager) SavePreset(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("方案名不能为空")
+	}
+
+	cfg := m.Get()
+	snap := Preset{
+		Name:            name,
+		Mode:            cfg.Mode,
+		AutoChain:       copyChain(cfg.AutoChain),
+		ManualFallbacks: copyFallbacks(cfg.ManualFallbacks),
+		GlobalFallback:  cfg.GlobalFallback,
+	}
+
+	if idx := findPreset(cfg.Presets, name); idx >= 0 {
+		cfg.Presets[idx] = snap
+	} else {
+		cfg.Presets = append(cfg.Presets, snap)
+	}
+	cfg.ActivePreset = name
+
+	return m.SaveConfig(cfg)
+}
+
+// ApplyPreset 应用方案到当前配置（覆盖并立即生效）
+func (m *Manager) ApplyPreset(name string) error {
+	cfg := m.Get()
+	idx := findPreset(cfg.Presets, name)
+	if idx < 0 {
+		return fmt.Errorf("方案不存在: %s", name)
+	}
+
+	p := cfg.Presets[idx]
+	cfg.Mode = p.Mode
+	cfg.AutoChain = copyChain(p.AutoChain)
+	cfg.ManualFallbacks = copyFallbacks(p.ManualFallbacks)
+	cfg.GlobalFallback = p.GlobalFallback
+	cfg.ActivePreset = name
+
+	return m.SaveConfig(cfg)
+}
+
+// DeletePreset 删除方案；删的是当前激活方案时清空激活标记
+func (m *Manager) DeletePreset(name string) error {
+	cfg := m.Get()
+	idx := findPreset(cfg.Presets, name)
+	if idx < 0 {
+		return fmt.Errorf("方案不存在: %s", name)
+	}
+
+	cfg.Presets = append(cfg.Presets[:idx], cfg.Presets[idx+1:]...)
+	if cfg.ActivePreset == name {
+		cfg.ActivePreset = ""
+	}
+
+	return m.SaveConfig(cfg)
+}
+
+// RenamePreset 重命名方案（当前配置内容不变）
+func (m *Manager) RenamePreset(oldName, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("方案名不能为空")
+	}
+
+	cfg := m.Get()
+	idx := findPreset(cfg.Presets, oldName)
+	if idx < 0 {
+		return fmt.Errorf("方案不存在: %s", oldName)
+	}
+	if newName != oldName && findPreset(cfg.Presets, newName) >= 0 {
+		return fmt.Errorf("方案名已存在: %s", newName)
+	}
+
+	cfg.Presets[idx].Name = newName
+	if cfg.ActivePreset == oldName {
+		cfg.ActivePreset = newName
+	}
+
+	return m.SaveConfig(cfg)
 }
