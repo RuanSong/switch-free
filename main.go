@@ -181,17 +181,32 @@ func main() {
 	}
 }
 
-// startUpdateCheck 启动后延迟 3s 后台检查更新，有新版本推送 update:available 事件
+// startUpdateCheck 启动后延迟 3s 首次检查更新，之后每 6 小时周期检查。
+// 发现新版本时推送 update:available 事件给前端（前端按 critical 决定是否可忽略）。
 func startUpdateCheck(updaterSvc *service.UpdaterService) {
-	time.Sleep(3 * time.Second)
-	info, err := updaterSvc.CheckUpdate()
-	if err != nil {
-		log.Printf("⚠️ 检查更新失败: %v", err)
-		return
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+
+	check := func() {
+		info, err := updaterSvc.CheckUpdate()
+		if err != nil {
+			log.Printf("⚠️ 检查更新失败: %v", err)
+			return
+		}
+		if info != nil {
+			kind := "普通更新"
+			if info.Critical {
+				kind = "强制更新"
+			}
+			log.Printf("发现新版本 %s（当前 %s，%s）", info.Version, updaterSvc.GetCurrentVersion(), kind)
+			updaterSvc.EmitUpdateAvailable(info)
+		}
 	}
-	if info != nil {
-		log.Printf("发现新版本 %s（当前 %s）", info.Version, updaterSvc.GetCurrentVersion())
-		updaterSvc.EmitUpdateAvailable(info)
+
+	time.Sleep(3 * time.Second)
+	check()
+	for range ticker.C {
+		check()
 	}
 }
 

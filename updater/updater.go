@@ -71,6 +71,9 @@ func (u *Updater) ApplyUpdate(ctx context.Context, info *UpdateInfo, progress fu
 		}
 		return err
 	}
+	// 应用完（或失败）后清理临时下载文件
+	defer os.Remove(tmpFile)
+
 	if progress != nil {
 		progress(UpdateStatus{State: "applying", Message: "应用更新"})
 	}
@@ -111,6 +114,12 @@ func checkCustomURL(ctx context.Context, url, currentVer string) (*UpdateInfo, e
 	}
 	if versionCompare(trimV(info.Version), currentVer) <= 0 {
 		return nil, nil
+	}
+	// 若响应未显式指定 critical，按版本号段变化判定（minor 变化=强制）
+	if !info.Critical {
+		cur := parseVersion(currentVer)
+		nw := parseVersion(trimV(info.Version))
+		info.Critical = nw[0] != cur[0] || nw[1] != cur[1]
 	}
 	return info, nil
 }

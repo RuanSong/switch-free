@@ -30,20 +30,37 @@ make build-binaries V=x.y.z  # 构建全平台裸二进制到 dist/（发布/自
 
 ## 自动更新机制
 - 版本号来源：`build/config.yml` 的 `info.version`，构建时 `make sync-version` 同步到 `version/config.yml`（Go embed 读取）
-- 检测时机：启动后延迟 3s 后台检查（`main.go: startUpdateCheck`）+ 前端 UpdatePanel 手动「检查更新」
+- 检测时机：**启动后延迟 3s 首次检查 + 每 6 小时周期检查**（`main.go: startUpdateCheck`），发现新版本推 `update:available` 事件；前端 UpdatePanel 也提供「立即检查」手动触发
 - 检测逻辑（`updater/github.go`）：GET `https://api.github.com/repos/{Owner}/{Repo}/releases/latest`，比较 `tag_name`（去 v 前缀）与当前版本，仅看 **non-prerelease 的最新 release**
+- **更新分级**（`UpdateInfo.Critical`）：major 或 minor 段变化（如 0.0.x → 0.1.0）= 强制更新，前端不显示「稍后再说」；仅 patch 段变化（0.0.3 → 0.0.4）= 可选更新，可忽略
 - 资产名匹配（`assetName()` 硬编码）：`switch-free-darwin-arm64` / `switch-free-darwin-amd64` / `switch-free-windows-amd64.exe`（+ linux 运行时检测 `switch-free-linux-amd64`，但 `make build-binaries` 暂不构建 linux），**发布时资产文件名必须精确匹配**
-- 下载应用（`updater/updater.go`）：`downloadAsset` 下载到临时文件 -> `github.com/minio/selfupdate` 原子替换运行中二进制 -> 提示重启
+- 下载应用（`updater/updater.go`）：`downloadAsset` 下载到临时文件（临时文件由 `ApplyUpdate` 用完后清理，**不能在 downloadAsset 里 defer Remove**）-> `github.com/minio/selfupdate` 原子替换运行中二进制 -> 提示重启
+- changelog：`UpdateInfo.Notes` 取自 GitHub Release body，由 `make release` 从 `CHANGELOG.md` 自动提取对应版本章节；前端 UpdatePanel 展示
 - 配置：`Config.AutoUpdate`（Enabled/Provider/GitHub{Owner,Repo,Token}/UpdateURL/Channel），默认 `RuanSong/switch-free` 公开仓库，无需 Token
 
 ## 发布流程（一键）
 ```bash
-make deploy V=0.0.4   # 构建 -> 推码 -> 打 tag -> 创建 Release -> 上传裸二进制
+# 1. 日常开发时把改动记进 CHANGELOG.md 的 [Unreleased] 章节
+#    忘记记录可用 make changelog-auto 从 commit 生成草稿再润色
+# 2. 定版：[Unreleased] -> [0.0.5] + 今天日期，并新开空 [Unreleased]
+make changelog-release V=0.0.5
+# 3. 更新 build/config.yml 的 info.version 为 0.0.5
+# 4. 一键发布
+make deploy V=0.0.5   # 构建 -> 推码 -> 打 tag -> 创建 Release -> 上传全部产物
 ```
-deploy 链：`build-binaries -> push -> tag -> release -> upload`
-- `build-binaries` 依赖 `build-frontend`（只构建一次）+ 三个平台裸二进制
+deploy 链：`build-binaries -> dist -> push -> tag -> release -> upload`
+- `build-binaries`：3 个裸二进制（darwin arm64/amd64 + windows amd64），自动更新用
+- `dist`：`dmg-universal`（lipo 合并双架构 -> Universal DMG）+ `nsis`（Windows 安装包）
+- `upload`：裸二进制（必需，缺失报错）+ DMG/NSIS 安装包（可选，存在则传）
+- `release`：从 CHANGELOG.md 提取 `## [x.y.z]` 章节作为 release notes，**找不到该章节直接报错**
 - 产物名必须匹配 `assetName()`，否则 updater 找不到对应平台资产
 - 注意：tag 必须是 `vX.Y.Z` 格式，Release 不能是 prerelease（否则 `/releases/latest` 返回不到）
+
+## CHANGELOG 维护
+- 格式：Keep a Changelog + 语义化版本，分类小标题固定 `### 新增`/`### 修复`/`### 变更`/`### 移除`/`### 废弃`/`### 安全`
+- `make changelog-auto`：扫描上个 tag 到 HEAD 的 commit，按 Conventional Commits 前缀（`feat:`/`fix:`/其他）归类插入 `[Unreleased]`，生成的是**草稿**需人工润色为面向用户的描述
+- `make changelog-release V=x.y.z`：把 `[Unreleased]` 改名为 `[x.y.z] - 今天日期`，并在上面新开空 `[Unreleased]`；空章节或版本已存在会报错拒绝
+- 章节标题必须是 `## [x.y.z]` 格式（`release` 用 awk 精确匹配提取），新版本在上、旧版本在下
 
 ## 验证过的能力
 - /health 返回四上游凭据状态

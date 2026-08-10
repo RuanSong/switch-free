@@ -16,7 +16,7 @@ export default function UpdatePanel() {
     UpdaterService.GetCurrentVersion().then((v) => setCurrentVersion(v ?? ""));
   }, []);
 
-  // 启动时自动检查（main 推送 update:available）
+  // 后台定时检查（main 启动时 + 每 6 小时推送 update:available）
   useWailsEvent("update:available", (data) => {
     setUpdateInfo(data as UpdateInfo);
   });
@@ -65,6 +65,8 @@ export default function UpdatePanel() {
     }
   };
 
+  const isCritical = updateInfo?.critical ?? false;
+
   return (
     <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
       <div className="flex items-center justify-between mb-3">
@@ -82,16 +84,42 @@ export default function UpdatePanel() {
 
       {updateInfo ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm">发现新版本：</span>
-            <span className="font-mono text-sm font-bold text-[var(--color-primary)]">{updateInfo.version}</span>
-            <span className="text-xs text-[var(--color-text-dim)]">({updateInfo.assetSize ? (updateInfo.assetSize / 1024 / 1024).toFixed(1) + " MB" : ""})</span>
-          </div>
-          {updateInfo.notes && (
-            <div className="text-xs text-[var(--color-text-dim)] whitespace-pre-wrap bg-[var(--color-bg)] rounded-lg p-3 max-h-40 overflow-y-auto">
-              {updateInfo.notes}
+          {/* 强制更新横幅 */}
+          {isCritical && (
+            <div className="px-3 py-2 rounded-lg bg-[var(--color-danger)]/15 border border-[var(--color-danger)]/40 text-xs text-[var(--color-danger)]">
+              ⚠️ 这是重要版本更新（{currentVersion} → {updateInfo.version}），包含不兼容变更或关键修复，请尽快更新。
             </div>
           )}
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm">发现新版本：</span>
+            <span className="font-mono text-sm font-bold text-[var(--color-primary)]">{updateInfo.version}</span>
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                isCritical
+                  ? "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"
+                  : "bg-[var(--color-primary)]/20 text-[var(--color-primary)]"
+              }`}
+            >
+              {isCritical ? "强制更新" : "可选更新"}
+            </span>
+            {updateInfo.assetSize ? (
+              <span className="text-xs text-[var(--color-text-dim)]">
+                ({(updateInfo.assetSize / 1024 / 1024).toFixed(1)} MB)
+              </span>
+            ) : null}
+          </div>
+
+          {/* 更新日志（changelog） */}
+          {updateInfo.notes && (
+            <div>
+              <div className="text-xs font-medium text-[var(--color-text-dim)] mb-1">更新内容</div>
+              <div className="text-xs text-[var(--color-text)] whitespace-pre-wrap bg-[var(--color-bg)] rounded-lg p-3 max-h-60 overflow-y-auto leading-relaxed">
+                {updateInfo.notes}
+              </div>
+            </div>
+          )}
+
           {/* 下载进度 */}
           {progress && (
             <div>
@@ -104,32 +132,40 @@ export default function UpdatePanel() {
               </div>
             </div>
           )}
+
           <div className="flex gap-2">
             <button
               onClick={apply}
               disabled={updating}
-              className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+              className={`px-4 py-1.5 text-sm rounded-lg hover:opacity-90 disabled:opacity-50 ${
+                isCritical ? "bg-[var(--color-danger)]" : "bg-[var(--color-primary)]"
+              }`}
             >
-              {updating ? "更新中..." : "立即更新"}
+              {updating ? "更新中..." : isCritical ? "立即更新（必需）" : "立即更新"}
             </button>
-            <button
-              onClick={() => setUpdateInfo(null)}
-              disabled={updating}
-              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
-            >
-              忽略
-            </button>
+            {/* 强制更新不提供「忽略」；仅可选更新可稍后 */}
+            {!isCritical && (
+              <button
+                onClick={() => setUpdateInfo(null)}
+                disabled={updating}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
+              >
+                稍后再说
+              </button>
+            )}
           </div>
         </div>
       ) : (
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-[var(--color-text-dim)]">检查 GitHub Releases 获取新版本，更新会替换当前二进制。</p>
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-xs text-[var(--color-text-dim)]">
+            启动时及每 6 小时自动检查 GitHub Releases，发现新版本会自动提示。更新会替换当前二进制。
+          </p>
           <button
             onClick={check}
             disabled={checking}
-            className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+            className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50 whitespace-nowrap shrink-0"
           >
-            {checking ? "检查中..." : "🔍 检查更新"}
+            {checking ? "检查中..." : "🔍 立即检查"}
           </button>
         </div>
       )}

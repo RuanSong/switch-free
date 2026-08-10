@@ -12,6 +12,8 @@
 #   make test           # 运行 Go 测试
 #   make fmt            # 格式化 Go 代码
 #   make version        # 显示当前版本号
+#   make changelog-auto # 从 git commit 生成 changelog 草稿到 [Unreleased]
+#   make changelog-release # 发布定版：[Unreleased] -> [V] + 日期，新开空 Unreleased
 #   make tag            # 打 git tag（如 make tag v=0.1.0）
 #   make release        # 创建 GitHub Release
 #   make upload         # 上传 dist/ 构建产物到 GitHub Release
@@ -31,7 +33,7 @@ DIST        := dist
 # 架构
 ARCH        ?= amd64
 
-.PHONY: build package dmg windows nsis dist build-server build-frontend build-binaries build-darwin-arm64 build-darwin-amd64 build-windows-amd64 test fmt version tag release upload push deploy clean sync-version
+.PHONY: build package package-universal dmg dmg-universal windows nsis dist build-server build-frontend build-binaries build-darwin-arm64 build-darwin-amd64 build-windows-amd64 test fmt version tag release upload push deploy clean sync-version changelog-auto changelog-release
 
 ## 同步版本号：build/config.yml -> version/config.yml（version 包 embed 读取的唯一来源）
 sync-version:
@@ -53,6 +55,21 @@ package: build
 	@cp build/darwin/Info.plist bin/$(APP).app/Contents/
 	@codesign --force --deep --sign - bin/$(APP).app
 	@echo "✅ 打包完成: bin/$(APP).app"
+
+## 打包 universal（arm64+amd64）.app：复用 dist/ 下两个裸二进制，lipo 合并后打包
+package-universal: build-binaries
+	@test -f $(DIST)/switch-free-darwin-arm64 || (echo "❌ 缺少 dist/switch-free-darwin-arm64"; exit 1)
+	@test -f $(DIST)/switch-free-darwin-amd64 || (echo "❌ 缺少 dist/switch-free-darwin-amd64"; exit 1)
+	@mkdir -p bin
+	lipo -create -output bin/$(APP) $(DIST)/switch-free-darwin-arm64 $(DIST)/switch-free-darwin-amd64
+	@mkdir -p bin/$(APP).app/Contents/MacOS
+	@mkdir -p bin/$(APP).app/Contents/Resources
+	@cp build/darwin/icons.icns bin/$(APP).app/Contents/Resources/
+	@if [ -f build/darwin/Assets.car ]; then cp build/darwin/Assets.car bin/$(APP).app/Contents/Resources/; fi
+	@cp bin/$(APP) bin/$(APP).app/Contents/MacOS/
+	@cp build/darwin/Info.plist bin/$(APP).app/Contents/
+	@codesign --force --deep --sign - bin/$(APP).app
+	@echo "✅ Universal 打包完成: bin/$(APP).app ($$(lipo -archs bin/$(APP)))"
 
 ## 打包 macOS DMG 安装镜像
 dmg: package
@@ -95,6 +112,47 @@ dmg: package
 	@rm -f /tmp/switch-free_rw.dmg
 	@echo "✅ DMG 打包完成: $(DIST)/$(APP)-darwin-$(ARCH).dmg"
 
+## 打包 macOS Universal（arm64+amd64）DMG 安装镜像
+dmg-universal: package-universal
+	@mkdir -p $(DIST)
+	@rm -f $(DIST)/$(APP)-darwin-universal.dmg
+	@# 清理上次失败可能残留的挂载与临时 DMG（hdiutil create 不覆盖已存在文件）
+	@hdiutil detach "/Volumes/Switch Free" 2>/dev/null || true
+	@hdiutil detach "/Volumes/Switch Free 1" 2>/dev/null || true
+	@rm -f /tmp/switch-free_rw.dmg
+	@# 创建可写 DMG
+	hdiutil create -size 80m -volname "Switch Free" \
+		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-free_rw.dmg
+	@# 挂载
+	hdiutil attach /tmp/switch-free_rw.dmg -readwrite -noverify -noautoopen
+	@# 复制 .app + Applications 快捷方式 + 卷图标
+	cp -R bin/$(APP).app "/Volumes/Switch Free/Switch Free.app"
+	ln -sf /Applications "/Volumes/Switch Free/Applications"
+	cp build/darwin/icons.icns "/Volumes/Switch Free/.VolumeIcon.icns"
+	SetFile -c 'icnC' "/Volumes/Switch Free/.VolumeIcon.icns"
+	SetFile -a C "/Volumes/Switch Free"
+	@# 设置窗口布局
+	osascript -e 'tell application "Finder"' \
+		-e 'set dmg to disk "Switch Free"' \
+		-e 'open dmg' \
+		-e 'set dmgWin to container window of dmg' \
+		-e 'set current view of dmgWin to icon view' \
+		-e 'set icon size of icon view options of dmgWin to 96' \
+		-e 'set arrangement of icon view options of dmgWin to not arranged' \
+		-e 'set label position of icon view options of dmgWin to bottom' \
+		-e 'set bounds of dmgWin to {100, 100, 620, 460}' \
+		-e 'set position of item "Switch Free.app" of dmgWin to {175, 190}' \
+		-e 'set position of item "Applications" of dmgWin to {435, 190}' \
+		-e 'close dmgWin' \
+		-e 'end tell'
+	@sync
+	@sleep 2
+	@# 卸载并压缩为只读 DMG
+	hdiutil detach "/Volumes/Switch Free"
+	hdiutil convert /tmp/switch-free_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-universal.dmg
+	@rm -f /tmp/switch-free_rw.dmg
+	@echo "✅ Universal DMG 打包完成: $(DIST)/$(APP)-darwin-universal.dmg"
+
 ## 交叉编译 Windows .exe（含图标嵌入）
 windows: sync-version
 	@mkdir -p bin
@@ -123,8 +181,8 @@ nsis: windows
 	cp bin/$(APP)-$(ARCH)-installer.exe $(DIST)/$(APP)-windows-$(ARCH)-installer.exe
 	@echo "✅ NSIS 安装包完成: $(DIST)/$(APP)-windows-$(ARCH)-installer.exe"
 
-## 一键打包所有平台安装包（DMG + NSIS）
-dist: dmg nsis
+## 一键打包所有平台安装包（Universal DMG + NSIS）
+dist: dmg-universal nsis
 	@echo ""
 	@echo "🎉 全部安装包打包完成:"
 	@ls -lh $(DIST)/*
@@ -206,16 +264,63 @@ tag:
 		echo "✅ 已打 tag: $(TAG)"; \
 	fi
 
-## 创建 GitHub Release
+## 从 git commit 生成 changelog 草稿，插入 CHANGELOG.md 的 [Unreleased] 章节
+## 扫描上个 tag（无 tag 则从首次提交）到 HEAD，按 Conventional Commits 前缀归类
+changelog-auto:
+	@test -f CHANGELOG.md || (echo "❌ 找不到 CHANGELOG.md" && exit 1)
+	@grep -q '^## \[Unreleased\]' CHANGELOG.md || (echo "❌ CHANGELOG.md 缺少 '## [Unreleased]' 章节" && exit 1)
+	@last=$$(git describe --tags --abbrev=0 2>/dev/null || echo ""); \
+	if [ -n "$$last" ]; then range="$$last..HEAD"; echo "🔄 提取 $$last 到 HEAD 的提交..."; \
+	else range="HEAD"; echo "🔄 无历史 tag，提取全部提交..."; fi; \
+	feats=$$(git log $$range --no-merges --pretty=format:'%s' | grep -E '^feat(\(.+\))?:' | sed -E 's/^feat(\(.+\))?: */- /' || true); \
+	fixes=$$(git log $$range --no-merges --pretty=format:'%s' | grep -E '^fix(\(.+\))?:' | sed -E 's/^fix(\(.+\))?: */- /' || true); \
+	others=$$(git log $$range --no-merges --pretty=format:'%s' | grep -vE '^(feat|fix)(\(.+\))?:' | sed -E 's/^[a-z]+(\(.+\))?: */- /' || true); \
+	if [ -z "$$feats$$fixes$$others" ]; then echo "ℹ️ 无新提交，未改动 CHANGELOG.md"; exit 0; fi; \
+	{ \
+		echo "<!-- 以下由 make changelog-auto 生成，请人工润色为面向用户的描述后删除本行注释 -->"; \
+		[ -n "$$feats" ] && { echo "### 新增"; echo "$$feats"; echo ""; }; \
+		[ -n "$$fixes" ] && { echo "### 修复"; echo "$$fixes"; echo ""; }; \
+		[ -n "$$others" ] && { echo "### 变更"; echo "$$others"; echo ""; }; \
+	} > .changelog-draft.tmp; \
+	awk '/^## \[Unreleased\]/{print; print ""; while((getline line < ".changelog-draft.tmp") > 0) print line; next} {print}' CHANGELOG.md > CHANGELOG.md.new; \
+	mv CHANGELOG.md.new CHANGELOG.md; \
+	rm -f .changelog-draft.tmp; \
+	echo "✅ 草稿已插入 CHANGELOG.md 的 [Unreleased]，请人工润色"
+
+## 发布定版：把 [Unreleased] 改名为 [V] - 今天日期，并在上面新开空 [Unreleased]
+changelog-release:
+	@test -n "$(V)" || (echo "❌ 版本号为空（用 make changelog-release V=x.y.z）" && exit 1)
+	@test -f CHANGELOG.md || (echo "❌ 找不到 CHANGELOG.md" && exit 1)
+	@grep -q '^## \[Unreleased\]' CHANGELOG.md || (echo "❌ CHANGELOG.md 缺少 '## [Unreleased]' 章节" && exit 1)
+	@if grep -q '^## \[$(V)\]' CHANGELOG.md; then echo "❌ CHANGELOG.md 已存在 [$(V)] 章节"; exit 1; fi
+	@# 校验 Unreleased 下有内容（到下一个 ## 之前非空）
+	@content=$$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md | grep -v '^[[:space:]]*$$' | grep -v '^<!--' || true); \
+	if [ -z "$$content" ]; then \
+		echo "❌ [Unreleased] 章节为空，先记录变更（或运行 make changelog-auto 生成草稿）"; exit 1; \
+	fi
+	@today=$$(date +%Y-%m-%d); \
+	awk -v ver="$(V)" -v d="$$today" '/^## \[Unreleased\]/{print "## [Unreleased]"; print ""; print "## [" ver "] - " d; next} {print}' CHANGELOG.md > CHANGELOG.md.new; \
+	mv CHANGELOG.md.new CHANGELOG.md; \
+	echo "✅ CHANGELOG.md 已定版: [$(V)] - $$today（并新开空 [Unreleased]）"
+
+## 创建 GitHub Release（自动从 CHANGELOG.md 提取对应版本的章节作为 release notes）
 release:
 	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
 	@test -n "$$(gh auth status 2>&1 | grep -o 'Logged in')" || (echo "❌ 请先运行 gh auth login" && exit 1)
+	@test -f CHANGELOG.md || (echo "❌ 找不到 CHANGELOG.md" && exit 1)
+	@echo "🔄 从 CHANGELOG.md 提取 [$(V)] 章节..."
+	@# 提取 "## [x.y.z]" 到下一个 "## [" 之间的内容；去掉标题行本身
+	@awk '/^## \[$(V)\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md > .release-notes.tmp
+	@if [ ! -s .release-notes.tmp ]; then \
+		echo "❌ CHANGELOG.md 中找不到 [$(V)] 章节，请先添加变更记录"; exit 1; \
+	fi
 	@echo "🔄 创建 Release $(TAG) 到 $(REPO)..."
 	gh release create $(TAG) \
 		--repo $(REPO) \
 		--title "Switch Free $(TAG)" \
-		--notes "Switch Free $(TAG)" \
+		--notes-file .release-notes.tmp \
 		|| echo "⚠️ Release 可能已存在，尝试 upload 资产"
+	@rm -f .release-notes.tmp
 	@echo "✅ Release $(TAG) 已创建"
 
 ## 上传 dist/ 产物到 GitHub Release：
@@ -229,7 +334,7 @@ upload:
 	missing=""; \
 	for f in $$required; do [ -f "$$f" ] || missing="$$missing $$f"; done; \
 	if [ -n "$$missing" ]; then echo "❌ 缺少裸二进制:$$missing（先 make build-binaries）"; exit 1; fi; \
-	optional="$(DIST)/switch-free-darwin-amd64.dmg $(DIST)/switch-free-windows-amd64-installer.exe"; \
+	optional="$(DIST)/switch-free-darwin-universal.dmg $(DIST)/switch-free-windows-amd64-installer.exe"; \
 	toUpload="$$required"; \
 	for f in $$optional; do [ -f "$$f" ] && toUpload="$$toUpload $$f" || echo "ℹ️ 跳过可选安装包（不存在）: $$f"; done; \
 	gh release upload $(TAG) $$toUpload --repo $(REPO) --clobber; \

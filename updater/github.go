@@ -83,6 +83,13 @@ func CheckGitHubRelease(gh config.GitHubConfig, currentVersion string) (*UpdateI
 		return nil, nil // 无新版本
 	}
 
+	// 判定是否强制更新：
+	// major 或 minor 段变化（含 0.x.x 的 minor 变化）-> 强制
+	// 仅 patch 段变化（0.0.x）-> 普通更新，用户可忽略
+	cur := parseVersion(currentVersion)
+	nw := parseVersion(newVersion)
+	critical := nw[0] != cur[0] || nw[1] != cur[1]
+
 	// 找匹配当前平台的资产
 	target := assetName()
 	for _, a := range rel.Assets {
@@ -93,6 +100,7 @@ func CheckGitHubRelease(gh config.GitHubConfig, currentVersion string) (*UpdateI
 				AssetURL:  a.BrowserDownloadURL,
 				AssetName: a.Name,
 				AssetSize: a.Size,
+				Critical:  critical,
 			}, nil
 		}
 	}
@@ -136,17 +144,20 @@ func downloadAsset(url string, total int64, progress func(UpdateStatus)) (string
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name())
+	// 注意：不在此处 defer Remove，文件交给调用方 ApplyUpdate 在应用完更新后清理
+	// （否则函数返回即删除，后续 openFile 会找不到文件）
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		tmp.Close()
+		os.Remove(tmp.Name())
 		return "", err
 	}
 	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		tmp.Close()
+		os.Remove(tmp.Name())
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -172,6 +183,7 @@ func downloadAsset(url string, total int64, progress func(UpdateStatus)) (string
 		}
 		if err != nil {
 			tmp.Close()
+			os.Remove(tmp.Name())
 			return "", err
 		}
 	}

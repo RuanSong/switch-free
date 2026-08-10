@@ -65,3 +65,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.iml
+.release-notes.tmp
