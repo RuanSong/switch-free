@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"switchfree/paths"
 )
 
 // AgentType agent 工具类型，决定前端引导方式
@@ -93,12 +95,23 @@ func FindAgent(upstream string) *AgentInfo {
 	return nil
 }
 
-// IsAgentInstalled 探测 agent 的凭据文件是否存在（任一 ProbePath 存在即视为已装）
-// 路径中的 ~ 自动展开为用户 HOME
+// IsAgentInstalled 探测 agent 的凭据文件是否存在（任一路径存在即视为已装）
+// 优先用 paths 包的跨平台候选路径（与凭据加载同源，保证探测与加载一致）；
+// ProbePaths 作为补充（含 ~ 展开），兼容历史硬编码路径
 func IsAgentInstalled(agent *AgentInfo) bool {
 	if agent == nil {
 		return false
 	}
+	// 1. 跨平台候选路径（paths 包，与 EnsureCreds 加载用的是同一套）
+	for _, p := range probeCandidates(agent.Upstream) {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	// 2. ProbePaths 补充（含 ~ 展开）
 	for _, p := range agent.ProbePaths {
 		expanded := expandPath(p)
 		if _, err := os.Stat(expanded); err == nil {
@@ -106,6 +119,21 @@ func IsAgentInstalled(agent *AgentInfo) bool {
 		}
 	}
 	return false
+}
+
+// probeCandidates 按 upstream 返回跨平台凭据候选路径（委托 paths 包，单一真相）
+func probeCandidates(upstream string) []string {
+	switch upstream {
+	case "joycode":
+		return paths.JoyCodeVscdbCandidates()
+	case "workbuddy":
+		return paths.WorkBuddyInfoCandidates()
+	case "deveco":
+		return paths.DevEcoAuthCandidates()
+	case "opencode":
+		return paths.OpenCodeAuthCandidates()
+	}
+	return nil
 }
 
 // expandPath 展开路径开头的 ~ 为用户 HOME
