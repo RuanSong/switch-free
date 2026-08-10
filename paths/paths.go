@@ -67,6 +67,29 @@ func XDGStateDir() string {
 	return filepath.Join(home, ".local", "state")
 }
 
+// 以下 LiteralXDG* 系列返回「跨平台一致的字面 XDG 路径」（~/.config、~/.local/share、
+// ~/.local/state），用于基于 Node.js 的 CLI 工具（DevEco/OpenCode）。这类工具在所有平台
+// （含 Windows）都直接用字面路径，不像原生 Windows 程序那样落到 %APPDATA%/%LOCALAPPDATA%。
+// 不能用上面的 XDG* 系列，因为那些在 Windows 上会映射到 %APPDATA%，导致找不到文件。
+
+// LiteralConfigDir 字面 ~/.config（所有平台一致）
+func LiteralConfigDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config")
+}
+
+// LiteralDataDir 字面 ~/.local/share（所有平台一致）
+func LiteralDataDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share")
+}
+
+// LiteralStateDir 字面 ~/.local/state（所有平台一致）
+func LiteralStateDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state")
+}
+
 // EnvOr 环境变量覆盖：env 非空则返回 env，否则返回 def
 // 作为 Windows 路径不准时的逃生口（如 JOYCODE_VSCDB）
 func EnvOr(env, def string) string {
@@ -120,15 +143,30 @@ func JoyCodeVscdbCandidates() []string {
 }
 
 // WorkBuddyInfoCandidates WorkBuddy 凭据跨平台候选路径
+// WorkBuddy 是腾讯 CodeBuddy 桌面版（Electron）：
+//   - macOS: ~/Library/Application Support/CodeBuddyExtension/.../workbuddy-desktop.info
+//   - Windows: %LOCALAPPDATA%\CodeBuddyExtension\...\workbuddy-desktop-ai.info
+//     （目录结构相同，但 Windows 文件名带 -ai 后缀，且数据根在 LOCALAPPDATA 而非 APPDATA）
+//
+// 为兼容不同版本/平台，同时探测两个文件名变体与多个目录名/数据根。
 func WorkBuddyInfoCandidates() []string {
 	home, _ := os.UserHomeDir()
+	// macOS/Linux：workbuddy-desktop.info
 	rel := filepath.Join("CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info")
 	c := []string{
 		filepath.Join(home, "Library", "Application Support", rel), // macOS
 		filepath.Join(home, ".config", rel),                        // Linux
 	}
-	if appdata := os.Getenv("APPDATA"); appdata != "" {
-		c = append(c, filepath.Join(appdata, rel)) // Windows
+	// Windows：APPDATA / LOCALAPPDATA 下，探测目录名 × 文件名变体
+	authDir := filepath.Join("Data", "Public", "auth")
+	fileVariants := []string{"workbuddy-desktop-ai.info", "workbuddy-desktop.info"}
+	dirVariants := []string{"CodeBuddyExtension", "CodeBuddy", "WorkBuddyAI", "WorkBuddy"}
+	for _, base := range windowsConfigDirs() {
+		for _, dir := range dirVariants {
+			for _, fname := range fileVariants {
+				c = append(c, filepath.Join(base, dir, authDir, fname))
+			}
+		}
 	}
 	return c
 }
@@ -140,8 +178,9 @@ func OpenCodeAuthCandidates() []string {
 		filepath.Join(home, ".local", "share", "opencode", "auth.json"), // macOS/Linux XDG
 		filepath.Join(home, ".config", "opencode", "auth.json"),         // 部分发行版变体
 	}
-	if appdata := os.Getenv("APPDATA"); appdata != "" {
-		c = append(c, filepath.Join(appdata, "opencode", "auth.json")) // Windows
+	// Windows：APPDATA / LOCALAPPDATA 下的 opencode 目录
+	for _, base := range windowsConfigDirs() {
+		c = append(c, filepath.Join(base, "opencode", "auth.json"))
 	}
 	return c
 }
@@ -153,8 +192,43 @@ func DevEcoAuthCandidates() []string {
 	c := []string{
 		filepath.Join(home, ".local", "share", "deveco", "auth.json"), // macOS/Linux XDG
 	}
-	if appdata := os.Getenv("APPDATA"); appdata != "" {
-		c = append(c, filepath.Join(appdata, "deveco", "auth.json")) // Windows
+	// Windows：APPDATA / LOCALAPPDATA 下的 deveco 目录
+	for _, base := range windowsConfigDirs() {
+		c = append(c, filepath.Join(base, "deveco", "auth.json"))
 	}
 	return c
+}
+
+// windowsConfigDirs 返回 Windows 上应用数据目录候选（APPDATA + LOCALAPPDATA）；
+// 非 Windows 平台返回 nil（调用方据此跳过）
+func windowsConfigDirs() []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	var dirs []string
+	if appdata := os.Getenv("APPDATA"); appdata != "" {
+		dirs = append(dirs, appdata)
+	}
+	if local := os.Getenv("LOCALAPPDATA"); local != "" && local != os.Getenv("APPDATA") {
+		dirs = append(dirs, local)
+	}
+	return dirs
+}
+
+// NpmGlobalBinDir 返回 npm 全局 bin 目录：
+//   Windows: %APPDATA%\npm（npm i -g 安装的 .cmd/.exe shim 都在这里）
+//   其他平台: ~/.npm-global/bin 及常见前缀（实际更可靠的是 exec.LookPath 查 PATH）
+// 主要用于 Windows 下探测通过 npm 全局安装的 CLI（opencode/deveco），
+// 即使该目录未进 PATH 也能定位到 shim。
+func NpmGlobalBinDir() string {
+	if runtime.GOOS == "windows" {
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			return filepath.Join(appdata, "npm")
+		}
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		return filepath.Join(home, ".npm-global", "bin")
+	}
+	return ""
 }

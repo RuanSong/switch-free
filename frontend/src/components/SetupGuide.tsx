@@ -6,10 +6,12 @@ import CopyButton from "./CopyButton";
 interface Props {
   agents: AgentDetail[];
   onClose: () => void;
+  onRefresh?: () => void;
 }
 
-export default function SetupGuide({ agents, onClose }: Props) {
+export default function SetupGuide({ agents, onClose, onRefresh }: Props) {
   const [dismissed, setDismissed] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   // 全部就绪则不显示
   const allReady = agents.every((a) => a.valid);
@@ -20,6 +22,16 @@ export default function SetupGuide({ agents, onClose }: Props) {
   const handleClose = () => {
     setDismissed(true);
     onClose();
+  };
+
+  // 手动重新探测安装状态（GetAgents 实时跑 IsAgentInstalled）
+  const handleRescan = async () => {
+    setScanning(true);
+    try {
+      await onRefresh?.();
+    } finally {
+      setScanning(false);
+    }
   };
 
   return (
@@ -53,6 +65,15 @@ export default function SetupGuide({ agents, onClose }: Props) {
           <p className="text-xs text-[var(--color-text-dim)] flex-1 leading-relaxed">
             💡 装一个登录一个，代理会自动恢复（无需重启）。auto 模式：DevEco 主力，失败降级 JoyCode。
           </p>
+          {onRefresh && (
+            <button
+              onClick={handleRescan}
+              disabled={scanning}
+              className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50 whitespace-nowrap shrink-0"
+            >
+              {scanning ? "检测中..." : "🔄 重新检测"}
+            </button>
+          )}
           <button
             onClick={handleClose}
             className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 whitespace-nowrap shrink-0"

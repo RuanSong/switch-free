@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -213,6 +214,44 @@ func (c *Core) RefreshAllCreds() {
 	c.RefreshCreds("workbuddy")
 	// 推送状态更新
 	c.EmitEvent("cred:change", c.GetCredStatus())
+}
+
+// WatchInstalledAgents 后台周期探测各 agent 安装状态。
+// 检测到「未安装 -> 已安装」时自动校验该上游凭据并推送状态，
+// 让引导界面无需重启即可反映新安装的工具。filesystem/PATH 探测很廉价，
+// 每 interval 扫一次即可。应在独立 goroutine 中运行，ctx 取消时退出。
+func (c *Core) WatchInstalledAgents(ctx context.Context, interval time.Duration) {
+	// 已探测为「已安装」的 upstream 集合，避免重复校验
+	installed := map[string]bool{}
+	for _, a := range creds.AgentRegistry {
+		if creds.IsAgentInstalled(&a) {
+			installed[a.Upstream] = true
+		}
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			changed := false
+			for i := range creds.AgentRegistry {
+				a := &creds.AgentRegistry[i]
+				now := creds.IsAgentInstalled(a)
+				if now && !installed[a.Upstream] {
+					// 新安装：触发凭据校验（失败仅记录，等待用户登录）
+					_ = c.RefreshCreds(a.Upstream)
+					changed = true
+				}
+				installed[a.Upstream] = now
+			}
+			if changed {
+				c.EmitEvent("cred:change", c.GetCredStatus())
+			}
+		}
+	}
 }
 
 // emitCredChange 推送凭据状态变化

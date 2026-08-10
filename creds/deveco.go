@@ -34,9 +34,11 @@ func DefaultDevEcoConfig() DevEcoConfig {
 		MaasPath:        "/sse/codeGenie/maas/v2",
 		ModelConfigPath: "/codeGenie/modelConfig",
 		PluginVersion:   "CLI.0.1.7",
-		KEKDir:          filepath.Join(paths.XDGConfigDir(), "deveco"),
+		// DevEco Code 是 Node.js CLI，所有平台（含 Windows）都用字面 XDG 路径，
+		// 不能用 XDGConfigDir()（Windows 会映射到 %APPDATA%，导致找不到 token.dek）
+		KEKDir:          filepath.Join(paths.LiteralConfigDir(), "deveco"),
 		AuthPath:        paths.Resolve("DEVECO_AUTH_PATH", paths.DevEcoAuthCandidates()),
-		KVPath:          filepath.Join(paths.XDGStateDir(), "deveco", "kv.json"),
+		KVPath:          filepath.Join(paths.LiteralStateDir(), "deveco", "kv.json"),
 		VerifyIntervalMs: 600000,
 	}
 }

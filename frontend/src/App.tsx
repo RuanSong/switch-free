@@ -31,12 +31,30 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // 拉取 agent 列表（实时探测安装状态）
+  const fetchAgents = useCallback(async () => {
+    try {
+      const list = await CredsService.GetAgents();
+      const next = (list ?? []).filter((a): a is AgentDetail => a !== null);
+      setAgents(next);
+      return next;
+    } catch (e) {
+      console.error("拉取 agent 列表失败", e);
+      return [];
+    }
+  }, []);
+
+  // 重新探测安装状态 + 校验已安装但未登录的凭据
+  const rescanAgents = useCallback(async () => {
+    await CredsService.RefreshAllCreds().catch(() => {});
+    await fetchAgents();
+  }, [fetchAgents]);
+
   // 拉取仪表盘聚合数据 + agent 列表 + 配置
   const refreshDashboard = useCallback(async () => {
     try {
-      const [d, agentList, cfg] = await Promise.all([
+      const [d, cfg] = await Promise.all([
         ProxyService.GetDashboard(),
-        CredsService.GetAgents(),
         ConfigService.GetConfig(),
       ]);
       if (d) {
@@ -46,8 +64,7 @@ export default function App() {
         setLogs(d.recentLogs?.filter((l): l is LogEntry => l !== null) ?? []);
       }
       if (cfg) setConfig(cfg);
-      const agents = (agentList ?? []).filter((a): a is AgentDetail => a !== null);
-      setAgents(agents);
+      const agents = await fetchAgents();
       // 首次加载：若三上游全部未安装，自动弹引导
       if (agents.length > 0 && agents.every((a) => !a.installed)) {
         setShowSetup(true);
@@ -57,7 +74,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchAgents]);
 
   useEffect(() => {
     refreshDashboard();
@@ -75,12 +92,7 @@ export default function App() {
   useWailsEvent("cred:change", async (data) => {
     setCreds(data as AllCredStatus);
     // 凭据变化时刷新 agent 列表（拿到最新 installed/valid）
-    try {
-      const list = await CredsService.GetAgents();
-      setAgents((list ?? []).filter((a): a is AgentDetail => a !== null));
-    } catch {
-      /* ignore */
-    }
+    await fetchAgents();
   });
   useWailsEvent("log:new", (data) => {
     const entry = data as LogEntry;
@@ -168,7 +180,7 @@ export default function App() {
 
       {/* 首次启动引导弹窗：三上游全部未安装时自动弹出 */}
       {showSetup && agents.length > 0 && (
-        <SetupGuide agents={agents} onClose={() => setShowSetup(false)} />
+        <SetupGuide agents={agents} onClose={() => setShowSetup(false)} onRefresh={rescanAgents} />
       )}
     </div>
   );

@@ -141,11 +141,16 @@ func main() {
 
 	// 拦截窗口关闭：改为隐藏到托盘（不真正退出）
 	// 跨平台：macOS 关红叉、Windows/Linux 关闭按钮都触发 WindowClosing
+	// 注意：托盘「退出」时 realQuit=true，必须放行（不能 Cancel），否则 cleanup 里
+	// window.Close() 被本 hook 取消，窗口/webview 无法销毁，导致退出卡死
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		if realQuit.Load() {
+			return // 真正退出，让 Wails 正常销毁窗口
+		}
 		if mainWindow != nil {
 			mainWindow.Hide()
 		}
-		event.Cancel() // 取消真正的关闭，窗口仅隐藏
+		event.Cancel() // 非退出场景：取消真正关闭，窗口仅隐藏
 	})
 
 	// 拦截最小化：改为隐藏到托盘（Windows/Linux 任务栏不再占位，macOS 不缩到 Dock）
@@ -163,6 +168,9 @@ func main() {
 
 	// 10. 后台定期预检凭据
 	go startBackgroundVerify(jyUp, deUp, ocUp, wbUp, core)
+
+	// 10.5 后台周期探测 agent 安装状态（新安装工具时自动校验凭据并推送，无需重启）
+	go core.WatchInstalledAgents(app.Context(), 5*time.Second)
 
 	// 10.5 启动 3s 后后台检查更新（有新版本发事件给前端弹窗）
 	go startUpdateCheck(updaterSvc)

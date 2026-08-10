@@ -2,8 +2,9 @@ package creds
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
+	"runtime"
 
 	"switchfree/paths"
 )
@@ -25,7 +26,10 @@ type AgentInfo struct {
 	InstallCmd  string   // CLI 安装命令（GUI 类型为空）
 	LoginCmd    string   // 登录命令（GUI 类型为"打开客户端扫码"之类提示）
 	LoginURL    string   // 浏览器登录页 URL
-	ProbePaths  []string // 凭据文件探测路径（判断 Installed），支持 ~ 展开
+	// ExecNames CLI 可执行文件名（跨平台探测安装用）；对 CLI 工具，
+	// 除凭据文件外，还在 PATH 和 npm 全局 bin 目录查找这些可执行文件，
+	// 任一命中即视为已安装（Windows 上 .cmd/.exe/.ps1 shim 都算）
+	ExecNames []string
 }
 
 // AgentRegistry 已支持的 agent 工具注册表
@@ -40,9 +44,6 @@ var AgentRegistry = []AgentInfo{
 		InstallCmd:  "", // GUI 应用，无 CLI 安装命令
 		LoginCmd:    "打开 JoyCode 客户端扫码登录",
 		LoginURL:    "https://joycode.jd.com/portal/login",
-		ProbePaths: []string{
-			"~/Library/Application Support/JoyCode/User/globalStorage/state.vscdb",
-		},
 	},
 	{
 		Name:        "DevEco Code",
@@ -53,9 +54,7 @@ var AgentRegistry = []AgentInfo{
 		InstallCmd:  "npm i -g @deveco/deveco-code",
 		LoginCmd:    "deveco auth login",
 		LoginURL:    "https://cn.devecostudio.huawei.com",
-		ProbePaths: []string{
-			"~/.local/share/deveco/auth.json",
-		},
+		ExecNames:   []string{"deveco", "deveco-code"},
 	},
 	{
 		Name:        "OpenCode Zen",
@@ -63,25 +62,20 @@ var AgentRegistry = []AgentInfo{
 		Type:        AgentTypeCLI,
 		Desc:        "OpenCode 开源 CLI 的免费模型通道，静态 apiKey 明文存本地",
 		DownloadURL: "https://opencode.ai",
-		InstallCmd:  "brew install opencode-ai/tap/opencode",
+		InstallCmd:  "npm i -g opencode-ai",
 		LoginCmd:    "opencode auth login",
 		LoginURL:    "https://opencode.ai",
-		ProbePaths: []string{
-			"~/.local/share/opencode/auth.json",
-		},
+		ExecNames:   []string{"opencode"},
 	},
 	{
 		Name:        "WorkBuddy",
 		Upstream:    "workbuddy",
 		Type:        AgentTypeGUI,
 		Desc:        "腾讯 CodeBuddy 桌面版，OAuth token 明文存本地，免费模型通道",
-		DownloadURL: "https://workbuddy.app",
+		DownloadURL: "https://workbuddy.ai",
 		InstallCmd:  "", // GUI 应用，无 CLI 安装命令
 		LoginCmd:    "打开 WorkBuddy 客户端登录",
 		LoginURL:    "https://copilot.tencent.com/login?platform=workbuddy",
-		ProbePaths: []string{
-			"~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
-		},
 	},
 }
 
@@ -95,9 +89,9 @@ func FindAgent(upstream string) *AgentInfo {
 	return nil
 }
 
-// IsAgentInstalled 探测 agent 的凭据文件是否存在（任一路径存在即视为已装）
-// 优先用 paths 包的跨平台候选路径（与凭据加载同源，保证探测与加载一致）；
-// ProbePaths 作为补充（含 ~ 展开），兼容历史硬编码路径
+// IsAgentInstalled 探测 agent 是否已安装（任一信号命中即视为已装）：
+//  1. 跨平台凭据文件路径（paths 包，与 EnsureCreds 加载同源）
+//  2. CLI 可执行文件：PATH 中查找，以及 npm 全局 bin 目录（Windows: %APPDATA%\npm）
 func IsAgentInstalled(agent *AgentInfo) bool {
 	if agent == nil {
 		return false
@@ -111,14 +105,52 @@ func IsAgentInstalled(agent *AgentInfo) bool {
 			return true
 		}
 	}
-	// 2. ProbePaths 补充（含 ~ 展开）
-	for _, p := range agent.ProbePaths {
-		expanded := expandPath(p)
-		if _, err := os.Stat(expanded); err == nil {
+	// 2. CLI 可执行文件探测（PATH + npm 全局 bin）
+	if len(agent.ExecNames) > 0 && isExecInstalled(agent.ExecNames) {
+		return true
+	}
+	return false
+}
+
+// isExecInstalled 在 PATH 和 npm 全局 bin 目录中查找任一可执行文件。
+// Windows 上 exec.LookPath 会按 PATHEXT 匹配 .cmd/.exe/.ps1 等；
+// 另显式检查 npm 全局 bin（%APPDATA%\npm），覆盖该目录未进 PATH 的情况。
+func isExecInstalled(names []string) bool {
+	for _, name := range names {
+		// PATH 查找
+		if _, err := exec.LookPath(name); err == nil {
+			return true
+		}
+	}
+	// npm 全局 bin 目录（Windows: %APPDATA%\npm）
+	npmBin := paths.NpmGlobalBinDir()
+	if npmBin == "" {
+		return false
+	}
+	for _, name := range names {
+		if exeExistsInDir(npmBin, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// exeExistsInDir 在目录 dir 里查找名为 name 的可执行文件。
+// Windows 下尝试常见 shim 后缀（.cmd/.exe/.ps1/.bat）；其他平台直接查同名文件可执行位。
+func exeExistsInDir(dir, name string) bool {
+	if runtime.GOOS == "windows" {
+		for _, ext := range []string{".cmd", ".exe", ".ps1", ".bat"} {
+			if info, err := os.Stat(filepath.Join(dir, name+ext)); err == nil && !info.IsDir() {
+				return true
+			}
+		}
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, name))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0111 != 0
 }
 
 // probeCandidates 按 upstream 返回跨平台凭据候选路径（委托 paths 包，单一真相）
@@ -134,24 +166,6 @@ func probeCandidates(upstream string) []string {
 		return paths.OpenCodeAuthCandidates()
 	}
 	return nil
-}
-
-// expandPath 展开路径开头的 ~ 为用户 HOME
-func expandPath(p string) string {
-	if !strings.HasPrefix(p, "~") {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return p
-	}
-	if p == "~" {
-		return home
-	}
-	if strings.HasPrefix(p, "~/") {
-		return filepath.Join(home, p[2:])
-	}
-	return p
 }
 
 // FillAgentMeta 把 AgentRegistry 里对应 upstream 的安装/登录元数据注入 CredStatusInfo
