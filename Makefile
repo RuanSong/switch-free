@@ -218,19 +218,22 @@ release:
 		|| echo "⚠️ Release 可能已存在，尝试 upload 资产"
 	@echo "✅ Release $(TAG) 已创建"
 
-## 上传 dist/ 中裸二进制产物到 GitHub Release（自动更新检测的资产，名称须匹配 updater/github.go 的 assetName()）
+## 上传 dist/ 产物到 GitHub Release：
+##   - 裸二进制（自动更新用，名称须匹配 updater/github.go 的 assetName()，必须存在）
+##   - 安装包 DMG/NSIS（用户手动下载用，存在则上传，缺失跳过并提示）
 upload:
 	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
 	@test -n "$$(gh auth status 2>&1 | grep -o 'Logged in')" || (echo "❌ 请先运行 gh auth login" && exit 1)
-	@echo "🔄 上传 dist/ 裸二进制到 Release $(TAG)..."
-	@assets="$(DIST)/switch-free-darwin-arm64 $(DIST)/switch-free-darwin-amd64 $(DIST)/switch-free-windows-amd64.exe"; \
+	@echo "🔄 上传 dist/ 产物到 Release $(TAG)..."
+	@required="$(DIST)/switch-free-darwin-arm64 $(DIST)/switch-free-darwin-amd64 $(DIST)/switch-free-windows-amd64.exe"; \
 	missing=""; \
-	for f in $$assets; do \
-		[ -f "$$f" ] || missing="$$missing $$f"; \
-	done; \
-	if [ -n "$$missing" ]; then echo "❌ 缺少产物:$$missing（先 make build-binaries）"; exit 1; fi; \
-	gh release upload $(TAG) $$assets --repo $(REPO) --clobber; \
-	echo "✅ 已上传:$$assets"
+	for f in $$required; do [ -f "$$f" ] || missing="$$missing $$f"; done; \
+	if [ -n "$$missing" ]; then echo "❌ 缺少裸二进制:$$missing（先 make build-binaries）"; exit 1; fi; \
+	optional="$(DIST)/switch-free-darwin-amd64.dmg $(DIST)/switch-free-windows-amd64-installer.exe"; \
+	toUpload="$$required"; \
+	for f in $$optional; do [ -f "$$f" ] && toUpload="$$toUpload $$f" || echo "ℹ️ 跳过可选安装包（不存在）: $$f"; done; \
+	gh release upload $(TAG) $$toUpload --repo $(REPO) --clobber; \
+	echo "✅ 已上传:$$toUpload"
 
 ## 推送代码 + tag 到远程
 push:
@@ -238,8 +241,8 @@ push:
 	@echo "✅ 代码已推送"
 	git push origin $(TAG) 2>/dev/null || echo "ℹ️ tag $(TAG) 已存在或无新 tag 可推"
 
-## 一键发布：构建裸二进制 -> 推码 -> 打 tag -> 发 release -> 上传产物
-deploy: build-binaries push tag release upload
+## 一键发布：构建裸二进制 + 安装包（DMG/NSIS）-> 推码 -> 打 tag -> 发 release -> 上传全部产物
+deploy: build-binaries dist push tag release upload
 	@echo "🎉 发布流程完成: https://github.com/$(REPO)/releases/tag/$(TAG)"
 
 ## 清理产物
