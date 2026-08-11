@@ -35,10 +35,11 @@ ARCH        ?= amd64
 
 .PHONY: build package package-universal dmg dmg-universal windows nsis dist build-server build-frontend build-binaries build-darwin-arm64 build-darwin-amd64 build-windows-amd64 test fmt version tag release upload push deploy clean sync-version changelog-auto changelog-release
 
-## 同步版本号：build/config.yml -> version/config.yml（version 包 embed 读取的唯一来源）
+## 同步版本号：V -> build/config.yml + version/config.yml（两处保持一致，单一真相来源是 V 参数 / build/config.yml）
 sync-version:
+	@perl -i -pe 's/version: "[0-9]+\.[0-9]+\.[0-9]+"/version: "$(V)"/' build/config.yml
 	@perl -i -pe 's/version: "[0-9]+\.[0-9]+\.[0-9]+"/version: "$(V)"/' version/config.yml
-	@echo "✅ 同步版本号 $(V) -> version/config.yml"
+	@echo "✅ 同步版本号 $(V) -> build/config.yml + version/config.yml"
 
 ## 构建本机 macOS 桌面版（wails3 完整 GUI）
 build: sync-version
@@ -346,8 +347,8 @@ push:
 	@echo "✅ 代码已推送"
 	git push origin $(TAG) 2>/dev/null || echo "ℹ️ tag $(TAG) 已存在或无新 tag 可推"
 
-## 一键发布：构建裸二进制 + 安装包（DMG/NSIS）-> 推码 -> 打 tag -> 发 release -> 上传全部产物
-deploy: build-binaries dist push tag release upload
+## 一键发布：构建裸二进制 + 安装包（DMG/NSIS）-> 打 tag -> 推码（含 tag）-> 发 release -> 上传全部产物
+deploy: build-binaries dist tag push release upload
 	@echo "🎉 发布流程完成: https://github.com/$(REPO)/releases/tag/$(TAG)"
 
 ## 清理产物

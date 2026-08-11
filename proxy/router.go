@@ -290,7 +290,11 @@ func isUpstreamErrorResponse(resp *upstream.Response) bool {
 	if err := json.Unmarshal([]byte(trimmed), &o); err != nil {
 		return resp.StatusCode >= 400
 	}
-	if _, ok := o["choices"]; ok {
+	if choices, ok := o["choices"]; ok {
+		// choices 存在但为空数组 → 上游返回了不完整响应，视为错误
+		if arr, ok := choices.([]interface{}); ok && len(arr) == 0 {
+			return true
+		}
 		return false
 	}
 	_, hasError := o["error"]

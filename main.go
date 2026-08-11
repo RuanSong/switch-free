@@ -17,6 +17,7 @@ import (
 	"switchfree/service"
 	"switchfree/updater"
 	"switchfree/upstream"
+	"switchfree/version"
 )
 
 // Wails 用 embed 包把前端文件嵌入二进制
@@ -38,6 +39,16 @@ var realQuit atomic.Bool
 
 // 全局窗口引用（供托盘菜单使用）
 var mainWindow *application.WebviewWindow
+
+// latestUpdate 最新可用更新信息（nil 表示无更新或尚未检查）
+// 由 startUpdateCheck 写入，托盘菜单读取显示
+var latestUpdate atomic.Pointer[updater.UpdateInfo]
+
+// 全局托盘引用（供动态刷新菜单用）
+var systemTray *application.SystemTray
+
+// 重建托盘菜单的回调（setupSystray 内设置；startUpdateCheck 等地方发现更新时调用）
+var rebuildTrayMenu func()
 
 func main() {
 	// 1. 凭据管理器
@@ -161,7 +172,7 @@ func main() {
 	})
 
 	// 8. 系统托盘
-	setupSystray(app, server)
+	setupSystray(app, server, cfgMgr, updaterSvc)
 
 	// 9. 启动代理 + 凭据校验（非致命：失败仅警告，等待客户端登录后自动恢复）
 	go startProxyAndCreds(server, jyUp, deUp, ocUp, wbUp, core)
@@ -199,7 +210,12 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 				kind = "强制更新"
 			}
 			log.Printf("发现新版本 %s（当前 %s，%s）", info.Version, updaterSvc.GetCurrentVersion(), kind)
+			latestUpdate.Store(info)
 			updaterSvc.EmitUpdateAvailable(info)
+			// 刷新托盘菜单（显示"有新版本"）
+			if rebuildTrayMenu != nil {
+				rebuildTrayMenu()
+			}
 		}
 	}
 
@@ -210,12 +226,12 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 	}
 }
 
-// setupSystray 配置系统托盘
 // setupSystray 配置系统托盘（跨平台）
-// - 单击托盘图标：显示/聚焦主窗口
-// - 右键菜单：打开面板 / 退出（唯一真正退出途径）
-func setupSystray(app *application.App, server *proxy.Server) {
+// - 单击/双击托盘图标：显示/聚焦主窗口
+// - 右键菜单：版本号、服务状态+启停、方案切换、检查更新、打开面板、退出
+func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Manager, updaterSvc *service.UpdaterService) *application.SystemTray {
 	tray := app.SystemTray.New()
+	systemTray = tray // 存全局引用，供动态刷新用
 	// macOS 用模板图（透明背景 + 黑色主体），系统按菜单栏明暗自动反色；
 	// 其他平台用彩色图标
 	if runtime.GOOS == "darwin" {
@@ -235,14 +251,167 @@ func setupSystray(app *application.App, server *proxy.Server) {
 		mainWindow.Focus()
 	}
 
+	// 构建菜单（首次）
+	menu := buildTrayMenu(server, cfgMgr, updaterSvc, showWindow, app)
+	tray.SetMenu(menu)
+
+	// 重建菜单的公共回调
+	rebuild := func() {
+		newMenu := buildTrayMenu(server, cfgMgr, updaterSvc, showWindow, app)
+		tray.SetMenu(newMenu)
+	}
+	rebuildTrayMenu = rebuild
+
+	// 配置变化时重建菜单（方案增删改、激活态变化等）
+	cfgMgr.SetOnChange(func() {
+		// SaveConfig 在哪个 goroutine 触发就在哪个 goroutine 调用；
+		// SetMenu 内部用 InvokeSync 切主线程，所以这里可以直接调
+		rebuild()
+	})
+
+	// 服务状态轮询：每秒检查一次，变化时更新状态菜单项
+	// （Wails 没有"菜单即将打开"的回调，用轮询近似实现"打开时最新"的效果）
+	go func() {
+		lastRunning := server.IsRunning()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			nowRunning := server.IsRunning()
+			if nowRunning == lastRunning {
+				continue
+			}
+			lastRunning = nowRunning
+			// 只更新状态项，不重建整个菜单（减少闪烁 + 避免关闭中的子菜单状态丢失）
+			// 通过重建整份菜单来保证一致性（状态项位置索引可能随方案变化而变）
+			rebuild()
+		}
+	}()
+
+	// 单击/双击托盘图标打开面板（macOS 单击、Windows/Linux 通常双击）
+	tray.OnClick(func() {
+		showWindow()
+	})
+	tray.OnDoubleClick(func() {
+		showWindow()
+	})
+
+	return tray
+}
+
+// buildTrayMenu 构建托盘右键菜单
+// 菜单项：版本号 / 服务状态（带图标，点击切换启停） / 方案 / 检查更新 / 打开面板 / 退出
+func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *service.UpdaterService, showWindow func(), app *application.App) *application.Menu {
 	menu := application.NewMenu()
-	// 首项作为程序名标题（禁用，仅展示；macOS 托盘不支持 hover tooltip）
-	menu.Add("Switch Free").SetEnabled(false)
+	running := server.IsRunning()
+
+	// ── 版本号（禁用，仅展示） ──
+	menu.Add("Switch Free v"+version.GetVersion()).SetEnabled(false)
+
 	menu.AddSeparator()
+
+	// ── GitHub Star 引导 ──
+	menu.Add("⭐ 去 GitHub 点个 Star").OnClick(func(*application.Context) {
+		_ = app.Browser.OpenURL("https://github.com/RuanSong/switch-free")
+	})
+
+	menu.AddSeparator()
+
+	// ── 服务状态（纯展示，禁用；每次打开菜单时由 buildTrayMenu 读取最新状态） ──
+	statusLabel := "服务：已停止"
+	if running {
+		statusLabel = "服务：运行中"
+	}
+	menu.Add(statusLabel).SetEnabled(false)
+
+	menu.AddSeparator()
+
+	// ── 方案切换 ──
+	cfg := cfgMgr.Get()
+	if len(cfg.Presets) > 0 {
+		// 有方案：显示子菜单（radio 形式，激活的打勾）
+		presetMenu := menu.AddSubmenu("方案")
+		for _, p := range cfg.Presets {
+			name := p.Name
+			checked := cfg.ActivePreset == name
+			presetMenu.AddRadio(name, checked).OnClick(func(*application.Context) {
+				// 应用方案；成功后会触发 onChange 回调重建菜单
+				_ = cfgMgr.ApplyPreset(name)
+			})
+		}
+	} else {
+		// 无方案：显示"保存方案..."入口，点击跳设置页
+		menu.Add("保存方案...").OnClick(func(*application.Context) {
+			showWindow()
+			app.Event.Emit("navigate:settings", nil)
+		})
+	}
+
+	menu.AddSeparator()
+
+	// ── 打开面板 ──
 	menu.Add("打开面板").OnClick(func(*application.Context) {
 		showWindow()
 	})
+
 	menu.AddSeparator()
+
+	// ── 检查更新 / 有新版本 ──
+	updateInfo := latestUpdate.Load()
+	if updateInfo != nil {
+		// 有新版本：显示带箭头的提示，点击打开窗口并弹更新面板
+		updateLabel := "有新版本 v" + updateInfo.Version + " ↗"
+		if updateInfo.Critical {
+			updateLabel = "有新版本 v" + updateInfo.Version + "（强制） ↗"
+		}
+		menu.Add(updateLabel).OnClick(func(*application.Context) {
+			showWindow()
+			// 推送 update:available 事件，前端 UpdatePanel 会弹窗
+			updaterSvc.EmitUpdateAvailable(updateInfo)
+		})
+	} else {
+		checkItem := menu.Add("检查更新")
+		checkItem.OnClick(func(*application.Context) {
+			// 先置为检查中状态（点击后菜单会关闭，但状态已更新，下次打开可见）
+			checkItem.SetLabel("检查中...")
+			checkItem.SetEnabled(false)
+			// 异步检查
+			go func() {
+				info, err := updaterSvc.CheckUpdate()
+				if err != nil {
+					log.Printf("⚠️ 检查更新失败: %v", err)
+					checkItem.SetLabel("检查失败")
+					checkItem.SetEnabled(true)
+					// 3 秒后恢复
+					time.AfterFunc(3*time.Second, func() {
+						checkItem.SetLabel("检查更新")
+						checkItem.SetEnabled(true)
+					})
+					return
+				}
+				if info != nil {
+					latestUpdate.Store(info)
+					// 有新版本：重建整个菜单（显示"有新版本"入口），并弹窗口
+					if rebuildTrayMenu != nil {
+						rebuildTrayMenu()
+					}
+					showWindow()
+					updaterSvc.EmitUpdateAvailable(info)
+				} else {
+					// 无新版本：显示"已是最新版本"，3 秒后恢复
+					checkItem.SetLabel("已是最新版本")
+					checkItem.SetEnabled(true)
+					time.AfterFunc(3*time.Second, func() {
+						checkItem.SetLabel("检查更新")
+						checkItem.SetEnabled(true)
+					})
+				}
+			}()
+		})
+	}
+
+	menu.AddSeparator()
+
+	// ── 退出 ──
 	menu.Add("退出").OnClick(func(*application.Context) {
 		// 异步执行退出：macOS 托盘菜单回调在主线程，同步调用 app.Quit() 会
 		// 触发 NSApp.terminate，而 terminate 需要 runloop 迭代才能完成，
@@ -253,15 +422,8 @@ func setupSystray(app *application.App, server *proxy.Server) {
 			app.Quit()
 		}()
 	})
-	tray.SetMenu(menu)
 
-	// 单击/双击托盘图标打开面板（macOS 单击、Windows/Linux 通常双击）
-	tray.OnClick(func() {
-		showWindow()
-	})
-	tray.OnDoubleClick(func() {
-		showWindow()
-	})
+	return menu
 }
 
 // startProxyAndCreds 启动时校验凭据（非致命）+ 启动代理

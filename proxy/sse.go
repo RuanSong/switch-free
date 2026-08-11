@@ -120,6 +120,19 @@ func WriteAnthropicSSE(w io.Writer, openaiResp *OpenAIResponse, model string) {
 		blockIndex++
 	}
 
+	// 兜底：如果所有 content block 都为空（无 text、无 tool_calls、无 reasoning），
+	// 补一个空 text block 保证 content 不为空数组
+	if blockIndex == 0 {
+		write("content_block_start", map[string]interface{}{
+			"type":          "content_block_start",
+			"index":         0,
+			"content_block": map[string]interface{}{"type": "text", "text": ""},
+		})
+		write("content_block_stop", map[string]interface{}{
+			"type": "content_block_stop", "index": 0,
+		})
+	}
+
 	// stop_reason
 	stopReason := "end_turn"
 	if choice.FinishReason == "tool_calls" {

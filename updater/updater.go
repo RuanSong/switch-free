@@ -37,7 +37,19 @@ func (u *Updater) GetCurrentVersion() string { return u.currentVer }
 
 // CheckUpdate 检查是否有新版本（不下载）
 func (u *Updater) CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
-	uc := u.cfg.AutoUpdate
+	uc := &u.cfg.AutoUpdate
+	// 兼容旧配置：从未显式设置过 update 字段（Enabled=false 且 Provider=""），
+	// 使用默认设置而非静默跳过
+	if !uc.Enabled && uc.Provider == "" {
+		uc.Enabled = true
+		uc.Provider = "github"
+		if uc.GitHub.Owner == "" {
+			uc.GitHub.Owner = "RuanSong"
+		}
+		if uc.GitHub.Repo == "" {
+			uc.GitHub.Repo = "switch-free"
+		}
+	}
 	if !uc.Enabled {
 		return nil, nil
 	}

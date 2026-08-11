@@ -10,9 +10,10 @@ import (
 
 // Manager 配置管理器，线程安全，支持热重载
 type Manager struct {
-	mu     sync.RWMutex
-	config *Config
-	path   string
+	mu       sync.RWMutex
+	config   *Config
+	path     string
+	onChange func() // 配置变化回调（托盘菜单等 UI 组件用，SaveConfig 成功后触发）
 }
 
 // NewManager 创建配置管理器
@@ -58,12 +59,13 @@ func (m *Manager) GetAPIKey() string {
 
 // SaveConfig 保存并热加载新配置
 // 调用方提供新 *Config 对象（通常来自前端），由 Manager 校验 + 替换 + 写盘
+// 成功后触发 onChange 回调（在锁外调用，避免回调内再访问 Manager 导致死锁）
 func (m *Manager) SaveConfig(newCfg *Config) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// 校验
 	if err := newCfg.Validate(); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("配置校验失败: %w", err)
 	}
 
@@ -75,7 +77,16 @@ func (m *Manager) SaveConfig(newCfg *Config) error {
 
 	// 写盘
 	if err := newCfg.Save(); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	// 取出回调后解锁（回调在锁外调用）
+	cb := m.onChange
+	m.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 	return nil
 }
@@ -97,6 +108,14 @@ func (m *Manager) ResetConfig() error {
 // GetConfig 获取当前配置（供前端 GetConfig 使用，返回指针）
 func (m *Manager) GetConfig() *Config {
 	return m.Get()
+}
+
+// SetOnChange 注册配置变化回调（SaveConfig 成功后触发）
+// 回调在调用 SaveConfig 的 goroutine 中执行，注意线程安全
+func (m *Manager) SetOnChange(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onChange = fn
 }
 
 // ====== 运行模式方案（Preset）======

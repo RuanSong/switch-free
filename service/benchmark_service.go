@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"switchfree/proxy"
 )
 
 // BenchmarkTarget 测评目标（上游 + 模型）
@@ -182,8 +184,13 @@ func (s *BenchmarkService) benchOne(url string, target BenchmarkTarget, prompt s
 	res.DurationMs = time.Since(start).Milliseconds()
 	res.Success = true
 	res.OutputTokens = outputTokens
-	if res.DurationMs > 0 && outputTokens > 0 {
-		res.TPS = float64(outputTokens) / (float64(res.DurationMs) / 1000.0)
+	// 上游流式不返回 usage（如 JoyCode 真流式）时，按输出字符数兜底估算，
+	// 保证 TPS 能算出且四模型横向对比口径一致
+	if outputTokens <= 0 && contentBuilder.Len() > 0 {
+		res.OutputTokens = proxy.EstimateOutputTokens(len([]rune(contentBuilder.String())))
+	}
+	if res.DurationMs > 0 && res.OutputTokens > 0 {
+		res.TPS = float64(res.OutputTokens) / (float64(res.DurationMs) / 1000.0)
 	}
 	res.Content = contentBuilder.String()
 	return res

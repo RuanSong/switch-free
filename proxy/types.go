@@ -27,13 +27,14 @@ type AnthropicSystemBlock struct {
 }
 
 type AnthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
-	ToolUseID string      `json:"tool_use_id,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"` // tool_result 的 content
+	IsError   bool            `json:"is_error,omitempty"` // tool_result 是否为错误结果
 }
 
 type AnthropicTool struct {
@@ -157,6 +158,7 @@ type LogEntry struct {
 	Date      string `json:"date"`      // "2026-08-08" 用于按天查
 	Model     string `json:"model"`
 	UsedModel string `json:"usedModel,omitempty"` // auto 模式下实际用到的模型
+	Source    string `json:"source,omitempty"`    // 请求来源（从 User-Agent 推断：Claude Code/Codex/Benchmark/curl...）
 	Upstream  string `json:"upstream"`
 	Status    string `json:"status"` // "success" | "error" | "auth_error" | "fallback"
 	Code      int    `json:"code"`

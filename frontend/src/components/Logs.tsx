@@ -137,6 +137,7 @@ export default function Logs({ logs, stats }: Props) {
         {filtered.length > 0 && (
           <div className="px-4 py-2 border-b border-[var(--color-border)] flex items-center gap-3 text-xs text-[var(--color-text-dim)] font-medium uppercase tracking-wide whitespace-nowrap">
             <span className="w-24">时间</span>
+            <span className="w-20">来源</span>
             <span className="w-28">请求模型</span>
             <span className="w-28">实际模型</span>
             <span className="w-24">代理</span>
@@ -233,6 +234,7 @@ function LogRow({ log, expanded, onToggle }: { log: LogEntry; expanded: boolean;
       <button onClick={onToggle} className="w-full px-4 py-2.5 hover:bg-[var(--color-surface-2)]/50 text-left">
         <div className="flex items-center gap-3 text-sm">
           <span className="text-[var(--color-text-dim)] font-mono text-xs w-24 whitespace-nowrap">{fmtLogTime(log)}</span>
+          <span className="text-xs w-20 truncate" title={log.source || ""}>{log.source || "-"}</span>
           <span className="font-mono text-xs w-28 truncate text-[var(--color-text-dim)]" title={log.model}>{log.model}</span>
           <span className="font-mono text-xs w-28 truncate" title={log.usedModel || log.realModel || ""}>
             {log.usedModel || log.realModel || "-"}
@@ -260,6 +262,7 @@ function LogRow({ log, expanded, onToggle }: { log: LogEntry; expanded: boolean;
         <div className="px-4 pb-3 space-y-2 border-t border-[var(--color-border)]/50">
           <div className="flex gap-3 text-xs text-[var(--color-text-dim)] pt-2 flex-wrap">
             <span>时间：{log.dateTime || log.timestamp}</span>
+            <span>来源：{log.source || "-"}</span>
             <span>接口：{log.method || "?"} {log.path || "?"}</span>
             <span>代理：{agentLabel(log.upstream)}</span>
             <span>请求模型：{log.model}</span>

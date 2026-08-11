@@ -14,6 +14,39 @@ import (
 	"switchfree/upstream"
 )
 
+// sourceFromUA 从 User-Agent 推断请求来源
+func sourceFromUA(ua string) string {
+	low := strings.ToLower(ua)
+	switch {
+	case strings.Contains(low, "claude-cli"), strings.Contains(low, "anthropic"):
+		return "Claude Code"
+	case strings.Contains(low, "codex"), strings.Contains(low, "openai/"):
+		return "Codex"
+	case strings.Contains(low, "go-http-client"):
+		return "测评"
+	case strings.Contains(low, "curl"):
+		return "curl"
+	case strings.Contains(low, "python"):
+		return "Python"
+	case strings.Contains(low, "node"):
+		return "Node"
+	case ua == "":
+		return "未知"
+	default:
+		if len(ua) > 30 {
+			return ua[:30]
+		}
+		return ua
+	}
+}
+
+// setSource 给日志条目设置请求来源（若为空则从请求 UA 推断）
+func setSource(entry *LogEntry, r *http.Request) {
+	if r != nil {
+		entry.Source = sourceFromUA(r.Header.Get("User-Agent"))
+	}
+}
+
 // 请求/响应体记录上限（防日志膨胀）
 const maxLogBodySize = 4096
 
@@ -133,16 +166,19 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	if requestedModel == "" {
 		requestedModel = "auto"
 	}
+	source := sourceFromUA(r.Header.Get("User-Agent"))
 
 	// 流式：优先尝试真流式（上游支持 StreamCaller，如 WorkBuddy/OpenCode）
 	if stream {
 		sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), &body)
 		if sr != nil {
-			s.streamAnthropicResponse(w, sr, requestedModel, upName, usedModel, string(raw))
+			s.streamAnthropicResponse(w, sr, requestedModel, upName, usedModel, source, string(raw))
 			return
 		}
 		if err != nil {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/messages", true, string(raw), ""))
+			entry := s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/messages", true, string(raw), "")
+			entry.Source = source
+			s.recordLog(entry)
 			writeAnthropicError(w, http.StatusBadGateway, "connection_error", err.Error())
 			return
 		}
@@ -157,10 +193,14 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		var credErr *creds.CredentialsError
 		if errors.As(err, &credErr) {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "auth_error", 0, duration, credErr.Error(), "POST", "/v1/messages", stream, reqBodyStr, ""))
+			e := s.makeLogEntry(requestedModel, upName, "auth_error", 0, duration, credErr.Error(), "POST", "/v1/messages", stream, reqBodyStr, "")
+			e.Source = source
+			s.recordLog(e)
 			writeAnthropicError(w, http.StatusBadGateway, "authentication_error", credErr.Error())
 		} else {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, duration, err.Error(), "POST", "/v1/messages", stream, reqBodyStr, ""))
+			e := s.makeLogEntry(requestedModel, upName, "error", 0, duration, err.Error(), "POST", "/v1/messages", stream, reqBodyStr, "")
+			e.Source = source
+			s.recordLog(e)
 			writeAnthropicError(w, http.StatusBadGateway, "connection_error", err.Error())
 		}
 		return
@@ -185,7 +225,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 			if len(snippet) > 200 {
 				snippet = snippet[:200]
 			}
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "unparsable upstream", "POST", "/v1/messages", stream, reqBodyStr, trimmed))
+			s.recordLog(func() *LogEntry {
+				e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "unparsable upstream", "POST", "/v1/messages", stream, reqBodyStr, trimmed)
+				e.Source = source
+				return e
+			}())
 			writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "unparsable upstream: "+snippet)
 			return
 		}
@@ -194,7 +238,9 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		errMsg, errCode := extractUpstreamError([]byte(trimmed))
 		isDenied := strings.Contains(errMsg, "访问受限") || strings.Contains(strings.ToLower(errCode), "denied")
 		fmt.Printf("[switch-free] 上游错误: [%s] %s\n", errCode, errMsg)
-		s.recordLog(s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, fmt.Sprintf("[%s] %s", errCode, errMsg), "POST", "/v1/messages", stream, reqBodyStr, trimmed))
+		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, fmt.Sprintf("[%s] %s", errCode, errMsg), "POST", "/v1/messages", stream, reqBodyStr, trimmed)
+		e.Source = source
+		s.recordLog(e)
 		errType := "upstream_error"
 		if isDenied {
 			errType = "permission_error"
@@ -206,11 +252,21 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	// 成功响应（富化用量/费用/真实模型后记录；model 存请求模型，usedModel 存实际模型）
 	entry := s.makeLogEntry(requestedModel, upName, "success", resp.StatusCode, duration, "", "POST", "/v1/messages", stream, reqBodyStr, trimmed)
 	entry.UsedModel = usedModel
+	entry.Source = source
 	s.logRequest(entry, resp.Body, requestedModel)
 
 	var parsed OpenAIResponse
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "parse success response failed")
+		return
+	}
+
+	// 空内容检测：choices 为空或 message 内容全空 → 502（触发降级链下一模型）
+	if isResponseContentEmpty(&parsed) {
+		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "empty content in upstream response", "POST", "/v1/messages", stream, reqBodyStr, trimmed)
+		e.Source = source
+		s.recordLog(e)
+		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空内容")
 		return
 	}
 
@@ -257,16 +313,19 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	if requestedModel == "" {
 		requestedModel = "auto"
 	}
+	source := sourceFromUA(r.Header.Get("User-Agent"))
 
 	// 流式：优先尝试真流式（上游支持 StreamCaller，如 WorkBuddy/OpenCode）
 	if stream {
 		sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), body)
 		if sr != nil {
-			s.streamOpenAIResponse(w, sr, requestedModel, upName, usedModel, string(raw))
+			s.streamOpenAIResponse(w, sr, requestedModel, upName, usedModel, source, string(raw))
 			return
 		}
 		if err != nil {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/chat/completions", true, string(raw), ""))
+			e := s.makeLogEntry(requestedModel, upName, "error", 0, 0, err.Error(), "POST", "/v1/chat/completions", true, string(raw), "")
+			e.Source = source
+			s.recordLog(e)
 			writeOpenAIError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -281,10 +340,14 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		var credErr *creds.CredentialsError
 		if errors.As(err, &credErr) {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "auth_error", 0, duration, credErr.Error(), "POST", "/v1/chat/completions", stream, reqBodyStr, ""))
+			e := s.makeLogEntry(requestedModel, upName, "auth_error", 0, duration, credErr.Error(), "POST", "/v1/chat/completions", stream, reqBodyStr, "")
+			e.Source = source
+			s.recordLog(e)
 			writeOpenAIError(w, http.StatusBadGateway, credErr.Error())
 		} else {
-			s.recordLog(s.makeLogEntry(requestedModel, upName, "error", 0, duration, err.Error(), "POST", "/v1/chat/completions", stream, reqBodyStr, ""))
+			e := s.makeLogEntry(requestedModel, upName, "error", 0, duration, err.Error(), "POST", "/v1/chat/completions", stream, reqBodyStr, "")
+			e.Source = source
+			s.recordLog(e)
 			writeOpenAIError(w, http.StatusBadGateway, err.Error())
 		}
 		return
@@ -293,6 +356,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	// 成功：model 存请求模型，usedModel 存实际模型
 	entry := s.makeLogEntry(requestedModel, upName, "success", resp.StatusCode, duration, "", "POST", "/v1/chat/completions", stream, reqBodyStr, string(resp.Body))
 	entry.UsedModel = usedModel
+	entry.Source = source
 	s.logRequest(entry, resp.Body, requestedModel)
 
 	if stream {
@@ -311,6 +375,19 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(resp.Body)
 	}
+}
+
+// isResponseContentEmpty 检测上游响应是否没有有效内容
+// choices 为空，或唯一的 choice 的 message 内容全空（无 text、无 tool_calls、无 reasoning）
+func isResponseContentEmpty(oai *OpenAIResponse) bool {
+	if len(oai.Choices) == 0 {
+		return true
+	}
+	msg := oai.Choices[0].Message
+	hasText := msg.Content != nil && *msg.Content != ""
+	hasToolCalls := len(msg.ToolCalls) > 0
+	hasReasoning := msg.ReasoningContent != ""
+	return !hasText && !hasToolCalls && !hasReasoning
 }
 
 // writeAnthropicError 写 Anthropic 格式错误响应
@@ -359,14 +436,14 @@ func (s *Server) fillStreamLog(entry *LogEntry, usage *OpenAIUsage, requestedMod
 }
 
 // streamAnthropicResponse 真流式转发：上游 OpenAI SSE 流 -> Anthropic SSE 事件
-func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, reqBodyStr string) {
+func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	usage, firstByteMs, streamErr := StreamOpenAIToAnthropic(w, sr.Body, requestedModel)
+	usage, firstByteMs, realModel, streamErr := StreamOpenAIToAnthropic(w, sr.Body, requestedModel)
 	duration := time.Since(start).Milliseconds()
 
 	// 没发任何事件 -> 上游空流或连接中断（常见于客户端切换时 ctx 取消），
@@ -380,19 +457,27 @@ func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.Str
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, errMsg, "POST", "/v1/messages", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
+		entry.Source = source
+		if realModel != "" {
+			entry.RealModel = realModel
+		}
 		s.recordLog(entry)
 		return
 	}
 
 	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/messages", true, reqBodyStr, "")
 	entry.UsedModel = usedModel
+	entry.Source = source
+	if realModel != "" {
+		entry.RealModel = realModel
+	}
 	entry.FirstByteMs = firstByteMs
 	s.fillStreamLog(entry, usage, requestedModel)
 	s.recordLog(entry)
 }
 
 // streamOpenAIResponse 真流式转发：上游 OpenAI SSE 流透传给客户端
-func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, reqBodyStr string) {
+func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -407,12 +492,14 @@ func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.Stream
 		writeOpenAIError(w, http.StatusBadGateway, "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/chat/completions", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
+		entry.Source = source
 		s.recordLog(entry)
 		return
 	}
 
 	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/chat/completions", true, reqBodyStr, "")
 	entry.UsedModel = usedModel
+	entry.Source = source
 	entry.FirstByteMs = firstByteMs
 	s.fillStreamLog(entry, usage, requestedModel)
 	s.recordLog(entry)

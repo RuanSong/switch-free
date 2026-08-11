@@ -218,7 +218,17 @@ func anthropicMessagesToOpenAI(body *AnthropicRequest) ([]OpenAIMessage, []OpenA
 
 		var textParts []string
 		var toolCalls []OpenAIToolCall
-		var toolResults []AnthropicContentBlock
+
+		// user 消息里夹杂文本时，文本需在 tool_result 前后各自成 user 消息。
+		// 用 pendingText 暂存文本，遇到 tool_result 先冲刷为 user 消息。
+		flushText := func(roleForText string) {
+			if len(textParts) == 0 {
+				return
+			}
+			t := strings.Join(textParts, "")
+			messages = append(messages, OpenAIMessage{Role: roleForText, Content: &t})
+			textParts = nil
+		}
 
 		for _, block := range blocks {
 			switch block.Type {
@@ -227,43 +237,33 @@ func anthropicMessagesToOpenAI(body *AnthropicRequest) ([]OpenAIMessage, []OpenA
 					textParts = append(textParts, block.Text)
 				}
 			case "tool_use":
+				// assistant 消息里的 tool_use：收集，最后与文本合并成一条
 				toolCalls = append(toolCalls, OpenAIToolCall{
 					ID:   block.ID,
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      block.Name,
-						Arguments: string(block.Input),
+						Arguments: safeToolArgs(block.Input),
 					},
 				})
 			case "tool_result":
-				toolResults = append(toolResults, block)
+				// 每个 tool_result 独立成一条 role:tool 消息；先冲刷前面的文本
+				flushText(role)
+				content := extractTextFromContent(block.Content)
+				if block.IsError && content != "" {
+					content = "[工具执行失败] " + content
+				}
+				toolCallID := block.ToolUseID
+				messages = append(messages, OpenAIMessage{
+					Role:       "tool",
+					Content:    &content,
+					ToolCallID: &toolCallID,
+				})
 			}
 		}
 
-		if len(toolResults) > 0 {
-			// tool_result → role:tool message
-			var resultTexts []string
-			var toolUseID string
-			for _, tr := range toolResults {
-				if tr.ToolUseID != "" {
-					toolUseID = tr.ToolUseID
-				}
-				if tr.Content != nil {
-					var c string
-					if err := json.Unmarshal(tr.Content, &c); err == nil {
-						resultTexts = append(resultTexts, c)
-					} else {
-						resultTexts = append(resultTexts, string(tr.Content))
-					}
-				}
-			}
-			content := strings.Join(resultTexts, "\n")
-			messages = append(messages, OpenAIMessage{
-				Role:       "tool",
-				Content:    &content,
-				ToolCallID: &toolUseID,
-			})
-		} else if len(toolCalls) > 0 {
+		// 收尾：tool_use 合并成 assistant 消息（携带前导文本）；否则冲刷剩余文本
+		if len(toolCalls) > 0 {
 			var content *string
 			if len(textParts) > 0 {
 				t := strings.Join(textParts, "")
@@ -275,8 +275,7 @@ func anthropicMessagesToOpenAI(body *AnthropicRequest) ([]OpenAIMessage, []OpenA
 				ToolCalls: toolCalls,
 			})
 		} else {
-			t := strings.Join(textParts, "")
-			messages = append(messages, OpenAIMessage{Role: role, Content: &t})
+			flushText(role)
 		}
 	}
 
@@ -326,7 +325,7 @@ func OpenAIToAnthropic(oai *OpenAIResponse, reqID string) *AnthropicResponse {
 				Type:  "tool_use",
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
-				Input: json.RawMessage(tc.Function.Arguments),
+				Input: json.RawMessage(safeToolArgs(json.RawMessage(tc.Function.Arguments))),
 			})
 		}
 		if msg.Content != nil && *msg.Content != "" {
@@ -340,6 +339,11 @@ func OpenAIToAnthropic(oai *OpenAIResponse, reqID string) *AnthropicResponse {
 			Type: "text",
 			Text: *msg.Content,
 		})
+	}
+
+	// 兜底：确保 content 不是 nil（nil 序列化为 null，Anthropic 规范要求是数组）
+	if content == nil {
+		content = []AnthropicContentBlock{}
 	}
 
 	stopReason := "end_turn"
@@ -374,4 +378,51 @@ func OpenAIToAnthropic(oai *OpenAIResponse, reqID string) *AnthropicResponse {
 // SafeJSONParse 安全解析 JSON
 func SafeJSONParse(data []byte, v interface{}) {
 	_ = json.Unmarshal(data, v)
+}
+
+// extractTextFromContent 从 Anthropic content 字段提取纯文本
+// content 可能是 JSON 字符串、[]content block（含 text 字段），或其他格式
+func extractTextFromContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// 1. 纯字符串
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	// 2. []block（可能含多段 text，以及 image 等非文本块——只取 text）
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	// 3. 兜底：去掉 JSON 转义后返回原文
+	return string(raw)
+}
+
+// safeToolArgs 把 tool_use 的 input 转成合法的 JSON object 字符串
+// 空/非法输入兜底为 "{}"，避免上游收到非法 JSON
+func safeToolArgs(input json.RawMessage) string {
+	if len(input) == 0 {
+		return "{}"
+	}
+	s := strings.TrimSpace(string(input))
+	if s == "" || s == "null" {
+		return "{}"
+	}
+	// 校验是合法 JSON
+	var v interface{}
+	if err := json.Unmarshal(input, &v); err != nil {
+		return "{}"
+	}
+	return s
 }

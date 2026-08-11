@@ -217,7 +217,13 @@ export default function Benchmark() {
                 </div>
               ) : (
                 <div className="text-xs text-[var(--color-text-dim)]">
-                  {running ? "等待结果..." : "未测评"}
+                  {singleRunning[up] || running ? (
+                    <span className="animate-pulse">
+                      ⏳ 等待模型响应{up === "opencode" ? "（free 模型排队中，首字节可能需数十秒）" : "..."}
+                    </span>
+                  ) : (
+                    "未测评"
+                  )}
                 </div>
               )}
             </div>

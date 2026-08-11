@@ -769,6 +769,13 @@ function AutoChainAdder({
   const [upstream, setUpstream] = useState(validAvailable[0]?.upstream ?? "");
   const [model, setModel] = useState("");
 
+  // 首次加载 available 后，如果 upstream 为空（初始时可用列表为空），自动选中第一个
+  useEffect(() => {
+    if (!upstream && validAvailable.length > 0) {
+      setUpstream(validAvailable[0].upstream);
+    }
+  }, [validAvailable, upstream]);
+
   const models = validAvailable.find((u) => u.upstream === upstream)?.models ?? [];
 
   return (

@@ -6,10 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 )
+
+// pendingToolCall 缓冲尚未拿到完整 id/name 的流式 tool_use block
+type pendingToolCall struct {
+	anthropicIdx int
+	id           string
+	name         string
+	bufferedArgs strings.Builder
+}
 
 // streamOpenAIChunk OpenAI 流式 chunk 解析结构（供 StreamOpenAIToAnthropic / StreamOpenAIPassthrough 共用）
 type streamOpenAIChunk struct {
@@ -38,8 +45,8 @@ type streamOpenAIChunk struct {
 }
 
 // StreamOpenAIToAnthropic 读上游 OpenAI SSE 流，边转成 Anthropic SSE 事件写给客户端
-// 返回捕获的 usage（供日志）和首字节用时（ms）
-func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsage, int64, error) {
+// 返回捕获的 usage（供日志）、首字节用时（ms）、上游真实模型名、错误
+func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsage, int64, string, error) {
 	flusher, canFlush := w.(http.Flusher)
 	start := time.Now()
 	var firstByteMs int64
@@ -60,7 +67,15 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 	textBlockIndex := -1
 	reasoningBlockIndex := -1
 	toolCallBlocks := map[int]int{} // tc.index -> anthropic block index
+	var blockOpenOrder []int       // block 开启顺序，finish 时按此顺序关闭
+	// 待启动的 tool_use block（id/name 尚未齐全时缓冲参数）
+	pendingToolStart := map[int]*pendingToolCall{}
 	var capturedUsage *OpenAIUsage
+	// 累计输出字符数，用于上游不返回 usage 时兜底估算 output token
+	var outputRunes int
+	// finish 状态：finish_reason 出现时先关 block，message_delta/stop 推迟到流结束后统一发
+	var finishReason string
+	var finishedNormal bool
 
 	messageID := fmt.Sprintf("msg_%d", time.Now().Unix())
 
@@ -128,23 +143,57 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 
 		// tool_calls -> tool_use block（按 tc.index 分配 anthropic block index）
 		for _, tc := range delta.ToolCalls {
+			// tool_call 参数也是输出 token 的一部分，统一计入估算
+			if tc.Function.Arguments != "" {
+				outputRunes += len([]rune(tc.Function.Arguments))
+			}
 			anthropicIdx, exists := toolCallBlocks[tc.Index]
 			if !exists {
 				anthropicIdx = nextBlockIndex
 				nextBlockIndex++
 				toolCallBlocks[tc.Index] = anthropicIdx
-				writeEvent("content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": anthropicIdx,
-					"content_block": map[string]interface{}{
-						"type":  "tool_use",
-						"id":    tc.ID,
-						"name":  tc.Function.Name,
-						"input": map[string]interface{}{},
-					},
-				})
+				blockOpenOrder = append(blockOpenOrder, anthropicIdx)
+				pendingToolStart[tc.Index] = &pendingToolCall{anthropicIdx: anthropicIdx}
 			}
-			if tc.Function.Arguments != "" {
+			p := pendingToolStart[tc.Index]
+			if p != nil {
+				// 累积 id/name，直到齐全才发 content_block_start
+				if tc.ID != "" {
+					p.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					p.name = tc.Function.Name
+				}
+				if p.id != "" && p.name != "" {
+					writeEvent("content_block_start", map[string]interface{}{
+						"type":  "content_block_start",
+						"index": p.anthropicIdx,
+						"content_block": map[string]interface{}{
+							"type":  "tool_use",
+							"id":    p.id,
+							"name":  p.name,
+							"input": map[string]interface{}{},
+						},
+					})
+					// 补发缓冲的参数
+					if p.bufferedArgs.Len() > 0 {
+						writeEvent("content_block_delta", map[string]interface{}{
+							"type":  "content_block_delta",
+							"index": p.anthropicIdx,
+							"delta": map[string]interface{}{
+								"type":         "input_json_delta",
+								"partial_json": p.bufferedArgs.String(),
+							},
+						})
+					}
+					pendingToolStart[tc.Index] = nil
+				} else if tc.Function.Arguments != "" {
+					// id/name 还没齐，先缓冲参数
+					p.bufferedArgs.WriteString(tc.Function.Arguments)
+				}
+				anthropicIdx = p.anthropicIdx
+			}
+			if tc.Function.Arguments != "" && pendingToolStart[tc.Index] == nil {
 				writeEvent("content_block_delta", map[string]interface{}{
 					"type":  "content_block_delta",
 					"index": anthropicIdx,
@@ -161,6 +210,7 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 			if reasoningBlockIndex == -1 {
 				reasoningBlockIndex = nextBlockIndex
 				nextBlockIndex++
+				blockOpenOrder = append(blockOpenOrder, reasoningBlockIndex)
 				writeEvent("content_block_start", map[string]interface{}{
 					"type":          "content_block_start",
 					"index":         reasoningBlockIndex,
@@ -172,6 +222,7 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 				"index": reasoningBlockIndex,
 				"delta": map[string]interface{}{"type": "text_delta", "text": delta.ReasoningContent},
 			})
+			outputRunes += len([]rune(delta.ReasoningContent))
 		}
 
 		// content -> text block
@@ -179,6 +230,7 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 			if textBlockIndex == -1 {
 				textBlockIndex = nextBlockIndex
 				nextBlockIndex++
+				blockOpenOrder = append(blockOpenOrder, textBlockIndex)
 				writeEvent("content_block_start", map[string]interface{}{
 					"type":          "content_block_start",
 					"index":         textBlockIndex,
@@ -190,55 +242,57 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 				"index": textBlockIndex,
 				"delta": map[string]interface{}{"type": "text_delta", "text": delta.Content},
 			})
+			outputRunes += len([]rune(delta.Content))
 		}
 
-		// finish_reason -> stop 所有 block + message_delta + message_stop
+		// finish_reason -> 关闭所有 content block；message_delta/message_stop 推迟到
+		// 流结束后统一发送，以便用最终 usage（或估算值）
 		if c.FinishReason != "" {
-			toolIndices := make([]int, 0, len(toolCallBlocks))
-			for _, idx := range toolCallBlocks {
-				toolIndices = append(toolIndices, idx)
+			finishReason = "end_turn"
+			if c.FinishReason == "tool_calls" {
+				finishReason = "tool_use"
+			} else if c.FinishReason == "length" {
+				finishReason = "max_tokens"
 			}
-			sort.Ints(toolIndices)
-			for _, idx := range toolIndices {
+			// 刷新仍未补齐 id/name 的 tool_use block（兜底，避免悬挂）
+			for tcIdx, p := range pendingToolStart {
+				if p == nil {
+					continue
+				}
+				if p.id == "" {
+					p.id = fmt.Sprintf("toolu_%d", tcIdx)
+				}
+				if p.name == "" {
+					p.name = "unknown"
+				}
+				writeEvent("content_block_start", map[string]interface{}{
+					"type":  "content_block_start",
+					"index": p.anthropicIdx,
+					"content_block": map[string]interface{}{
+						"type": "tool_use", "id": p.id, "name": p.name, "input": map[string]interface{}{},
+					},
+				})
+				if p.bufferedArgs.Len() > 0 {
+					writeEvent("content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": p.anthropicIdx,
+						"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": p.bufferedArgs.String()},
+					})
+				}
+				pendingToolStart[tcIdx] = nil
+			}
+
+			// 按 block 开启顺序关闭（而非排序后的 tool 索引）
+			for _, idx := range blockOpenOrder {
 				writeEvent("content_block_stop", map[string]interface{}{
 					"type": "content_block_stop", "index": idx,
 				})
 			}
-			if reasoningBlockIndex != -1 {
-				writeEvent("content_block_stop", map[string]interface{}{
-					"type": "content_block_stop", "index": reasoningBlockIndex,
-				})
-			}
-			if textBlockIndex != -1 {
-				writeEvent("content_block_stop", map[string]interface{}{
-					"type": "content_block_stop", "index": textBlockIndex,
-				})
-			}
-
-			stopReason := "end_turn"
-			if c.FinishReason == "tool_calls" {
-				stopReason = "tool_use"
-			} else if c.FinishReason == "length" {
-				stopReason = "max_tokens"
-			}
+			finishedNormal = true
 
 			if chunk.Usage != nil {
 				capturedUsage = chunk.Usage
 			}
-
-			writeEvent("message_delta", map[string]interface{}{
-				"type": "message_delta",
-				"delta": map[string]interface{}{
-					"stop_reason":   stopReason,
-					"stop_sequence": nil,
-				},
-				"usage": map[string]interface{}{
-					"output_tokens": capturedUsage.GetCompletionTokens(),
-				},
-			})
-			writeEvent("message_stop", map[string]interface{}{
-				"type": "message_stop",
-			})
 		}
 
 		if chunk.Usage != nil {
@@ -246,7 +300,7 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return capturedUsage, firstByteMs, fmt.Errorf("读取 SSE 流失败: %w", err)
+		return capturedUsage, firstByteMs, model, fmt.Errorf("读取 SSE 流失败: %w", err)
 	}
 	// 没发 message_start 但有 data 行 -> 上游返回了非标准 SSE（如错误 data），记录前几行便于排查
 	if firstByteMs == 0 && len(firstDataLines) > 0 {
@@ -254,9 +308,85 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		return capturedUsage, firstByteMs, fmt.Errorf("no message_start, firstChoices=%d, parseErr=%v, first data: %s", firstChoicesCount, firstParseErr, snippet)
+		return capturedUsage, firstByteMs, model, fmt.Errorf("no message_start, firstChoices=%d, parseErr=%v, first data: %s", firstChoicesCount, firstParseErr, snippet)
 	}
-	return capturedUsage, firstByteMs, nil
+
+	// 流结束：补发终止序列。正常结束时 block 已在 finish_reason 分支关闭；
+	// 流截断（无 finish_reason）时先关闭未收尾的 block，再统一发 message_delta + message_stop。
+	// 这样客户端一定能等到 message_stop，且 usage 可用最终值/估算值。
+	if messageStarted {
+		if !finishedNormal {
+			// 刷新未补齐 id/name 的 tool_use block
+			for tcIdx, p := range pendingToolStart {
+				if p == nil {
+					continue
+				}
+				if p.id == "" {
+					p.id = fmt.Sprintf("toolu_%d", tcIdx)
+				}
+				if p.name == "" {
+					p.name = "unknown"
+				}
+				writeEvent("content_block_start", map[string]interface{}{
+					"type": "content_block_start", "index": p.anthropicIdx,
+					"content_block": map[string]interface{}{"type": "tool_use", "id": p.id, "name": p.name, "input": map[string]interface{}{}},
+				})
+				if p.bufferedArgs.Len() > 0 {
+					writeEvent("content_block_delta", map[string]interface{}{
+						"type": "content_block_delta", "index": p.anthropicIdx,
+						"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": p.bufferedArgs.String()},
+					})
+				}
+			}
+			// 按开启顺序关闭所有 content block
+			for _, idx := range blockOpenOrder {
+				writeEvent("content_block_stop", map[string]interface{}{
+					"type": "content_block_stop", "index": idx,
+				})
+			}
+			if finishReason == "" {
+				finishReason = "end_turn"
+			}
+		}
+
+		// 解析最终 usage：上游未返回 output token 时按输出字符数兜底估算
+		outputTokens := 0
+		if capturedUsage != nil {
+			outputTokens = capturedUsage.CompletionTokens
+		}
+		estimated := false
+		if outputTokens <= 0 && outputRunes > 0 {
+			outputTokens = estimateOutputTokens(outputRunes)
+			estimated = true
+		}
+		usageOut := map[string]interface{}{"output_tokens": outputTokens}
+		if capturedUsage != nil && capturedUsage.PromptTokens > 0 {
+			usageOut["input_tokens"] = capturedUsage.PromptTokens
+		}
+		if estimated {
+			usageOut["estimated"] = true
+		}
+		writeEvent("message_delta", map[string]interface{}{
+			"type": "message_delta",
+			"delta": map[string]interface{}{
+				"stop_reason":   finishReason,
+				"stop_sequence": nil,
+			},
+			"usage": usageOut,
+		})
+		writeEvent("message_stop", map[string]interface{}{
+			"type": "message_stop",
+		})
+	}
+
+	// 兜底：usage 仍缺失时构造一个带估算值的 usage 供日志统计
+	if (capturedUsage == nil || capturedUsage.CompletionTokens <= 0) && outputRunes > 0 {
+		if capturedUsage == nil {
+			capturedUsage = &OpenAIUsage{}
+		}
+		capturedUsage.CompletionTokens = estimateOutputTokens(outputRunes)
+	}
+	return capturedUsage, firstByteMs, model, nil
 }
 
 // StreamOpenAIPassthrough 透传上游 OpenAI SSE 给客户端（/v1/chat/completions 流式入口）
@@ -266,6 +396,7 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 	start := time.Now()
 	var firstByteMs int64
 	var capturedUsage *OpenAIUsage
+	sawDone := false
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -283,7 +414,9 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 		// 捕获 usage（在最后一个 chunk）
 		if strings.HasPrefix(trimmed, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-			if data != "[DONE]" {
+			if data == "[DONE]" {
+				sawDone = true
+			} else {
 				var chunk streamOpenAIChunk
 				if json.Unmarshal([]byte(data), &chunk) == nil && chunk.Usage != nil {
 					capturedUsage = chunk.Usage
@@ -294,5 +427,31 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 	if err := scanner.Err(); err != nil {
 		return capturedUsage, firstByteMs, fmt.Errorf("读取 SSE 流失败: %w", err)
 	}
+	// 上游流截断时补发 [DONE]，避免客户端连接异常关闭
+	if firstByteMs > 0 && !sawDone {
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 	return capturedUsage, firstByteMs, nil
+}
+
+// EstimateOutputTokens 按输出字符数粗估 output token。
+// 上游流式不返回 usage 时的兜底口径：约每 3 个字符 1 token（中英混合折中），至少 1。
+// 供 proxy 内部流式转换 + service 层（benchmark）共用，保证 TPS 横向对比口径一致。
+func EstimateOutputTokens(runeCount int) int {
+	if runeCount <= 0 {
+		return 0
+	}
+	est := runeCount / 3
+	if est < 1 {
+		est = 1
+	}
+	return est
+}
+
+// estimateOutputTokens 内部别名
+func estimateOutputTokens(runeCount int) int {
+	return EstimateOutputTokens(runeCount)
 }

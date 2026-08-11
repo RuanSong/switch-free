@@ -159,6 +159,8 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		s.handleAnthropicMessages(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/chat/completions"):
 		s.handleOpenAIChatCompletions(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/responses"):
+		s.handleResponses(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("not found"))

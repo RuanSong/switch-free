@@ -85,6 +85,11 @@ export default function App() {
     setConfig(data as Config);
   });
 
+  // 托盘菜单"保存方案"等入口跳转到设置页
+  useWailsEvent("navigate:settings", () => {
+    setTab("settings");
+  });
+
   // 订阅事件
   useWailsEvent("proxy:status", (data) => {
     setProxy(data as ProxyStatus);

@@ -120,7 +120,6 @@ type WorkBuddyModel struct {
 }
 
 var WorkBuddyModels = []WorkBuddyModel{
-	{ID: "wb/auto", Label: "Auto (WorkBuddy)", Output: 32000, ToolCall: true},
 	{ID: "wb/glm-5.0", Label: "GLM-5.0 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "wb/glm-5.1", Label: "GLM-5.1 (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "wb/glm-5.0-turbo", Label: "GLM-5.0-Turbo (WorkBuddy)", Output: 48000, Vision: true, ToolCall: true, Reasoning: true},

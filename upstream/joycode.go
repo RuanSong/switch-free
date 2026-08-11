@@ -282,6 +282,7 @@ func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *c
 		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
 	}
 	m["stream"] = true
+	m["stream_options"] = map[string]bool{"include_usage": true} // 让网关在最后一个 chunk 返回 usage
 	bodyBytes, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
