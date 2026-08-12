@@ -12,6 +12,7 @@ import (
 
 	"switchfree/config"
 	"switchfree/creds"
+	"switchfree/freeapi"
 	"switchfree/pricing"
 	"switchfree/proxy"
 	"switchfree/service"
@@ -19,6 +20,11 @@ import (
 	"switchfree/upstream"
 	"switchfree/version"
 )
+
+// 免费 API 目录（内置，运行时从 GitHub 拉取最新覆盖）
+//
+//go:embed data/free_apis_catalog.json
+var embedFreeCatalog []byte
 
 // Wails 用 embed 包把前端文件嵌入二进制
 //
@@ -90,7 +96,25 @@ func main() {
 	core := service.NewCore()
 	core.Setup(jyMgr, deMgr, ocMgr, wbMgr, jyUp, deUp, ocUp, wbUp, server)
 
+	// 5.5 免费 API（独立文件 + 目录 + 健康监控）
+	freeAPIMgr, err := freeapi.NewManager("")
+	if err != nil {
+		log.Printf("⚠️ 免费 API 配置加载失败: %v", err)
+	}
+	freeapi.SetEmbedCatalog(embedFreeCatalog)
+	freeCatalogLoader := &freeapi.CatalogLoader{}
+	_ = freeCatalogLoader.LoadCatalog() // 预加载（embed/GitHub/缓存）
+	freeMonitor := freeapi.NewMonitor(freeAPIMgr, core)
+	// 注入健康查询回调（供 proxy 权重降级用）
+	proxy.FreeModelHealth = func(providerID, modelID string) bool {
+		return freeMonitor.IsHealthy(providerID, modelID)
+	}
+	// 注册免费 API 刷新回调：provider 增删/模型变化时重建上游 + 模型列表
+	registerFreeAPIRefresh(server, freeAPIMgr, freeMonitor, core)
+
 	// 6. Wails 服务（暴露给前端）
+	freeAPISvc := service.NewFreeAPIService(freeAPIMgr, freeCatalogLoader, freeMonitor, core)
+	service.SetFreeRefreshCallback(rebuildFreeAPIs)
 	proxySvc := service.NewProxyService(core)
 	credsSvc := service.NewCredsService(core)
 	modelSvc := service.NewModelService(core)
@@ -114,6 +138,7 @@ func main() {
 			application.NewService(pricingSvc),
 			application.NewService(updaterSvc),
 			application.NewService(benchmarkSvc),
+			application.NewService(freeAPISvc),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -182,6 +207,11 @@ func main() {
 
 	// 10.5 后台周期探测 agent 安装状态（新安装工具时自动校验凭据并推送，无需重启）
 	go core.WatchInstalledAgents(app.Context(), 5*time.Second)
+
+	// 10.6 免费 API 模型健康监控（每 5 分钟探测；只监控 free 模型）
+	go freeMonitor.Start(app.Context())
+	// 首次刷新注册免费上游 + 模型（启动时构建）
+	registerFreeAPIRefresh(server, freeAPIMgr, freeMonitor, core)
 
 	// 10.5 启动 3s 后后台检查更新（有新版本发事件给前端弹窗）
 	go startUpdateCheck(updaterSvc)
@@ -424,6 +454,58 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *ser
 	})
 
 	return menu
+}
+
+// rebuildFreeAPIs 重建免费上游 + 模型列表（provider 增删/模型变化时调用，包级供 FreeAPIService 用）
+var rebuildFreeAPIs func()
+
+// registerFreeAPIRefresh 初始化免费 API 上游注册：
+// 遍历 free_apis.json 里 verified 的 provider，为每个创建 FreeAPIUpstream 注册到 server，
+// 并填充 proxy.FreeModels 供模型列表/降级链使用。
+func registerFreeAPIRefresh(server *proxy.Server, mgr *freeapi.Manager, monitor *freeapi.Monitor, core *service.Core) {
+	rebuild := func() {
+		// 清空旧的免费上游
+		for pid := range server.GetFreeAPIs() {
+			server.RemoveFreeAPI(pid)
+		}
+		// 重建模型列表 + 上游
+		var freeModels []proxy.FreeModel
+		for pid, p := range mgr.GetProviders() {
+			if !p.Verified {
+				continue
+			}
+			// 为 provider 创建上游（闭包捕获 baseURL/apiKey，保证 rebuild 时读到最新）
+			baseURL, apiKey := p.BaseURL, p.APIKey
+			up := upstream.NewFreeAPIUpstream(pid, func() string { return baseURL }, func() string { return apiKey })
+			up.SetDisplayName(p.Name)
+			server.RegisterFreeAPI(pid, up)
+
+			// 收集 verified 模型
+			for _, mo := range p.Models {
+				if !mo.Verified {
+					continue
+				}
+				freeModels = append(freeModels, proxy.FreeModel{
+					InternalID: p.InternalID(mo.ID),
+					ProviderID: pid,
+					ModelID:    mo.ID,
+					Label:      mo.ID,
+					Context:    mo.Context,
+				})
+			}
+		}
+		proxy.SetFreeModels(freeModels)
+
+		// 推送状态刷新（前端凭据页/模型页）
+		if core != nil {
+			core.EmitEvent("cred:change", core.GetCredStatus())
+			core.EmitEvent("freeapi:change", mgr.GetProviders())
+		}
+	}
+	rebuildFreeAPIs = rebuild
+
+	// 首次构建
+	rebuild()
 }
 
 // startProxyAndCreds 启动时校验凭据（非致命）+ 启动代理

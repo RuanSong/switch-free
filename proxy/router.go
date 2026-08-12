@@ -47,12 +47,30 @@ func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]inte
 }
 
 // executeChain 遍历配置链，尝试每个模型引用，任意成功即返回
+// 权重降级（仅针对 free 模型）：healthy 的 free 模型按配置顺序优先，
+// unhealthy 的 free 模型排到链尾最后尝试；内置 4 上游严格按配置顺序。
 // 返回 (响应, 上游名, 实际用到的模型, 错误)
 func (s *Server) executeChain(ctx context.Context, body interface{}, chain []ModelRef, requestedModel string) (*upstream.Response, string, string, error) {
 	var lastErr error
 	var lastUpstream string
 
+	// 遍历顺序：第一轮 = 非-free 全部 + healthy free；第二轮 = unhealthy free（权重降级）
+	ordered := make([]ModelRef, 0, len(chain))
+	degraded := make([]ModelRef, 0, len(chain))
 	for _, ref := range chain {
+		// 只对 free 模型做健康分组；内置 4 上游严格按配置顺序
+		if IsFreeModel(ref.Model) {
+			pid, mid := ParseFreeModel(ref.Model)
+			if pid != "" && !IsFreeModelHealthy(pid, mid) {
+				degraded = append(degraded, ref)
+				continue
+			}
+		}
+		ordered = append(ordered, ref)
+	}
+	ordered = append(ordered, degraded...)
+
+	for _, ref := range ordered {
 		up := s.pickUpstream(ref.Upstream)
 		if up == nil {
 			continue
@@ -106,12 +124,27 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 // executeChainStream 流式版 executeChain：只走支持 StreamCaller 的上游
 // 返回 nil, "", "", nil 表示无流式上游可用（调用方回退伪流式）
 // 返回 nil, up, "", err 表示有流式上游但全部失败
+// 权重降级：仅对 free 模型分组（healthy 优先，unhealthy 排链尾）
 func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain []ModelRef, requestedModel string) (*upstream.StreamResponse, string, string, error) {
 	var lastErr error
 	var lastUpstream string
 	triedStream := false
 
+	ordered := make([]ModelRef, 0, len(chain))
+	degraded := make([]ModelRef, 0, len(chain))
 	for _, ref := range chain {
+		if IsFreeModel(ref.Model) {
+			pid, mid := ParseFreeModel(ref.Model)
+			if pid != "" && !IsFreeModelHealthy(pid, mid) {
+				degraded = append(degraded, ref)
+				continue
+			}
+		}
+		ordered = append(ordered, ref)
+	}
+	ordered = append(ordered, degraded...)
+
+	for _, ref := range ordered {
 		up := s.pickUpstream(ref.Upstream)
 		if up == nil {
 			continue
@@ -184,6 +217,7 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 }
 
 // pickUpstream 按 upstream 名获取适配器
+// 内置 4 上游走 switch；free API 供应商（provider id）走 FreeAPIs map
 func (s *Server) pickUpstream(name string) upstream.Upstream {
 	switch name {
 	case "joycode":
@@ -194,6 +228,10 @@ func (s *Server) pickUpstream(name string) upstream.Upstream {
 		return s.OpenCode
 	case "workbuddy":
 		return s.WorkBuddy
+	}
+	// free API 供应商（多供应商平级）
+	if free := s.GetFreeAPI(name); free != nil {
+		return free
 	}
 	return nil
 }
@@ -213,6 +251,10 @@ func (s *Server) buildOpenAIBody(body interface{}, ref ModelRef) ([]byte, error)
 func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) ([]byte, error) {
 	cp := *body
 	cp.Model = ref.Model
+	// free API 模型：还原为原始 model id（去掉 free/<provider>/ 前缀）
+	if IsFreeModel(ref.Model) {
+		cp.Model = stripFreePrefix(ref.Model)
+	}
 	var oaiBody *OpenAIRequest
 	switch ref.Upstream {
 	case "joycode":
@@ -224,7 +266,8 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) 
 	case "workbuddy":
 		oaiBody = AnthropicToOpenAIWorkbuddy(&cp)
 	default:
-		return nil, fmt.Errorf("unknown upstream: %s", ref.Upstream)
+		// 免费 API 供应商：走通用 OpenAI 转换
+		oaiBody, _ = AnthropicToOpenAI(&cp)
 	}
 	return json.Marshal(oaiBody)
 }
@@ -243,6 +286,9 @@ func (s *Server) buildOpenAIPassthroughBody(body map[string]interface{}, ref Mod
 		}
 	} else if ref.Upstream == "workbuddy" {
 		model = stripWbPrefix(ref.Model)
+	} else if IsFreeModel(ref.Model) {
+		// free API 模型：还原为原始 model id
+		model = stripFreePrefix(ref.Model)
 	}
 	cp["model"] = model
 	cp["stream"] = false

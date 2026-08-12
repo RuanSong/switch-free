@@ -215,6 +215,16 @@ func windowsConfigDirs() []string {
 	return dirs
 }
 
+// FreeAPIConfigPath 免费 API 独立配置文件路径（存多个供应商配置 + api_key，密钥不进 config.json）
+func FreeAPIConfigPath() string {
+	return filepath.Join(AppConfigDir(), "free_apis.json")
+}
+
+// FreeCatalogCachePath 免费 API 目录本地缓存路径（GitHub 拉取成功后写入）
+func FreeCatalogCachePath() string {
+	return filepath.Join(AppConfigDir(), "free_catalog_cache.json")
+}
+
 // NpmGlobalBinDir 返回 npm 全局 bin 目录：
 //   Windows: %APPDATA%\npm（npm i -g 安装的 .cmd/.exe shim 都在这里）
 //   其他平台: ~/.npm-global/bin 及常见前缀（实际更可靠的是 exec.LookPath 查 PATH）

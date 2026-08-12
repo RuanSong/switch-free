@@ -156,6 +156,73 @@ func stripWbPrefix(id string) string {
 	return id
 }
 
+// ====== 免费 API 模型（free/ 前缀隔离，多供应商平级） ======
+
+// FreeModelPrefix free 模型内部 id 前缀（free/<providerID>/<modelID>）
+const FreeModelPrefix = "free/"
+
+// FreeModel 免费 API 模型（动态注册，运行时从各 provider 填充）
+type FreeModel struct {
+	InternalID string // 代理内部 id：free/<providerID>/<modelID>
+	ProviderID string // provider id（如 "groq"）
+	ModelID    string // 原始 model id（发上游用）
+	Label      string // 显示名
+	Context    int    // 上下文
+}
+
+// FreeModelHealth 查询 free 模型健康状态的回调（由 main 注入，避免 proxy 依赖 freeapi 包）
+var FreeModelHealth func(providerID, modelID string) bool
+
+// FreeModels 已注册的免费模型（动态，随 provider 增删变化）
+var FreeModels []FreeModel
+
+// SetFreeModels 更新免费模型列表（provider 增删/切换时由 main 调用）
+func SetFreeModels(models []FreeModel) {
+	FreeModels = models
+}
+
+// IsFreeModelHealthy 查询 free 模型健康状态（权重降级用）；非 free 模型或未配置返回 true
+func IsFreeModelHealthy(providerID, modelID string) bool {
+	if FreeModelHealth != nil {
+		return FreeModelHealth(providerID, modelID)
+	}
+	return true
+}
+
+// IsFreeModel 判断 model id 是否 free 前缀
+func IsFreeModel(model string) bool {
+	return len(model) > len(FreeModelPrefix) && model[:len(FreeModelPrefix)] == FreeModelPrefix
+}
+
+// ParseFreeModel 解析 free/<providerID>/<modelID>；非 free 返回空
+func ParseFreeModel(internalID string) (providerID, modelID string) {
+	if !IsFreeModel(internalID) {
+		return "", ""
+	}
+	rest := internalID[len(FreeModelPrefix):]
+	// providerID 到第一个 /
+	slash := -1
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '/' {
+			slash = i
+			break
+		}
+	}
+	if slash < 0 {
+		return "", ""
+	}
+	return rest[:slash], rest[slash+1:]
+}
+
+// stripFreePrefix 去掉 free/<providerID>/ 前缀，还原成发往上游的 model id
+func stripFreePrefix(internalID string) string {
+	_, modelID := ParseFreeModel(internalID)
+	if modelID == "" {
+		return internalID
+	}
+	return modelID
+}
+
 // ====== Auto 模式 ======
 
 const (
@@ -167,6 +234,10 @@ const (
 func ResolveModel(requestedModel string) string {
 	if requestedModel == "" || lowerEqual(requestedModel, "auto") {
 		return AutoModel
+	}
+	// free 模型：原样返回（不降级）
+	if IsFreeModel(requestedModel) {
+		return requestedModel
 	}
 	if WorkBuddyModelIDs[requestedModel] {
 		return requestedModel
@@ -192,6 +263,13 @@ func ResolveModel(requestedModel string) string {
 // ResolveUpstream 判断 model 走哪个上游
 func ResolveUpstream(model string) string {
 	m := ResolveModel(model)
+	// free 模型：返回 provider id（作为上游名，由 Server.FreeAPIs map 查）
+	if IsFreeModel(m) {
+		pid, _ := ParseFreeModel(m)
+		if pid != "" {
+			return pid
+		}
+	}
 	if WorkBuddyModelIDs[m] {
 		return "workbuddy"
 	}

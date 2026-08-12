@@ -199,7 +199,7 @@ func (s *ConfigService) RefreshModels() []UpstreamModels {
 	return result
 }
 
-// fetchAllModels 并发拉取三上游模型，合并本地映射，返回结果
+// fetchAllModels 并发拉取四上游模型，合并本地映射 + 免费 API 模型，返回结果
 func (s *ConfigService) fetchAllModels() []UpstreamModels {
 	jy, de, oc, wb := s.core.Upstreams()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -253,6 +253,29 @@ func (s *ConfigService) fetchAllModels() []UpstreamModels {
 			source = "local"
 		}
 		out = append(out, UpstreamModels{Upstream: r.upstream, Source: source, Models: opts})
+	}
+
+	// 免费 API 模型（按 provider 分组，已验证的模型）
+	out = append(out, freeAPIModelsGrouped()...)
+	return out
+}
+
+// freeAPIModelsGrouped 把已注册的免费模型按 provider 分组为 UpstreamModels
+func freeAPIModelsGrouped() []UpstreamModels {
+	grouped := map[string][]ModelOption{}
+	for _, fm := range proxy.FreeModels {
+		grouped[fm.ProviderID] = append(grouped[fm.ProviderID], ModelOption{
+			ID:      fm.InternalID,
+			Label:   fm.Label,
+			Context: fm.Context,
+			Stream:  true,
+			ToolCall: true,
+			Free:    true,
+		})
+	}
+	out := make([]UpstreamModels, 0, len(grouped))
+	for pid, opts := range grouped {
+		out = append(out, UpstreamModels{Upstream: pid, Source: "free", Models: opts})
 	}
 	return out
 }

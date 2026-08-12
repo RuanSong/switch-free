@@ -16,9 +16,10 @@ import SetupGuide from "./components/SetupGuide";
 import Settings from "./components/Settings";
 import UsageStats from "./components/UsageStats";
 import Benchmark from "./components/Benchmark";
+import FreeAPI from "./components/FreeAPI";
 import ErrorBoundary from "./components/ErrorBoundary";
 
-type Tab = "dashboard" | "credentials" | "models" | "stats" | "logs" | "settings" | "benchmark";
+type Tab = "dashboard" | "freeapi" | "credentials" | "models" | "stats" | "logs" | "settings" | "benchmark";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -114,6 +115,7 @@ export default function App() {
 
   const navItems: { key: Tab; label: string; icon: string }[] = [
     { key: "dashboard", label: "仪表盘", icon: "📊" },
+    { key: "freeapi", label: "供应商", icon: "🆓" },
     { key: "credentials", label: "凭据", icon: "🔑" },
     { key: "models", label: "模型", icon: "🤖" },
     { key: "stats", label: "统计", icon: "📈" },
@@ -165,6 +167,8 @@ export default function App() {
               config={config}
               onGoCredentials={() => setTab("credentials")}
             />
+          ) : tab === "freeapi" ? (
+            <FreeAPI />
           ) : tab === "credentials" ? (
             <Credentials creds={creds} />
           ) : tab === "models" ? (

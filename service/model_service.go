@@ -67,6 +67,14 @@ func (s *ModelService) GetModels() []*ModelDetail {
 		})
 	}
 
+	// 免费 API 模型（动态注册的 verified 模型）
+	for _, m := range proxy.FreeModels {
+		result = append(result, &ModelDetail{
+			ID: m.InternalID, Label: m.Label, Upstream: m.ProviderID,
+			Stream: true, Context: m.Context, Free: true,
+		})
+	}
+
 	return result
 }
 

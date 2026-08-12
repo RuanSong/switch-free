@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,10 @@ type Server struct {
 	OpenCode  *upstream.OpenCodeUpstream
 	WorkBuddy *upstream.WorkBuddyUpstream
 
+	// 免费 API 上游（动态注册，多供应商平级；key = provider id）
+	freeUpstreamsMu sync.RWMutex
+	FreeAPIs        map[string]upstream.Upstream
+
 	Logger         EventLogger
 	ConfigResolver ConfigResolver // ★ 配置解析器（由 main 注入）
 	Pricing        *pricing.Manager // ★ 费率管理器（由 main 注入）
@@ -41,13 +46,46 @@ type Server struct {
 // NewServer 创建代理服务
 func NewServer(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, wb *upstream.WorkBuddyUpstream, host string, port int) *Server {
 	return &Server{
-		JoyCode:   jy,
-		DevEco:    de,
-		OpenCode:  oc,
-		WorkBuddy: wb,
-		Host:      host,
-		Port:      port,
+		JoyCode:    jy,
+		DevEco:     de,
+		OpenCode:   oc,
+		WorkBuddy:  wb,
+		FreeAPIs:   map[string]upstream.Upstream{},
+		Host:       host,
+		Port:       port,
 	}
+}
+
+// RegisterFreeAPI 注册免费 API 上游（provider id -> upstream）
+func (s *Server) RegisterFreeAPI(id string, up upstream.Upstream) {
+	s.freeUpstreamsMu.Lock()
+	defer s.freeUpstreamsMu.Unlock()
+	s.FreeAPIs[id] = up
+}
+
+// RemoveFreeAPI 注销免费 API 上游
+func (s *Server) RemoveFreeAPI(id string) {
+	s.freeUpstreamsMu.Lock()
+	defer s.freeUpstreamsMu.Unlock()
+	delete(s.FreeAPIs, id)
+}
+
+// GetFreeAPI 按 provider id 取免费 API 上游
+func (s *Server) GetFreeAPI(id string) upstream.Upstream {
+	s.freeUpstreamsMu.RLock()
+	defer s.freeUpstreamsMu.RUnlock()
+	return s.FreeAPIs[id]
+}
+
+// GetFreeAPIs 返回所有免费 API 上游（key = provider id）
+func (s *Server) GetFreeAPIs() map[string]upstream.Upstream {
+	s.freeUpstreamsMu.RLock()
+	defer s.freeUpstreamsMu.RUnlock()
+	out := make(map[string]upstream.Upstream, len(s.FreeAPIs))
+	for k, v := range s.FreeAPIs {
+		out[k] = v
+	}
+	return out
 }
 
 // Start 启动 HTTP 服务（非阻塞）
@@ -217,6 +255,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"workbuddyCredValid": wbStatus.Valid,
 		"workbuddyUserId":    wbStatus.UserID,
 	}
+
+	// 免费 API 凭据状态（动态）
+	freeCreds := map[string]interface{}{}
+	anyFreeValid := false
+	for pid, up := range s.GetFreeAPIs() {
+		cs := up.CredStatus()
+		freeCreds[pid] = map[string]interface{}{
+			"valid":   cs.Valid,
+			"preview": cs.KeyPreview,
+		}
+		if cs.Valid {
+			anyFreeValid = true
+		}
+	}
+	resp["freeAPIs"] = freeCreds
+	if len(freeCreds) > 0 {
+		resp["ok"] = jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid || anyFreeValid
+	}
+
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -265,6 +322,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			ID: m.ID, Object: "model", Created: 1700000000, OwnedBy: "tencent",
 			Label: m.Label, Stream: true, Upstream: "workbuddy",
 			Context: m.Context, Output: m.Output, Vision: m.Vision, ToolCall: m.ToolCall,
+		})
+	}
+
+	// 免费 API 模型（动态注册的 verified 模型）
+	for _, m := range FreeModels {
+		data = append(data, ModelInfo{
+			ID: m.InternalID, Object: "model", Created: 1700000000,
+			OwnedBy: m.ProviderID,
+			Label:   m.Label, Stream: true, Upstream: m.ProviderID,
+			Context: m.Context, Free: true,
 		})
 	}
 

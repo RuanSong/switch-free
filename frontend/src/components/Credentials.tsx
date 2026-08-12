@@ -24,17 +24,24 @@ export default function Credentials({ creds }: Props) {
         <CredCard upstream="deveco" status={creds?.deveco ?? null} />
         <CredCard upstream="opencode" status={creds?.opencode ?? null} />
         <CredCard upstream="workbuddy" status={creds?.workbuddy ?? null} />
+        {/* 免费 API 供应商（动态，多个平级） */}
+        {Object.entries(creds?.freeAPIs ?? {}).map(([id, st]) => (
+          <CredCard key={id} upstream={id} status={st ?? null} isFreeApi />
+        ))}
       </div>
     </div>
   );
 }
 
-function CredCard({ upstream, status }: { upstream: string; status: CredStatusInfo | null }) {
+function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: CredStatusInfo | null; isFreeApi?: boolean }) {
   const [busy, setBusy] = useState(false);
   const valid = status?.valid ?? false;
   const installed = status?.installed ?? false;
   const isGui = status?.agentType === "gui";
-  const name = status ? nameFromUpstream(upstream) : upstream;
+  // 免费 API 供应商用 source（= 供应商显示名）作为名字；内置上游用 nameFromUpstream
+  const name = isFreeApi
+    ? (status?.source || upstream)
+    : status ? nameFromUpstream(upstream) : upstream;
   const icon = AGENT_ICON[upstream] ?? { initial: name[0]?.toUpperCase() ?? "?", color: "bg-[var(--color-surface-2)] text-[var(--color-text-dim)]" };
   const installCmd = status?.installCmd ?? "";
   const loginCmd = status?.loginCmd ?? "";
@@ -48,24 +55,37 @@ function CredCard({ upstream, status }: { upstream: string; status: CredStatusIn
     }
   };
 
-  // 状态徽章：三态
-  let badge = (
-    <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-danger)]/20 text-[var(--color-danger)]">
-      ✗ 未安装
-    </span>
-  );
-  if (valid) {
-    badge = (
+  // 状态徽章：三态（免费 API 用「已配置/未配置」简化）
+  let badge;
+  if (isFreeApi) {
+    badge = valid ? (
       <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-success)]/20 text-[var(--color-success)]">
-        ✓ 有效
+        ✓ 已配置
       </span>
-    );
-  } else if (installed) {
-    badge = (
+    ) : (
       <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-warning)]/20 text-[var(--color-warning)]">
-        ⚠ 已装未登录
+        ○ 未配置
       </span>
     );
+  } else {
+    badge = (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-danger)]/20 text-[var(--color-danger)]">
+        ✗ 未安装
+      </span>
+    );
+    if (valid) {
+      badge = (
+        <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-success)]/20 text-[var(--color-success)]">
+          ✓ 有效
+        </span>
+      );
+    } else if (installed) {
+      badge = (
+        <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-warning)]/20 text-[var(--color-warning)]">
+          ⚠ 已装未登录
+        </span>
+      );
+    }
   }
 
   return (
@@ -78,14 +98,20 @@ function CredCard({ upstream, status }: { upstream: string; status: CredStatusIn
               {icon.initial}
             </span>
             <span className="font-semibold text-lg">{name}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)] uppercase">
-              {isGui ? "GUI" : "CLI"}
-            </span>
+            {isFreeApi ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-primary)]/15 text-[var(--color-primary)] uppercase">
+                FREE
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)] uppercase">
+                {isGui ? "GUI" : "CLI"}
+              </span>
+            )}
             {badge}
           </div>
         </div>
         <div className="flex gap-2">
-          {installed && (
+          {!isFreeApi && installed && (
             <button
               onClick={refresh}
               disabled={busy}
@@ -94,7 +120,7 @@ function CredCard({ upstream, status }: { upstream: string; status: CredStatusIn
               {busy ? "..." : "刷新"}
             </button>
           )}
-          {status?.loginUrl && (installed || isGui) && (
+          {!isFreeApi && status?.loginUrl && (installed || isGui) && (
             <button
               onClick={() => CredsService.OpenLoginURL(upstream)}
               className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
@@ -106,7 +132,19 @@ function CredCard({ upstream, status }: { upstream: string; status: CredStatusIn
       </div>
 
       {/* 三态操作区 */}
-      {!installed ? (
+      {isFreeApi ? (
+        valid ? (
+          // 免费 API 正常：显示凭据详情
+          <Details status={status} />
+        ) : (
+          // 免费 API 未配置：提示去设置页
+          <div className="mt-1 pt-3 border-t border-[var(--color-border)]">
+            <div className="text-xs text-[var(--color-text-dim)]">
+              该免费 API 供应商未配置或未评测通过模型。请到「设置 → 免费 API」配置 API Key 并评测模型。
+            </div>
+          </div>
+        )
+      ) : !installed ? (
         // 未安装：显示安装命令/下载
         <InstallGuide
           isGui={isGui}

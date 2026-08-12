@@ -255,12 +255,22 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     }
   };
 
-  // 凭据有效性（用于提示哪些 upstream 可用）
+  // 凭据有效性（用于提示哪些 upstream 可用；含免费 API 供应商）
   const credValid: Record<string, boolean> = {
     joycode: creds?.joycode?.valid ?? false,
     deveco: creds?.deveco?.valid ?? false,
     opencode: creds?.opencode?.valid ?? false,
     workbuddy: creds?.workbuddy?.valid ?? false,
+    ...Object.fromEntries(
+      Object.entries(creds?.freeAPIs ?? {}).map(([id, st]) => [id, st?.valid ?? false])
+    ),
+  };
+
+  // upstream 显示名：内置用固定 label，免费 API 用其供应商名（source）
+  const labelOf = (up: string): string => {
+    if (UPSTREAM_LABEL[up]) return UPSTREAM_LABEL[up];
+    const src = creds?.freeAPIs?.[up]?.source;
+    return src || up;
   };
 
   if (!cfg) return <div className="p-6 text-[var(--color-text-dim)]">加载配置中...</div>;
@@ -558,7 +568,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                 }`}
                 title={u.source === "live" ? "接口实时拉取" : "本地白名单（接口拉取失败或未启用）"}
               >
-                {UPSTREAM_LABEL[u.upstream] ?? u.upstream}: {u.source === "live" ? `${u.models.length} 实时` : `${u.models.length} 本地`}
+                {labelOf(u.upstream)}: {u.source === "live" ? `${u.models.length} 实时` : u.source === "free" ? `${u.models.length} 免费` : `${u.models.length} 本地`}
               </span>
             ))}
           </div>
@@ -577,7 +587,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               return (
                 <div key={`${item.upstream}-${item.model}-${idx}`} className="flex items-center gap-2 bg-[var(--color-bg)] rounded-lg p-2.5 border border-[var(--color-border)]">
                   <span className="text-xs text-[var(--color-text-dim)] w-6 text-center">{idx + 1}</span>
-                  <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{UPSTREAM_LABEL[item.upstream]}</span>
+                  <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{labelOf(item.upstream)}</span>
                   <span className="flex-1 text-sm font-mono truncate">{item.model}</span>
                   {opt && <span className="text-xs text-[var(--color-text-dim)] truncate">{opt.label}</span>}
                   {opt?.free && <FreeBadge />}
@@ -641,7 +651,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                     {chain.map((ref, idx) => (
                       <div key={idx} className="flex items-center gap-2">
                         <span className="text-xs text-[var(--color-text-dim)] w-4">{idx + 1}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{UPSTREAM_LABEL[ref.upstream]}</span>
+                        <span className="text-xs px-2 py-0.5 rounded bg-[var(--color-surface-2)]">{labelOf(ref.upstream)}</span>
                         <code className="flex-1 font-mono text-xs">{ref.model}</code>
                         <ConfirmPopover
                           title="移除该降级项？"
@@ -668,7 +678,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             <option value="">选择模型...</option>
             {allModels.filter((m) => credValid[m.upstream]).map((m) => (
               <option key={`${m.upstream}-${m.model}`} value={m.model}>
-                {UPSTREAM_LABEL[m.upstream]}/{m.model}
+                {labelOf(m.upstream)}/{m.model}
               </option>
             ))}
           </select>
@@ -679,7 +689,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
           >
             {available.filter((u) => credValid[u.upstream]).map((u) => (
-              <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream]}</option>
+              <option key={u.upstream} value={u.upstream}>{labelOf(u.upstream)}</option>
             ))}
           </select>
           <ModelSelect
@@ -793,7 +803,7 @@ function AutoChainAdder({
         )}
         {validAvailable.map((u) => (
           <option key={u.upstream} value={u.upstream}>
-            {UPSTREAM_LABEL[u.upstream]}
+            {UPSTREAM_LABEL[u.upstream] ?? u.upstream}
           </option>
         ))}
       </select>
@@ -848,7 +858,7 @@ function ModelPicker({
           <option value="">无可用凭据</option>
         )}
         {validAvailable.map((u) => (
-          <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream]}</option>
+          <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream] ?? u.upstream}</option>
         ))}
       </select>
       <ModelSelect

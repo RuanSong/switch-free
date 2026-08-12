@@ -165,22 +165,48 @@ func (c *Core) GetLogStats() *LogStats {
 
 // ====== 凭据状态汇总 ======
 
-// AllCredStatus 四上游凭据状态
+// AllCredStatus 四上游 + 免费 API 凭据状态
 type AllCredStatus struct {
-	JoyCode  *creds.CredStatusInfo `json:"joycode"`
-	DevEco   *creds.CredStatusInfo `json:"deveco"`
-	OpenCode *creds.CredStatusInfo `json:"opencode"`
-	WorkBuddy *creds.CredStatusInfo `json:"workbuddy"`
+	JoyCode  *creds.CredStatusInfo          `json:"joycode"`
+	DevEco   *creds.CredStatusInfo          `json:"deveco"`
+	OpenCode *creds.CredStatusInfo          `json:"opencode"`
+	WorkBuddy *creds.CredStatusInfo         `json:"workbuddy"`
+	FreeAPIs map[string]*creds.CredStatusInfo `json:"freeAPIs,omitempty"` // 免费 API 供应商（动态）
 }
 
-// GetCredStatus 获取四上游凭据状态
+// GetCredStatus 获取全部凭据状态
 func (c *Core) GetCredStatus() *AllCredStatus {
-	return &AllCredStatus{
+	c.mu.RLock()
+	server := c.server
+	c.mu.RUnlock()
+
+	status := &AllCredStatus{
 		JoyCode:   c.joycode.CredStatus(),
 		DevEco:    c.deveco.CredStatus(),
 		OpenCode:  c.opencode.CredStatus(),
 		WorkBuddy: c.workbuddy.CredStatus(),
 	}
+	if server != nil {
+		freeAPIs := server.GetFreeAPIs()
+		if len(freeAPIs) > 0 {
+			status.FreeAPIs = map[string]*creds.CredStatusInfo{}
+			for pid, up := range freeAPIs {
+				status.FreeAPIs[pid] = up.CredStatus()
+			}
+		}
+	}
+	return status
+}
+
+// FreeUpstreams 返回免费 API 上游集合（key = provider id）
+func (c *Core) FreeUpstreams() map[string]upstream.Upstream {
+	c.mu.RLock()
+	server := c.server
+	c.mu.RUnlock()
+	if server == nil {
+		return nil
+	}
+	return server.GetFreeAPIs()
 }
 
 // RefreshCreds 强制刷新某上游凭据
@@ -256,6 +282,13 @@ func (c *Core) WatchInstalledAgents(ctx context.Context, interval time.Duration)
 
 // emitCredChange 推送凭据状态变化
 func (c *Core) emitCredChange() {
+	c.EmitEvent("cred:change", c.GetCredStatus())
+}
+
+// EmitFreeHealth 免费模型健康状态变化回调（实现 freeapi.HealthReporter）
+func (c *Core) EmitFreeHealth(health map[string]map[string]bool) {
+	c.EmitEvent("freeapi:health", health)
+	// 同时刷新凭据状态（模型健康变化影响可用性展示）
 	c.EmitEvent("cred:change", c.GetCredStatus())
 }
 
