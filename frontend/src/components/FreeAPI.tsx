@@ -232,12 +232,22 @@ export default function FreeAPI() {
     return id;
   };
 
+  // 当前表单对应的出站协议：优先已保存 provider 的 protocol，其次目录条目，默认 openai
+  const getEffectiveProtocol = (): string => {
+    const eid = editingId || (fromCatalog && selectedCatalog ? selectedCatalog : "") || effectiveId;
+    const existing = eid ? providers[eid] : undefined;
+    if (existing?.protocol) return existing.protocol;
+    const catProv = selectedCatalog ? catalog?.providers.find((x) => x.id === selectedCatalog) : undefined;
+    return catProv?.protocol ?? "openai";
+  };
+
   // 测试连接 + 拉取模型（用 baseURL + apiKey）；autoBench=true 时拉取成功后自动测评全部模型
   const testAndFetch = async (autoBench = false): Promise<CatalogModel[] | undefined> => {
     if (!baseURL.trim() || !apiKey.trim()) {
       flash("err", "请先填写 BaseURL 和 API Key");
       return;
     }
+    const protocol = getEffectiveProtocol();
     setLoadingModels(true);
     setBenchResult({});
     setSelectedIds([]);
@@ -245,18 +255,31 @@ export default function FreeAPI() {
     setOnlyPassed(false);
     setBatchProgress({ done: 0, total: 0 });
     try {
-      const fetched = await FreeAPIService.FetchProviderModels(baseURL.trim(), apiKey.trim());
-      if (!fetched || fetched.length === 0) {
-        flash("err", "未拉取到模型，请检查 BaseURL 和 API Key");
-        setCandidateModels([]);
-        return;
-      }
-      // 合并目录模型信息（context/rate_limit）+ 实时模型
       const catModels = selectedCatalog
         ? catalog?.providers.find((x) => x.id === selectedCatalog)?.free_models ?? []
         : [];
-      const merged: CatalogModel[] = fetched.map((m) => {
-        const mid = m.ID;
+
+      let fetchedIDs: string[] = [];
+      if (protocol === "anthropic") {
+        // Anthropic 协议供应商没有标准 GET /models 列表端点；直接用目录内置模型清单
+        if (catModels.length === 0) {
+          flash("err", "该供应商为 Anthropic 协议且目录无预置模型，无法自动拉取");
+          setCandidateModels([]);
+          return;
+        }
+        fetchedIDs = catModels.map((m) => m.id);
+      } else {
+        const fetched = await FreeAPIService.FetchProviderModels(baseURL.trim(), apiKey.trim());
+        if (!fetched || fetched.length === 0) {
+          flash("err", "未拉取到模型，请检查 BaseURL 和 API Key");
+          setCandidateModels([]);
+          return;
+        }
+        fetchedIDs = fetched.map((m) => m.ID);
+      }
+
+      // 合并目录模型信息（context/rate_limit/能力）+ 实时模型
+      const merged: CatalogModel[] = fetchedIDs.map((mid) => {
         const known = catModels.find((c) => c.id === mid || c.name === mid);
         return {
           id: mid,
@@ -266,7 +289,7 @@ export default function FreeAPI() {
         } as CatalogModel;
       });
       setCandidateModels(merged);
-      flash("ok", `拉取到 ${fetched.length} 个模型`);
+      flash("ok", `拉取到 ${merged.length} 个模型`);
       if (autoBench && merged.length > 0) {
         // 自动勾选全部并批量测评
         setSelectedIds(merged.map((m) => m.id));
@@ -289,7 +312,7 @@ export default function FreeAPI() {
     }
     setBenchmarking((p) => ({ ...p, [model.id]: true }));
     try {
-      const res = await FreeAPIService.BenchmarkModel(baseURL.trim(), apiKey.trim(), model.id, "", 256);
+      const res = await FreeAPIService.BenchmarkModel(baseURL.trim(), apiKey.trim(), model.id, "", getEffectiveProtocol(), 256);
       setBenchResult((p) => ({ ...p, [model.id]: res ?? {} }));
       // 已加入模型：把新测速持久化（AddVerifiedModel 同 id 覆盖，保留 healthy/failCount）
       if (res?.success) {
@@ -334,6 +357,7 @@ export default function FreeAPI() {
         baseURL.trim(),
         apiKey.trim(),
         "",
+        getEffectiveProtocol(),
         256,
         targets.map((m) => m.id)
       );
@@ -381,12 +405,14 @@ export default function FreeAPI() {
     try {
       const existing = providers[providerId];
       if (!existing) {
+        const catProv = catalog?.providers.find((x) => x.id === selectedCatalog);
         const cfg: ProviderConfig = {
           id: providerId,
           name: catName || customName.trim() || providerId,
           baseURL: baseURL.trim(),
           apiKey: apiKey.trim(),
-          getAPIKeyURL: catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "",
+          getAPIKeyURL: catProv?.get_api_key_url ?? "",
+          protocol: catProv?.protocol ?? "openai",
           maxContext: 0,
           custom: !fromCatalog,
           verified: false,
@@ -438,12 +464,14 @@ export default function FreeAPI() {
       const existing = providers[providerId];
       // 供应商还没落盘：先按当前表单保存（关联已有模型），再加入新模型
       if (!existing) {
+        const catProv = catalog?.providers.find((x) => x.id === selectedCatalog);
         const cfg: ProviderConfig = {
           id: providerId,
           name: catName || customName.trim() || providerId,
           baseURL: baseURL.trim(),
           apiKey: apiKey.trim(),
-          getAPIKeyURL: catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "",
+          getAPIKeyURL: catProv?.get_api_key_url ?? "",
+          protocol: catProv?.protocol ?? "openai",
           maxContext: 0,
           custom: !fromCatalog,
           verified: false,
@@ -495,6 +523,9 @@ export default function FreeAPI() {
       : enteredKey;
     // 用户给导入的供应商换了新 Key：该 Key 归用户所有，取消 imported 标记，下次可查看
     const keepImported = isImported && enteredKey === "";
+    const catProvForProto = fromCatalog
+      ? catalog?.providers.find((x) => x.id === selectedCatalog)
+      : undefined;
     const cfg: ProviderConfig = {
       id: providerId,
       name: fromCatalog
@@ -505,6 +536,7 @@ export default function FreeAPI() {
       getAPIKeyURL: fromCatalog
         ? (catName ? catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "" : (existing?.getAPIKeyURL ?? ""))
         : (existing?.getAPIKeyURL ?? ""),
+      protocol: existing?.protocol ?? catProvForProto?.protocol ?? "openai",
       maxContext: existing?.maxContext ?? 0,
       custom: isEdit ? (existing?.custom ?? true) : !fromCatalog,
       imported: keepImported,

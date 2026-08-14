@@ -84,6 +84,7 @@ type ShareProvider struct {
 	Name         string          `json:"name"`
 	BaseURL      string          `json:"baseURL"`
 	GetAPIKeyURL string          `json:"getAPIKeyURL"`
+	Protocol     string          `json:"protocol"`
 	Custom       bool            `json:"custom"`
 	APIKey       string          `json:"apiKey"`
 	Models       []ProviderModel `json:"models"`
@@ -148,6 +149,7 @@ func (m *Manager) EncryptShare(ids []string, password string, opts ShareOptions,
 			Name:         cp.Name,
 			BaseURL:      cp.BaseURL,
 			GetAPIKeyURL: cp.GetAPIKeyURL,
+			Protocol:     cp.Protocol,
 			Custom:       cp.Custom,
 			APIKey:       apiKey,
 			Models:       cp.Models,
@@ -406,6 +408,7 @@ func (m *Manager) ImportProviders(items []ImportItem) error {
 			BaseURL:      sp.BaseURL,
 			APIKey:       sp.APIKey,
 			GetAPIKeyURL: sp.GetAPIKeyURL,
+			Protocol:     sp.Protocol,
 			Custom:       sp.Custom,
 			Imported:     true, // 来自分享文件导入
 			Verified:     hasKey && len(models) > 0,

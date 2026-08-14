@@ -44,7 +44,7 @@ make build-binaries V=x.y.z  # 构建全平台裸二进制到 dist/（发布/自
 - 资产名匹配（`assetName()` 硬编码）：`switch-dev-darwin-arm64` / `switch-dev-darwin-amd64` / `switch-dev-windows-amd64.exe`（+ linux 运行时检测 `switch-dev-linux-amd64`，但 `make build-binaries` 暂不构建 linux），**发布时资产文件名必须精确匹配**
 - 下载应用（`updater/updater.go`）：`downloadAsset` 下载到临时文件（临时文件由 `ApplyUpdate` 用完后清理，**不能在 downloadAsset 里 defer Remove**）-> `github.com/minio/selfupdate` 原子替换运行中二进制 -> 提示重启
 - changelog：`UpdateInfo.Notes` 取自 GitHub Release body，由 `make release` 从 `CHANGELOG.md` 自动提取对应版本章节；前端 UpdatePanel 展示
-- 配置：`Config.AutoUpdate`（Enabled/Provider/GitHub{Owner,Repo,Token}/UpdateURL/Channel），默认 `RuanSong/switch-dev` 公开仓库，无需 Token
+- 配置：`Config.AutoUpdate`（Enabled/Provider/GitHub{Owner,Repo,Token}/UpdateURL/Channel），默认 `rosanruan/switch-dev` 公开仓库，无需 Token
 
 ## 发布流程（一键）
 ```bash

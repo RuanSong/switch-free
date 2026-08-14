@@ -46,7 +46,7 @@
     "enabled": true,
     "provider": "github",
     "github": {
-      "owner": "RuanSong",       // GitHub 用户名
+      "owner": "rosanruan",       // GitHub 用户名
       "repo": "switch-dev",     // 仓库名
       "token": ""                 // 可选：私有仓库的 PAT（公开仓库可留空）
     },

@@ -128,7 +128,7 @@ func Defaults() *Config {
 			Enabled:  true,
 			Provider: "github",
 			GitHub: GitHubConfig{
-				Owner: "RuanSong",
+				Owner: "rosanruan",
 				Repo:  "switch-dev",
 			},
 			Channel: "stable",

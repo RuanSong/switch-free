@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -400,17 +401,39 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	// 缓冲阶段：在找到第一个 data: 行之前，把输出暂存在 buf 中
+	var buf bytes.Buffer
+	buffering := true
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		// 原样透传每一行（保留 SSE 格式，空行也会写出 \n）
-		fmt.Fprintln(w, line)
 		trimmed := strings.TrimSpace(line)
+
+		// 在写入之前先检查是否为 data: 行
 		if firstByteMs == 0 && strings.HasPrefix(trimmed, "data:") {
 			firstByteMs = time.Since(start).Milliseconds()
 		}
-		if canFlush {
-			flusher.Flush()
+
+		if buffering {
+			fmt.Fprintln(&buf, line)
+			// 确认有 data: 行后，刷新缓冲到 w 并切换到直写模式
+			if firstByteMs > 0 {
+				w.Write(buf.Bytes())
+				buf.Reset()
+				buffering = false
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+		} else {
+			// 原样透传每一行（保留 SSE 格式，空行也会写出 \n）
+			fmt.Fprintln(w, line)
+			if canFlush {
+				flusher.Flush()
+			}
 		}
+
 		// 捕获 usage（在最后一个 chunk）
 		if strings.HasPrefix(trimmed, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
@@ -435,6 +458,104 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 		}
 	}
 	return capturedUsage, firstByteMs, nil
+}
+
+// StreamAnthropicPassthrough 透传上游 Anthropic SSE 事件给 Anthropic 客户端
+// （入站/出站同协议）。逐行原样写出，顺带从 message_start/message_delta 中
+// 提取 input/output token 用量用于日志。返回 usage（output 取 message_stop 前累积值）。
+//
+// 关键：前几行（event: 消息）在找到第一个 data: 行之前缓冲在内存中；
+// 若流结束前从未出现 data: 行，则 firstByteMs==0 且不向 w 写入任何内容，
+// 调用方可据此返回 502 而非 200+空body。
+func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, error) {
+	flusher, canFlush := w.(http.Flusher)
+	start := time.Now()
+	var firstByteMs int64
+	usage := &OpenAIUsage{}
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	sawStop := false
+
+	// 缓冲阶段：在找到第一个 data: 行之前，把输出暂存在 buf 中
+	var buf bytes.Buffer
+	buffering := true
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		// 在写入之前先检查是否为 data: 行
+		if firstByteMs == 0 && strings.HasPrefix(trimmed, "data:") {
+			firstByteMs = time.Since(start).Milliseconds()
+		}
+
+		if buffering {
+			fmt.Fprintln(&buf, line)
+			// 确认有 data: 行后，刷新缓冲到 w 并切换到直写模式
+			if firstByteMs > 0 {
+				w.Write(buf.Bytes())
+				buf.Reset()
+				buffering = false
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+		} else {
+			fmt.Fprintln(w, line)
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		// message_stop 是正常结束标记
+		if data == "[DONE]" {
+			sawStop = true
+			continue
+		}
+		// Anthropic SSE 的 JSON 含 type 字段；message_start 带初始 usage，
+		// message_delta 带 output_tokens 增量。
+		var ev struct {
+			Type  string `json:"type"`
+			Index int    `json:"index"`
+			Msg   struct {
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			Usage struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(data), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "message_start":
+			usage.PromptTokens = ev.Msg.Usage.InputTokens
+			usage.CompletionTokens = ev.Msg.Usage.OutputTokens
+		case "message_delta":
+			usage.CompletionTokens += ev.Usage.OutputTokens
+		case "message_stop":
+			sawStop = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return usage, firstByteMs, fmt.Errorf("读取 SSE 流失败: %w", err)
+	}
+	if firstByteMs > 0 && !sawStop {
+		// 此时 buffering 一定为 false（有 data: 行才可能 firstByteMs > 0）
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	return usage, firstByteMs, nil
 }
 
 // EstimateOutputTokens 按输出字符数粗估 output token。

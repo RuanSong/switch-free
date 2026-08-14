@@ -332,7 +332,7 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 
 	// ── GitHub Star 引导 ──
 	menu.Add("⭐ 去 GitHub 点个 Star").OnClick(func(*application.Context) {
-		_ = app.Browser.OpenURL("https://github.com/RuanSong/switch-dev")
+		_ = app.Browser.OpenURL("https://github.com/rosanruan/switch-dev")
 	})
 
 	menu.AddSeparator()
@@ -427,9 +427,13 @@ func registerFreeAPIRefresh(server *proxy.Server, mgr *freeapi.Manager, monitor 
 			if !p.Verified {
 				continue
 			}
-			// 为 provider 创建上游（闭包捕获 baseURL/apiKey，保证 rebuild 时读到最新）
-			baseURL, apiKey := p.BaseURL, p.APIKey
-			up := upstream.NewFreeAPIUpstream(pid, func() string { return baseURL }, func() string { return apiKey })
+			// 为 provider 创建上游（闭包捕获 baseURL/apiKey/protocol，保证 rebuild 时读到最新）
+			baseURL, apiKey, proto := p.BaseURL, p.APIKey, p.EffectiveProtocol()
+			up := upstream.NewFreeAPIUpstream(pid,
+				func() string { return baseURL },
+				func() string { return apiKey },
+				func() string { return proto },
+			)
 			up.SetDisplayName(p.Name)
 			server.RegisterFreeAPI(pid, up)
 

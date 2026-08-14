@@ -172,6 +172,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	if stream {
 		sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), &body)
 		if sr != nil {
+			// 上游本身就是 Anthropic 协议：SSE 直接透传（同协议）
+			if s.upstreamProtocolByName(upName) == "anthropic" {
+				s.streamAnthropicPassthrough(w, sr, requestedModel, upName, usedModel, source, string(raw))
+				return
+			}
 			s.streamAnthropicResponse(w, sr, requestedModel, upName, usedModel, source, string(raw))
 			return
 		}
@@ -212,6 +217,28 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	var generic map[string]interface{}
 	parseErr := json.Unmarshal([]byte(trimmed), &generic)
 	hasChoices := parseErr == nil && generic["choices"] != nil
+
+	// 上游本身就是 Anthropic 协议：响应是 Anthropic 格式（含 content/stop_reason/type=message），
+	// 直接透传给客户端，不做 OpenAI->Anthropic 回转。
+	if s.upstreamProtocolByName(upName) == "anthropic" && parseErr == nil &&
+		(generic["content"] != nil || generic["stop_reason"] != nil || generic["type"] == "message") {
+		entry := s.makeLogEntry(requestedModel, upName, "success", resp.StatusCode, duration, "", "POST", "/v1/messages", stream, reqBodyStr, trimmed)
+		entry.UsedModel = usedModel
+		entry.Source = source
+		// 从 Anthropic usage 提取 token 用量
+		if u, ok := generic["usage"].(map[string]interface{}); ok {
+			if v, ok := u["input_tokens"].(float64); ok {
+				entry.InputTokens = int(v)
+			}
+			if v, ok := u["output_tokens"].(float64); ok {
+				entry.OutputTokens = int(v)
+			}
+		}
+		s.logRequest(entry, resp.Body, requestedModel)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(resp.Body)
+		return
+	}
 
 	if !hasChoices {
 		// 检查是否为错误响应
@@ -433,6 +460,34 @@ func (s *Server) fillStreamLog(entry *LogEntry, usage *OpenAIUsage, requestedMod
 			entry.CostText = fmt.Sprintf("%s", price.DisplayName)
 		}
 	}
+}
+
+// streamAnthropicPassthrough 真流式转发：上游 Anthropic SSE -> 客户端 Anthropic SSE（同协议透传）
+func (s *Server) streamAnthropicPassthrough(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
+	defer sr.Body.Close()
+	start := time.Now()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	usage, firstByteMs, _ := StreamAnthropicPassthrough(w, sr.Body)
+	duration := time.Since(start).Milliseconds()
+
+	if firstByteMs == 0 {
+		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
+		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/messages", true, reqBodyStr, "")
+		entry.UsedModel = usedModel
+		entry.Source = source
+		s.recordLog(entry)
+		return
+	}
+
+	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/messages", true, reqBodyStr, "")
+	entry.UsedModel = usedModel
+	entry.Source = source
+	entry.FirstByteMs = firstByteMs
+	s.fillStreamLog(entry, usage, requestedModel)
+	s.recordLog(entry)
 }
 
 // streamAnthropicResponse 真流式转发：上游 OpenAI SSE 流 -> Anthropic SSE 事件

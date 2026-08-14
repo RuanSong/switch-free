@@ -112,7 +112,7 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 		}
 
 		// 构造 OpenAI body
-		oaiBytes, err := s.buildOpenAIBody(body, ref)
+		oaiBytes, err := s.buildOpenAIBody(body, ref, false)
 		if err != nil {
 			lastErr = err
 			lastUpstream = ref.Upstream
@@ -201,7 +201,7 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 		}
 		triedStream = true
 
-		oaiBytes, err := s.buildOpenAIBody(body, ref)
+		oaiBytes, err := s.buildOpenAIBody(body, ref, true)
 		if err != nil {
 			lastErr = err
 			lastUpstream = ref.Upstream
@@ -234,7 +234,7 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 		// 空内容流探测：部分上游（尤其免费/代理供应商）会返回 200 但只有 role 块 +
 		// finish_reason、没有任何 content/reasoning/tool_calls。提前预读到第一个内容块，
 		// 若整段为空则关掉这个流、降级到链里下一个模型，避免给客户端回 200 空消息。
-		peeked, peekErr := peekSSEUntilContent(sr.Body)
+		peeked, peekErr := peekSSEUntilContent(sr.Body, s.upstreamProtocol(ref))
 		if peekErr != nil {
 			reason := "empty_content"
 			detail := peekErr.Error()
@@ -298,18 +298,75 @@ func (s *Server) pickUpstream(name string) upstream.Upstream {
 }
 
 // buildOpenAIBody 根据 body 类型和模型引用构造 OpenAI 请求 body
-func (s *Server) buildOpenAIBody(body interface{}, ref ModelRef) ([]byte, error) {
+// stream 参数指示是否要流式调用（true=流式, false=非流式）。
+func (s *Server) buildOpenAIBody(body interface{}, ref ModelRef, stream bool) ([]byte, error) {
 	switch b := body.(type) {
 	case *AnthropicRequest:
-		return s.buildAnthropicOpenAIBody(b, ref)
+		return s.buildAnthropicOutboundBody(b, ref, stream)
 	case map[string]interface{}:
-		return s.buildOpenAIPassthroughBody(b, ref)
+		return s.buildOpenAIOutboundBody(b, ref, stream)
 	}
 	return nil, fmt.Errorf("unknown body type: %T", body)
 }
 
+// upstreamProtocolByName 按 upstream 名查其出站协议（"anthropic" 或 "openai"）
+func (s *Server) upstreamProtocolByName(name string) string {
+	if up := s.pickUpstream(name); up != nil {
+		if pp, ok := up.(interface{ Protocol() string }); ok {
+			if pp.Protocol() == "anthropic" {
+				return "anthropic"
+			}
+		}
+	}
+	return "openai"
+}
+
+// upstreamProtocol 返回某个 ModelRef 对应上游的出站协议："anthropic" 或 "openai"（默认）。
+// 内置 4 上游均为 OpenAI 协议（代理内部做 Anthropic->OpenAI 转换）；
+// free 供应商按其配置的 protocol 决定。
+func (s *Server) upstreamProtocol(ref ModelRef) string {
+	if up := s.pickUpstream(ref.Upstream); up != nil {
+		if pp, ok := up.(interface{ Protocol() string }); ok {
+			if pp.Protocol() == "anthropic" {
+				return "anthropic"
+			}
+		}
+	}
+	return "openai"
+}
+
+// buildAnthropicOutboundBody 处理入站 Anthropic(/v1/messages) 请求：
+//   - 上游为 anthropic 协议：透传 Anthropic body（只改 model）
+//   - 上游为 openai 协议：转成 OpenAI body
+// stream 参数控制是否在请求中保留 stream:true。非流式时必须设为 false
+// 以避免上游返回 SSE 而非 JSON 响应。
+func (s *Server) buildAnthropicOutboundBody(body *AnthropicRequest, ref ModelRef, stream bool) ([]byte, error) {
+	if s.upstreamProtocol(ref) == "anthropic" {
+		cp := *body
+		cp.Model = ref.Model
+		if IsFreeModel(ref.Model) {
+			cp.Model = stripFreePrefix(ref.Model)
+		}
+		if !stream {
+			cp.Stream = nil // 去掉 stream:true，让上游返回 JSON 而非 SSE
+		}
+		return json.Marshal(cp)
+	}
+	return s.buildAnthropicOpenAIBody(body, ref, stream)
+}
+
+// buildOpenAIOutboundBody 处理入站 OpenAI(/v1/chat/completions) 请求：
+//   - 上游为 openai 协议：直通（注入 model）
+//   - 上游为 anthropic 协议：转成 Anthropic body（一阶段暂不支持，返回明确错误；二阶段补转换器）
+func (s *Server) buildOpenAIOutboundBody(body map[string]interface{}, ref ModelRef, stream bool) ([]byte, error) {
+	if s.upstreamProtocol(ref) == "anthropic" {
+		return nil, fmt.Errorf("该供应商仅支持 Anthropic 协议，请通过 /v1/messages 端点调用")
+	}
+	return s.buildOpenAIPassthroughBody(body, ref)
+}
+
 // buildAnthropicOpenAIBody Anthropic 请求 -> OpenAI body（按上游类型选择转换器）
-func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) ([]byte, error) {
+func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef, stream bool) ([]byte, error) {
 	cp := *body
 	cp.Model = ref.Model
 	// free API 模型：还原为原始 model id（去掉 free/<provider>/ 前缀）
@@ -329,6 +386,10 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) 
 	default:
 		// 免费 API 供应商：走通用 OpenAI 转换
 		oaiBody, _ = AnthropicToOpenAI(&cp)
+	}
+	// 非流式调用：确保 stream=false，避免上游返回 SSE 而非 JSON
+	if !stream {
+		oaiBody.Stream = false
 	}
 	// free 供应商：AnthropicToOpenAI 内部会把未知 model 经 ResolveModel 兜底成
 	// AutoModel(glm-5.1)，这里强制改回剥离前缀后的真实上游 model id，
@@ -442,6 +503,14 @@ func isEmptyUpstreamResponse(resp *upstream.Response) bool {
 	var probe map[string]interface{}
 	if err := json.Unmarshal([]byte(trimmed), &probe); err == nil {
 		if _, ok := probe["error"]; ok {
+			return false
+		}
+		// Anthropic 成功响应（含 content/stop_reason/type=message）不算空
+		if probe["type"] == "message" || probe["content"] != nil || probe["stop_reason"] != nil {
+			// content 为非空数组才认为有内容
+			if arr, ok := probe["content"].([]interface{}); ok {
+				return len(arr) == 0
+			}
 			return false
 		}
 	}

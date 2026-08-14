@@ -14,25 +14,30 @@ import (
 	"switchfree/creds"
 )
 
-// FreeAPIUpstream 通用 OpenAI 兼容免费 API 上游适配器
-// 支持任意 base_url + Bearer key 的免费模型（Groq/NVIDIA NIM/自定义等）
-// 与内置 4 上游平级，可进降级链
+// FreeAPIUpstream 通用免费/自定义 API 上游适配器
+// 支持任意 base_url + key 的供应商，按出站协议分两种：
+//   - openai（默认）：POST /chat/completions，Authorization: Bearer
+//   - anthropic：   POST /v1/messages，x-api-key + anthropic-version
+//
+// 与内置 4 上游平级，可进降级链。
 type FreeAPIUpstream struct {
 	name        string // provider id（如 "groq"、"custom-xxx"）
 	displayName string // 供应商显示名（如 "Groq"）
 	getBaseURL  func() string
 	getAPIKey   func() string
+	getProtocol func() string // 返回 "openai"（默认）或 "anthropic"
 	client      *http.Client
 }
 
 // NewFreeAPIUpstream 创建免费 API 上游
-// providerID 用于路由标识；getBaseURL/getAPIKey 返回当前绑定的 provider 配置
-func NewFreeAPIUpstream(providerID string, getBaseURL, getAPIKey func() string) *FreeAPIUpstream {
+// providerID 用于路由标识；getBaseURL/getAPIKey/getProtocol 返回当前绑定的 provider 配置
+func NewFreeAPIUpstream(providerID string, getBaseURL, getAPIKey, getProtocol func() string) *FreeAPIUpstream {
 	return &FreeAPIUpstream{
-		name:       providerID,
-		getBaseURL: getBaseURL,
-		getAPIKey:  getAPIKey,
-		client:     &http.Client{Timeout: 120 * time.Second},
+		name:        providerID,
+		getBaseURL:  getBaseURL,
+		getAPIKey:   getAPIKey,
+		getProtocol: getProtocol,
+		client:      &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -42,12 +47,24 @@ func (u *FreeAPIUpstream) SetDisplayName(name string) {
 }
 
 // Rebind 热切换绑定的 provider 配置（激活切换时调用）
-func (u *FreeAPIUpstream) Rebind(getBaseURL, getAPIKey func() string) {
+func (u *FreeAPIUpstream) Rebind(getBaseURL, getAPIKey, getProtocol func() string) {
 	u.getBaseURL = getBaseURL
 	u.getAPIKey = getAPIKey
+	u.getProtocol = getProtocol
+}
+
+// protocol 返回规范化的出站协议
+func (u *FreeAPIUpstream) protocol() string {
+	if u.getProtocol != nil && u.getProtocol() == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
 }
 
 func (u *FreeAPIUpstream) Name() string { return u.name }
+
+// Protocol 返回该上游的出站协议（"openai" 或 "anthropic"），供代理层决定请求/响应转换
+func (u *FreeAPIUpstream) Protocol() string { return u.protocol() }
 
 func (u *FreeAPIUpstream) EnsureCreds(ctx context.Context) error {
 	if u.getAPIKey == nil || u.getAPIKey() == "" {
@@ -62,11 +79,13 @@ func (u *FreeAPIUpstream) VerifyCreds(ctx context.Context) (*VerifyResult, error
 	if u.getAPIKey == nil || u.getAPIKey() == "" {
 		return &VerifyResult{Valid: false, Status: -1}, fmt.Errorf("未配置 API Key")
 	}
-	_, status, err := u.getModels(u.getAPIKey())
+	status, err := u.verifyKey(u.getAPIKey())
 	if err != nil {
 		return &VerifyResult{Valid: false, Status: status}, err
 	}
-	return &VerifyResult{Valid: status == 200, Status: status}, nil
+	// 200/400/404 都视为连通（401/403 才算 key 无效）；404 对 anthropic 是端点正常但方法/路径差异
+	valid := status == 200 || status == 400 || status == 404
+	return &VerifyResult{Valid: valid, Status: status}, nil
 }
 
 func (u *FreeAPIUpstream) CredStatus() *creds.CredStatusInfo {
@@ -139,8 +158,26 @@ func (u *FreeAPIUpstream) base() string {
 	return strings.TrimSuffix(u.getBaseURL(), "/")
 }
 
+// endpoint 返回非流式/流式请求的完整路径
+func (u *FreeAPIUpstream) endpoint() string {
+	if u.protocol() == "anthropic" {
+		return u.base() + "/v1/messages"
+	}
+	return u.base() + "/chat/completions"
+}
+
+// setAuth 按协议设置鉴权头
+func (u *FreeAPIUpstream) setAuth(req *http.Request, key string) {
+	if u.protocol() == "anthropic" {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+}
+
 func (u *FreeAPIUpstream) doCall(ctx context.Context, body []byte, key string) (*Response, error) {
-	url := u.base() + "/chat/completions"
+	url := u.endpoint()
 	reqID := fmt.Sprintf("req-%d-%s", time.Now().Unix(), randString(6))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -148,8 +185,8 @@ func (u *FreeAPIUpstream) doCall(ctx context.Context, body []byte, key string) (
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
+	u.setAuth(req, key)
 
 	httpResp, err := u.client.Do(req)
 	if err != nil {
@@ -164,18 +201,26 @@ func (u *FreeAPIUpstream) doCall(ctx context.Context, body []byte, key string) (
 }
 
 func (u *FreeAPIUpstream) doCallStream(ctx context.Context, body []byte, key string) (*StreamResponse, error) {
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
-	}
-	m["stream"] = true
-	m["stream_options"] = map[string]bool{"include_usage": true}
-	bodyBytes, err := json.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
+	var bodyBytes []byte
+	// openai 协议：强制 stream 并加 include_usage；anthropic 协议 body 已是 anthropic 格式，
+	// 由 router 构造好 stream 字段，这里直接透传。
+	if u.protocol() == "openai" {
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			return nil, fmt.Errorf("解析请求 body 失败: %w", err)
+		}
+		m["stream"] = true
+		m["stream_options"] = map[string]bool{"include_usage": true}
+		b, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
+		}
+		bodyBytes = b
+	} else {
+		bodyBytes = body
 	}
 
-	url := u.base() + "/chat/completions"
+	url := u.endpoint()
 	reqID := fmt.Sprintf("req-%d-%s", time.Now().Unix(), randString(6))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -183,8 +228,8 @@ func (u *FreeAPIUpstream) doCallStream(ctx context.Context, body []byte, key str
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "text/event-stream")
+	u.setAuth(req, key)
 
 	httpResp, err := u.client.Do(req)
 	if err != nil {
@@ -196,7 +241,7 @@ func (u *FreeAPIUpstream) doCallStream(ctx context.Context, body []byte, key str
 		return &StreamResponse{StatusCode: httpResp.StatusCode, Body: io.NopCloser(bytes.NewReader(errBody)), ReqID: reqID}, nil
 	}
 
-	// peek 检测空流 + 非 SSE
+	// peek 检测空流 + 非 SSE（两种协议的 SSE 都含 data:）
 	br := bufio.NewReader(httpResp.Body)
 	peeked, _ := br.Peek(256)
 	peekStr := string(peeked)
@@ -208,7 +253,7 @@ func (u *FreeAPIUpstream) doCallStream(ctx context.Context, body []byte, key str
 			ReqID:      reqID,
 		}, nil
 	}
-	if !strings.Contains(peekStr, "data:") || !strings.Contains(peekStr, "choices") {
+	if !strings.Contains(peekStr, "data:") {
 		httpResp.Body.Close()
 		snippet := peekStr
 		if len(snippet) > 200 {
@@ -223,7 +268,34 @@ func (u *FreeAPIUpstream) doCallStream(ctx context.Context, body []byte, key str
 	return &StreamResponse{StatusCode: 200, Body: &bufferedReadCloser{br: br, c: httpResp.Body}, ReqID: reqID}, nil
 }
 
-// getModels GET /models
+// verifyKey 用一个轻量请求验证 key 是否有效，返回 HTTP 状态码。
+// openai 协议：GET /models；anthropic 协议：POST /v1/messages（最小请求，
+// 401=key 无效，400/200=连通且 key 有效）。
+func (u *FreeAPIUpstream) verifyKey(key string) (int, error) {
+	var req *http.Request
+	var err error
+	if u.protocol() == "anthropic" {
+		url := u.base() + "/v1/messages"
+		req, err = http.NewRequest("POST", url, bytes.NewReader([]byte(`{"model":"test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)))
+	} else {
+		url := u.base() + "/models"
+		req, err = http.NewRequest("GET", url, nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	u.setAuth(req, key)
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
+// getModels GET /models（仅 openai 协议；FetchModels 用）
 func (u *FreeAPIUpstream) getModels(key string) ([]byte, int, error) {
 	url := u.base() + "/models"
 	req, err := http.NewRequest("GET", url, nil)

@@ -20,17 +20,32 @@ type ProviderModel struct {
 }
 
 // ProviderConfig 单个免费 API 供应商配置
+// 出站协议常量
+const (
+	ProtocolOpenAI    = "openai"    // OpenAI 兼容（POST /chat/completions，Bearer 鉴权）
+	ProtocolAnthropic = "anthropic" // Anthropic 协议（POST /v1/messages，x-api-key 鉴权）
+)
+
 type ProviderConfig struct {
 	ID           string          `json:"id"`           // 唯一 id：目录 slug 或 custom-<随机>
 	Name         string          `json:"name"`         // 显示名
 	BaseURL      string          `json:"baseURL"`      // OpenAI 兼容地址
 	APIKey       string          `json:"apiKey"`       // 密钥（内存明文；落盘时由 Manager 加密）
 	GetAPIKeyURL string          `json:"getAPIKeyURL"` // 申请 key 地址
+	Protocol     string          `json:"protocol"`     // 出站协议：openai（默认）| anthropic
 	MaxContext   int             `json:"maxContext"`   // 最大上下文（可选）
 	Custom       bool            `json:"custom"`       // 是否手动自定义添加
 	Imported     bool            `json:"imported"`     // 是否通过分享文件导入
 	Verified     bool            `json:"verified"`     // provider 是否至少评测通过一个模型
 	Models       []ProviderModel `json:"models"`       // 该 provider 的模型（逐个评测通过才加）
+}
+
+// EffectiveProtocol 返回规范化的出站协议，空值默认 openai
+func (p *ProviderConfig) EffectiveProtocol() string {
+	if p.Protocol == ProtocolAnthropic {
+		return ProtocolAnthropic
+	}
+	return ProtocolOpenAI
 }
 
 // InternalID 生成代理内部模型 id（free/<providerID>/<modelID>，前缀隔离避免重名）
@@ -72,6 +87,7 @@ type onDiskProvider struct {
 	BaseURL      string          `json:"baseURL"`
 	APIKey       *sealed         `json:"apiKey"` // 密文；空 key 为 nil
 	GetAPIKeyURL string          `json:"getAPIKeyURL"`
+	Protocol     string          `json:"protocol"`
 	MaxContext   int             `json:"maxContext"`
 	Custom       bool            `json:"custom"`
 	Imported     bool            `json:"imported"`

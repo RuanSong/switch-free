@@ -24,9 +24,21 @@ type CatalogProvider struct {
 	AuthMethod        string           `json:"auth_method"`
 	CreditCardReq     bool             `json:"credit_card_required"`
 	OpenAICompatible  bool             `json:"openai_compatible"`
-	MaxContext        string           `json:"max_context"` // "1M"、"131K" 等文本
+	Protocol          string           `json:"protocol,omitempty"` // 出站协议：openai（默认）| anthropic；空值按 OpenAICompatible 推断
+	MaxContext        string           `json:"max_context"`         // "1M"、"131K" 等文本
 	FreeModelsCount   int              `json:"free_models_count"`
 	FreeModels        []CatalogModel   `json:"free_models"`
+}
+
+// EffectiveProtocol 返回目录条目的出站协议：显式 protocol 优先，否则按 openai_compatible 推断
+func (c *CatalogProvider) EffectiveProtocol() string {
+	if c.Protocol == ProtocolAnthropic || c.Protocol == ProtocolOpenAI {
+		return c.Protocol
+	}
+	if c.OpenAICompatible {
+		return ProtocolOpenAI
+	}
+	return ProtocolAnthropic
 }
 
 // CatalogModel 目录中的单个免费模型
@@ -62,7 +74,7 @@ func SetEmbedCatalog(data []byte) {
 }
 
 // GitHubCatalogURL 目录的 GitHub raw 地址
-const GitHubCatalogURL = "https://raw.githubusercontent.com/RuanSong/switch-dev/main/data/free_apis_catalog.json"
+const GitHubCatalogURL = "https://raw.githubusercontent.com/rosanruan/switch-dev/main/data/free_apis_catalog.json"
 
 // CatalogLoader 目录加载器（embed + GitHub + 本地缓存）
 type CatalogLoader struct {

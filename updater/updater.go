@@ -44,7 +44,7 @@ func (u *Updater) CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
 		uc.Enabled = true
 		uc.Provider = "github"
 		if uc.GitHub.Owner == "" {
-			uc.GitHub.Owner = "RuanSong"
+			uc.GitHub.Owner = "rosanruan"
 		}
 		if uc.GitHub.Repo == "" {
 			uc.GitHub.Repo = "switch-dev"

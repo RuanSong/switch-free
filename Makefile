@@ -22,7 +22,7 @@
 #   make clean          # 清理产物
 
 # 仓库信息
-REPO        ?= RuanSong/switch-dev
+REPO        ?= rosanruan/switch-dev
 # 版本号（默认从 build/config.yml 读）
 V           ?= $(shell grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 TAG         ?= v$(V)

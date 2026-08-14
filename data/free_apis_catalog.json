@@ -1010,7 +1010,8 @@
           "reasoning": true,
           "tool_call": true
         }
-      ]
+      ],
+      "protocol": "anthropic"
     },
     {
       "id": "modelscope",
@@ -2990,7 +2991,8 @@
           "tool_call": true,
           "structured_output": true
         }
-      ]
+      ],
+      "protocol": "anthropic"
     },
     {
       "id": "llm7-io",

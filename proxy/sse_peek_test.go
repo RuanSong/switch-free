@@ -22,7 +22,7 @@ func TestPeekSSEEmptyContent(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n" +
 		"data: [DONE]\n"
 	rc := io.NopCloser(strings.NewReader(stream))
-	_, err := peekSSEUntilContent(rc)
+	_, err := peekSSEUntilContent(rc, "")
 	if !errors.Is(err, errSSEEmptyContent) {
 		t.Fatalf("want errSSEEmptyContent, got %v", err)
 	}
@@ -31,7 +31,7 @@ func TestPeekSSEEmptyContent(t *testing.T) {
 // 只有 [DONE]，也是空流。
 func TestPeekSSEOnlyDone(t *testing.T) {
 	rc := io.NopCloser(strings.NewReader("data: [DONE]\n"))
-	_, err := peekSSEUntilContent(rc)
+	_, err := peekSSEUntilContent(rc, "")
 	if !errors.Is(err, errSSEEmptyContent) {
 		t.Fatalf("want errSSEEmptyContent, got %v", err)
 	}
@@ -45,7 +45,7 @@ func TestPeekSSEWithContent(t *testing.T) {
 		"data: {\"choices\":[{\"delta\":{\"content\":\"世界\"}}]}\n" +
 		"data: [DONE]\n"
 	rc := io.NopCloser(strings.NewReader(stream))
-	peeked, err := peekSSEUntilContent(rc)
+	peeked, err := peekSSEUntilContent(rc, "")
 	if err != nil {
 		t.Fatalf("want content, got err: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestPeekSSEReasoningCounts(t *testing.T) {
 	stream := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考中\"}}]}\n" +
 		"data: [DONE]\n"
 	rc := io.NopCloser(strings.NewReader(stream))
-	peeked, err := peekSSEUntilContent(rc)
+	peeked, err := peekSSEUntilContent(rc, "")
 	if err != nil {
 		t.Fatalf("reasoning should count as content, got %v", err)
 	}
@@ -77,7 +77,7 @@ func TestPeekSSEToolCallCounts(t *testing.T) {
 	stream := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"foo\",\"arguments\":\"\"}}]}}]}\n" +
 		"data: [DONE]\n"
 	rc := io.NopCloser(strings.NewReader(stream))
-	peeked, err := peekSSEUntilContent(rc)
+	peeked, err := peekSSEUntilContent(rc, "")
 	if err != nil {
 		t.Fatalf("tool_call should count as content, got %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPeekSSEToolCallCounts(t *testing.T) {
 func TestPeekSSENoTrailingNewline(t *testing.T) {
 	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"尾块\"}}]}"
 	rc := io.NopCloser(strings.NewReader(stream))
-	peeked, err := peekSSEUntilContent(rc)
+	peeked, err := peekSSEUntilContent(rc, "")
 	if err != nil {
 		t.Fatalf("want content on final chunk, got %v", err)
 	}

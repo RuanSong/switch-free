@@ -165,16 +165,17 @@ func (s *FreeAPIService) FetchProviderModels(baseURL, apiKey string) ([]upstream
 }
 
 // BenchmarkModel 对单个模型直接发请求评测（不经过代理，验证模型可用 + 测 TPS）
+// protocol: "anthropic" 走 /v1/messages + x-api-key；其他走 OpenAI /chat/completions + Bearer。
 // 返回评测结果；通过（success）后由前端决定是否 AddVerifiedModel
-func (s *FreeAPIService) BenchmarkModel(baseURL, apiKey, modelID, prompt string, maxTokens int) (map[string]interface{}, error) {
+func (s *FreeAPIService) BenchmarkModel(baseURL, apiKey, modelID, prompt, protocol string, maxTokens int) (map[string]interface{}, error) {
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(apiKey) == "" || strings.TrimSpace(modelID) == "" {
 		return nil, fmt.Errorf("BaseURL、API Key、模型不能为空")
 	}
-	return benchmarkOnce(baseURL, apiKey, modelID, prompt, maxTokens), nil
+	return benchmarkOnce(baseURL, apiKey, modelID, prompt, protocol, maxTokens), nil
 }
 
 // benchmarkOnce 实际发请求并组装结果
-func benchmarkOnce(baseURL, apiKey, modelID, prompt string, maxTokens int) map[string]interface{} {
+func benchmarkOnce(baseURL, apiKey, modelID, prompt, protocol string, maxTokens int) map[string]interface{} {
 	if prompt == "" {
 		prompt = "请用一句话介绍你自己。"
 	}
@@ -183,20 +184,41 @@ func benchmarkOnce(baseURL, apiKey, modelID, prompt string, maxTokens int) map[s
 	}
 
 	base := strings.TrimSuffix(baseURL, "/")
-	payload := map[string]interface{}{
-		"model":      modelID,
-		"messages":   []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens": maxTokens,
-		"stream":     false,
+	anthropic := protocol == "anthropic"
+
+	var url string
+	var body []byte
+	if anthropic {
+		url = base + "/v1/messages"
+		payload := map[string]interface{}{
+			"model":      modelID,
+			"max_tokens": maxTokens,
+			"messages":   []map[string]string{{"role": "user", "content": prompt}},
+		}
+		body, _ = json.Marshal(payload)
+	} else {
+		url = base + "/chat/completions"
+		payload := map[string]interface{}{
+			"model":      modelID,
+			"messages":   []map[string]string{{"role": "user", "content": prompt}},
+			"max_tokens": maxTokens,
+			"stream":     false,
+		}
+		body, _ = json.Marshal(payload)
 	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", base+"/chat/completions", strings.NewReader(string(body)))
+
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(body)))
 	if err != nil {
 		return map[string]interface{}{"success": false, "errorMsg": err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
+	if anthropic {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	start := time.Now()
@@ -215,26 +237,54 @@ func benchmarkOnce(baseURL, apiKey, modelID, prompt string, maxTokens int) map[s
 		"statusCode": resp.StatusCode,
 	}
 	if resp.StatusCode == 200 {
-		var oai struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage"`
-		}
-		_ = json.Unmarshal(respBody, &oai)
-		if len(oai.Choices) > 0 {
-			out["content"] = oai.Choices[0].Message.Content
-		}
-		out["outputTokens"] = oai.Usage.CompletionTokens
-		out["inputTokens"] = oai.Usage.PromptTokens
-		out["tps"] = 0.0
-		if oai.Usage.CompletionTokens > 0 && duration > 0 {
-			out["tps"] = float64(oai.Usage.CompletionTokens) / (float64(duration) / 1000.0)
+		if anthropic {
+			var ant struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			}
+			_ = json.Unmarshal(respBody, &ant)
+			text := ""
+			for _, c := range ant.Content {
+				if c.Type == "text" {
+					text += c.Text
+				}
+			}
+			out["content"] = text
+			out["outputTokens"] = ant.Usage.OutputTokens
+			out["inputTokens"] = ant.Usage.InputTokens
+			if ant.Usage.OutputTokens > 0 && duration > 0 {
+				out["tps"] = float64(ant.Usage.OutputTokens) / (float64(duration) / 1000.0)
+			} else {
+				out["tps"] = 0.0
+			}
+		} else {
+			var oai struct {
+				Choices []struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+				Usage struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+				} `json:"usage"`
+			}
+			_ = json.Unmarshal(respBody, &oai)
+			if len(oai.Choices) > 0 {
+				out["content"] = oai.Choices[0].Message.Content
+			}
+			out["outputTokens"] = oai.Usage.CompletionTokens
+			out["inputTokens"] = oai.Usage.PromptTokens
+			out["tps"] = 0.0
+			if oai.Usage.CompletionTokens > 0 && duration > 0 {
+				out["tps"] = float64(oai.Usage.CompletionTokens) / (float64(duration) / 1000.0)
+			}
 		}
 	} else {
 		snippet := string(respBody)
@@ -253,7 +303,7 @@ type BatchBenchmarkItem struct {
 
 // BatchBenchmark 以有限并发批量测评多个模型，通过 freeapi:bench 事件推送每个结果。
 // 并发数根据模型数量自动调整：20 个以内用 4，超过 20 用 8。
-func (s *FreeAPIService) BatchBenchmark(baseURL, apiKey, prompt string, maxTokens int, modelIDs []string) error {
+func (s *FreeAPIService) BatchBenchmark(baseURL, apiKey, prompt, protocol string, maxTokens int, modelIDs []string) error {
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("BaseURL 和 API Key 不能为空")
 	}
@@ -298,7 +348,7 @@ func (s *FreeAPIService) BatchBenchmark(baseURL, apiKey, prompt string, maxToken
 					queue = queue[1:]
 					mu.Unlock()
 
-					res := benchmarkOnce(baseURL, apiKey, modelID, prompt, maxTokens)
+					res := benchmarkOnce(baseURL, apiKey, modelID, prompt, protocol, maxTokens)
 
 					mu.Lock()
 					done++
