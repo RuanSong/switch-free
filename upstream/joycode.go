@@ -162,7 +162,7 @@ func (u *JoyCodeUpstream) callWithRetry(ctx context.Context, body []byte) (*Resp
 
 	// pt_key 失效 -> 重读 vscdb 并重试一次
 	if isPtKeyInvalid(resp) {
-		fmt.Println("[switch-free] JoyCode 收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
+		fmt.Println("[switch-dev] JoyCode 收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
 		u.mgr.InvalidateCreds()
 		oldKey := cred.PtKey
 		newCred, err := u.mgr.EnsureCreds()
@@ -255,7 +255,7 @@ func (u *JoyCodeUpstream) CallStream(ctx context.Context, body []byte) (*StreamR
 	}
 	// 401 重试（纯 status 判断，流式下放弃 body code:401 检测）
 	if sr.StatusCode == 401 {
-		fmt.Println("[switch-free] JoyCode 流式收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
+		fmt.Println("[switch-dev] JoyCode 流式收到 401（pt_key 失效），重读 state.vscdb 并重试一次")
 		sr.Body.Close()
 		u.mgr.InvalidateCreds()
 		oldKey := cred.PtKey
@@ -337,7 +337,7 @@ func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *c
 	peeked, _ := br.Peek(256)
 	if len(peeked) == 0 {
 		rc.Close()
-		fmt.Printf("[switch-free] joycode 流式上游返回空流，降级\n")
+		fmt.Printf("[switch-dev] joycode 流式上游返回空流，降级\n")
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
@@ -347,7 +347,7 @@ func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *c
 	if bytes.Contains(peeked, []byte("COLOR_FORWARD_EXCEPTION")) {
 		errBody, _ := io.ReadAll(br)
 		rc.Close()
-		fmt.Printf("[switch-free] JoyCode 流式收到 COLOR_FORWARD_EXCEPTION（406 灰度拒绝），降级到伪流式\n")
+		fmt.Printf("[switch-dev] JoyCode 流式收到 COLOR_FORWARD_EXCEPTION（406 灰度拒绝），降级到伪流式\n")
 		return &StreamResponse{
 			StatusCode: 406, // 虚拟 406，让 executeChainStream 降级到伪流式（Call 非流式）
 			Body:       io.NopCloser(bytes.NewReader(errBody)),
@@ -360,7 +360,7 @@ func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *c
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		fmt.Printf("[switch-free] joycode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		fmt.Printf("[switch-dev] joycode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),

@@ -5,19 +5,19 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "switch-free"
+    !define INFO_PROJECTNAME "switch-dev"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "Switch Free"
+    !define INFO_COMPANYNAME "Switch Dev"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "Switch Free"
+    !define INFO_PRODUCTNAME "Switch Dev"
 !endif
 !ifndef INFO_PRODUCTVERSION
     !define INFO_PRODUCTVERSION "0.0.3"
 !endif
 !ifndef INFO_COPYRIGHT
-    !define INFO_COPYRIGHT "© 2025-2026, Switch Free Contributors"
+    !define INFO_COPYRIGHT "© 2025-2026, Switch Dev Contributors"
 !endif
 !ifndef PRODUCT_EXECUTABLE
     !define PRODUCT_EXECUTABLE "${INFO_PROJECTNAME}.exe"

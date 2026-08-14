@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -16,6 +17,27 @@ import (
 type ModelRef struct {
 	Upstream string `json:"upstream"`
 	Model    string `json:"model"`
+}
+
+// directCtxKey 直连模式上下文 key：测评等内部请求用，跳过降级链，只打指定模型
+type directCtxKey struct{}
+
+// WithDirect 返回带直连标记的 context
+func WithDirect(ctx context.Context) context.Context {
+	return context.WithValue(ctx, directCtxKey{}, true)
+}
+
+func isDirect(ctx context.Context) bool {
+	v, _ := ctx.Value(directCtxKey{}).(bool)
+	return v
+}
+
+// directChain 把请求模型解析为「仅自身」的单元素链（不附加任何降级/兜底）
+func directChain(requestedModel string) []ModelRef {
+	return []ModelRef{{
+		Upstream: ResolveUpstream(requestedModel),
+		Model:    ResolveModel(requestedModel),
+	}}
 }
 
 // ConfigResolver 配置解析接口（Server 持有，避免直接依赖 config 包）
@@ -33,6 +55,9 @@ func (s *Server) callUpstreamAnthropic(ctx context.Context, body *AnthropicReque
 		requestedModel = "auto"
 	}
 	chain := s.ConfigResolver.Resolve(requestedModel)
+	if isDirect(ctx) {
+		chain = directChain(requestedModel) // 直连模式：跳过降级链，只打指定模型
+	}
 	return s.executeChain(ctx, body, chain, requestedModel)
 }
 
@@ -43,6 +68,9 @@ func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]inte
 		requestedModel = "auto"
 	}
 	chain := s.ConfigResolver.Resolve(requestedModel)
+	if isDirect(ctx) {
+		chain = directChain(requestedModel)
+	}
 	return s.executeChain(ctx, rawBody, chain, requestedModel)
 }
 
@@ -78,7 +106,7 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 
 		// 凭据无效的直接跳过（不发起请求）
 		if !up.HasValidCreds() {
-			fmt.Printf("[switch-free] 跳过 %s/%s（凭据无效）\n", ref.Upstream, ref.Model)
+			fmt.Printf("[switch-dev] 跳过 %s/%s（凭据无效）\n", ref.Upstream, ref.Model)
 			s.recordSkipLog(requestedModel, ref, "cred_invalid")
 			continue
 		}
@@ -94,7 +122,7 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 		// 发起请求
 		resp, err := up.Call(ctx, oaiBytes)
 		if err != nil {
-			fmt.Printf("[switch-free] %s/%s 调用失败: %v，降级\n", ref.Upstream, ref.Model, err)
+			fmt.Printf("[switch-dev] %s/%s 调用失败: %v，降级\n", ref.Upstream, ref.Model, err)
 			lastErr = err
 			lastUpstream = ref.Upstream
 			s.recordFallbackLog(requestedModel, ref, "call_error", err.Error())
@@ -104,10 +132,22 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 		// 检查上游错误响应
 		if isUpstreamErrorResponse(resp) {
 			snippet := upstreamErrSnippet(resp)
-			fmt.Printf("[switch-free] %s/%s 上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, resp.StatusCode, snippet)
+			fmt.Printf("[switch-dev] %s/%s 上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, resp.StatusCode, snippet)
 			lastErr = fmt.Errorf("upstream error: %s", snippet)
 			lastUpstream = ref.Upstream
 			s.recordFallbackLog(requestedModel, ref, "upstream_error", snippet)
+			continue
+		}
+
+		// 空内容过滤：200 但 body 为空，或解析后 choices/message 内容全空
+		// （部分供应商对受限/异常请求返回 200 空响应）。当作失败降级到下一个模型，
+		// 而不是把空响应当成功返回给客户端。
+		if isEmptyUpstreamResponse(resp) {
+			detail := "200 空内容（无 choices 或 message 全空）"
+			fmt.Printf("[switch-dev] %s/%s 上游空内容，降级\n", ref.Upstream, ref.Model)
+			lastErr = fmt.Errorf("upstream empty content")
+			lastUpstream = ref.Upstream
+			s.recordFallbackLog(requestedModel, ref, "empty_content", detail)
 			continue
 		}
 
@@ -150,7 +190,7 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 			continue
 		}
 		if !up.HasValidCreds() {
-			fmt.Printf("[switch-free] 跳过 %s/%s（凭据无效）\n", ref.Upstream, ref.Model)
+			fmt.Printf("[switch-dev] 跳过 %s/%s（凭据无效）\n", ref.Upstream, ref.Model)
 			s.recordSkipLog(requestedModel, ref, "cred_invalid")
 			continue
 		}
@@ -170,7 +210,7 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 
 		sr, err := sc.CallStream(ctx, oaiBytes)
 		if err != nil {
-			fmt.Printf("[switch-free] %s/%s 流式调用失败: %v，降级\n", ref.Upstream, ref.Model, err)
+			fmt.Printf("[switch-dev] %s/%s 流式调用失败: %v，降级\n", ref.Upstream, ref.Model, err)
 			lastErr = err
 			lastUpstream = ref.Upstream
 			s.recordFallbackLog(requestedModel, ref, "call_error", err.Error())
@@ -184,12 +224,30 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 			if len(snippet) > 120 {
 				snippet = snippet[:120]
 			}
-			fmt.Printf("[switch-free] %s/%s 流式上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, sr.StatusCode, snippet)
+			fmt.Printf("[switch-dev] %s/%s 流式上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, sr.StatusCode, snippet)
 			lastErr = fmt.Errorf("upstream error: %s", snippet)
 			lastUpstream = ref.Upstream
 			s.recordFallbackLog(requestedModel, ref, "upstream_error", snippet)
 			continue
 		}
+
+		// 空内容流探测：部分上游（尤其免费/代理供应商）会返回 200 但只有 role 块 +
+		// finish_reason、没有任何 content/reasoning/tool_calls。提前预读到第一个内容块，
+		// 若整段为空则关掉这个流、降级到链里下一个模型，避免给客户端回 200 空消息。
+		peeked, peekErr := peekSSEUntilContent(sr.Body)
+		if peekErr != nil {
+			reason := "empty_content"
+			detail := peekErr.Error()
+			if !errors.Is(peekErr, errSSEEmptyContent) {
+				reason = "stream_error"
+			}
+			fmt.Printf("[switch-dev] %s/%s 流式%s: %s，降级\n", ref.Upstream, ref.Model, reason, detail)
+			lastErr = peekErr
+			lastUpstream = ref.Upstream
+			s.recordFallbackLog(requestedModel, ref, reason, detail)
+			continue
+		}
+		sr.Body = peeked
 
 		return sr, ref.Upstream, ref.Model, nil
 	}
@@ -213,6 +271,9 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 		requestedModel = "auto"
 	}
 	chain := s.ConfigResolver.Resolve(requestedModel)
+	if isDirect(ctx) {
+		chain = directChain(requestedModel)
+	}
 	return s.executeChainStream(ctx, body, chain, requestedModel)
 }
 
@@ -268,6 +329,12 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef) 
 	default:
 		// 免费 API 供应商：走通用 OpenAI 转换
 		oaiBody, _ = AnthropicToOpenAI(&cp)
+	}
+	// free 供应商：AnthropicToOpenAI 内部会把未知 model 经 ResolveModel 兜底成
+	// AutoModel(glm-5.1)，这里强制改回剥离前缀后的真实上游 model id，
+	// 否则会把 glm-5.1 发到该供应商的 baseURL 导致 model_invalid。
+	if IsFreeModel(ref.Model) {
+		oaiBody.Model = stripFreePrefix(ref.Model)
 	}
 	return json.Marshal(oaiBody)
 }
@@ -356,6 +423,29 @@ func upstreamErrSnippet(resp *upstream.Response) string {
 		return trimmed[:120]
 	}
 	return trimmed
+}
+
+// isEmptyUpstreamResponse 判断 200 响应是否为空内容：body 空，或能解析为 OpenAI JSON
+// 但 choices 缺失/为空，或 message 无 text/tool_calls/reasoning。
+// 错误响应（含 error/code 字段）不算空，交由错误处理路径判定。
+func isEmptyUpstreamResponse(resp *upstream.Response) bool {
+	trimmed := strings.TrimSpace(string(resp.Body))
+	if trimmed == "" {
+		return true
+	}
+	var oai OpenAIResponse
+	if err := json.Unmarshal([]byte(trimmed), &oai); err != nil {
+		// 不是 JSON：可能是非标准响应，不当空（让上层按 unparsable 处理）
+		return false
+	}
+	// 明确是错误体的不算空
+	var probe map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &probe); err == nil {
+		if _, ok := probe["error"]; ok {
+			return false
+		}
+	}
+	return isResponseContentEmpty(&oai)
 }
 
 // extractUpstreamError 从错误响应体提取 msg + code

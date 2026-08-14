@@ -1,4 +1,4 @@
-# Switch Free - 构建 / 打包 / 发布
+# Switch Dev - 构建 / 打包 / 发布
 #
 # 用法:
 #   make build          # 构建本机 macOS 桌面版（bin/switch-free）
@@ -22,12 +22,12 @@
 #   make clean          # 清理产物
 
 # 仓库信息
-REPO        ?= RuanSong/switch-free
+REPO        ?= RuanSong/switch-dev
 # 版本号（默认从 build/config.yml 读）
 V           ?= $(shell grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' build/config.yml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 TAG         ?= v$(V)
 # 二进制名
-APP         := switch-free
+APP         := switch-dev
 # 产物目录
 DIST        := dist
 # 架构
@@ -59,10 +59,10 @@ package: build
 
 ## 打包 universal（arm64+amd64）.app：复用 dist/ 下两个裸二进制，lipo 合并后打包
 package-universal: build-binaries
-	@test -f $(DIST)/switch-free-darwin-arm64 || (echo "❌ 缺少 dist/switch-free-darwin-arm64"; exit 1)
-	@test -f $(DIST)/switch-free-darwin-amd64 || (echo "❌ 缺少 dist/switch-free-darwin-amd64"; exit 1)
+	@test -f $(DIST)/$(APP)-darwin-arm64 || (echo "❌ 缺少 dist/$(APP)-darwin-arm64"; exit 1)
+	@test -f $(DIST)/$(APP)-darwin-amd64 || (echo "❌ 缺少 dist/$(APP)-darwin-amd64"; exit 1)
 	@mkdir -p bin
-	lipo -create -output bin/$(APP) $(DIST)/switch-free-darwin-arm64 $(DIST)/switch-free-darwin-amd64
+	lipo -create -output bin/$(APP) $(DIST)/$(APP)-darwin-arm64 $(DIST)/$(APP)-darwin-amd64
 	@mkdir -p bin/$(APP).app/Contents/MacOS
 	@mkdir -p bin/$(APP).app/Contents/Resources
 	@cp build/darwin/icons.icns bin/$(APP).app/Contents/Resources/
@@ -77,23 +77,23 @@ dmg: package
 	@mkdir -p $(DIST)
 	@rm -f $(DIST)/$(APP)-darwin-$(ARCH).dmg
 	@# 清理上次失败可能残留的挂载与临时 DMG（hdiutil create 不覆盖已存在文件）
-	@hdiutil detach "/Volumes/Switch Free" 2>/dev/null || true
-	@hdiutil detach "/Volumes/Switch Free 1" 2>/dev/null || true
-	@rm -f /tmp/switch-free_rw.dmg
+	@hdiutil detach "/Volumes/Switch Dev" 2>/dev/null || true
+	@hdiutil detach "/Volumes/Switch Dev 1" 2>/dev/null || true
+	@rm -f /tmp/switch-dev_rw.dmg
 	@# 创建可写 DMG
-	hdiutil create -size 50m -volname "Switch Free" \
-		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-free_rw.dmg
+	hdiutil create -size 50m -volname "Switch Dev" \
+		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-dev_rw.dmg
 	@# 挂载
-	hdiutil attach /tmp/switch-free_rw.dmg -readwrite -noverify -noautoopen
+	hdiutil attach /tmp/switch-dev_rw.dmg -readwrite -noverify -noautoopen
 	@# 复制 .app + Applications 快捷方式 + 卷图标
-	cp -R bin/$(APP).app "/Volumes/Switch Free/Switch Free.app"
-	ln -sf /Applications "/Volumes/Switch Free/Applications"
-	cp build/darwin/icons.icns "/Volumes/Switch Free/.VolumeIcon.icns"
-	SetFile -c 'icnC' "/Volumes/Switch Free/.VolumeIcon.icns"
-	SetFile -a C "/Volumes/Switch Free"
+	cp -R bin/$(APP).app "/Volumes/Switch Dev/Switch Dev.app"
+	ln -sf /Applications "/Volumes/Switch Dev/Applications"
+	cp build/darwin/icons.icns "/Volumes/Switch Dev/.VolumeIcon.icns"
+	SetFile -c 'icnC' "/Volumes/Switch Dev/.VolumeIcon.icns"
+	SetFile -a C "/Volumes/Switch Dev"
 	@# 设置窗口布局（图标 96px，左侧 .app 右侧 Applications）
 	osascript -e 'tell application "Finder"' \
-		-e 'set dmg to disk "Switch Free"' \
+		-e 'set dmg to disk "Switch Dev"' \
 		-e 'open dmg' \
 		-e 'set dmgWin to container window of dmg' \
 		-e 'set current view of dmgWin to icon view' \
@@ -101,16 +101,16 @@ dmg: package
 		-e 'set arrangement of icon view options of dmgWin to not arranged' \
 		-e 'set label position of icon view options of dmgWin to bottom' \
 		-e 'set bounds of dmgWin to {100, 100, 620, 460}' \
-		-e 'set position of item "Switch Free.app" of dmgWin to {175, 190}' \
+		-e 'set position of item "Switch Dev.app" of dmgWin to {175, 190}' \
 		-e 'set position of item "Applications" of dmgWin to {435, 190}' \
 		-e 'close dmgWin' \
 		-e 'end tell'
 	@sync
 	@sleep 2
 	@# 卸载并压缩为只读 DMG
-	hdiutil detach "/Volumes/Switch Free"
-	hdiutil convert /tmp/switch-free_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-$(ARCH).dmg
-	@rm -f /tmp/switch-free_rw.dmg
+	hdiutil detach "/Volumes/Switch Dev"
+	hdiutil convert /tmp/switch-dev_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-$(ARCH).dmg
+	@rm -f /tmp/switch-dev_rw.dmg
 	@echo "✅ DMG 打包完成: $(DIST)/$(APP)-darwin-$(ARCH).dmg"
 
 ## 打包 macOS Universal（arm64+amd64）DMG 安装镜像
@@ -118,23 +118,23 @@ dmg-universal: package-universal
 	@mkdir -p $(DIST)
 	@rm -f $(DIST)/$(APP)-darwin-universal.dmg
 	@# 清理上次失败可能残留的挂载与临时 DMG（hdiutil create 不覆盖已存在文件）
-	@hdiutil detach "/Volumes/Switch Free" 2>/dev/null || true
-	@hdiutil detach "/Volumes/Switch Free 1" 2>/dev/null || true
-	@rm -f /tmp/switch-free_rw.dmg
+	@hdiutil detach "/Volumes/Switch Dev" 2>/dev/null || true
+	@hdiutil detach "/Volumes/Switch Dev 1" 2>/dev/null || true
+	@rm -f /tmp/switch-dev_rw.dmg
 	@# 创建可写 DMG
-	hdiutil create -size 80m -volname "Switch Free" \
-		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-free_rw.dmg
+	hdiutil create -size 80m -volname "Switch Dev" \
+		-fs HFS+ -fsargs "-c c=64,a=16,e=16" /tmp/switch-dev_rw.dmg
 	@# 挂载
-	hdiutil attach /tmp/switch-free_rw.dmg -readwrite -noverify -noautoopen
+	hdiutil attach /tmp/switch-dev_rw.dmg -readwrite -noverify -noautoopen
 	@# 复制 .app + Applications 快捷方式 + 卷图标
-	cp -R bin/$(APP).app "/Volumes/Switch Free/Switch Free.app"
-	ln -sf /Applications "/Volumes/Switch Free/Applications"
-	cp build/darwin/icons.icns "/Volumes/Switch Free/.VolumeIcon.icns"
-	SetFile -c 'icnC' "/Volumes/Switch Free/.VolumeIcon.icns"
-	SetFile -a C "/Volumes/Switch Free"
+	cp -R bin/$(APP).app "/Volumes/Switch Dev/Switch Dev.app"
+	ln -sf /Applications "/Volumes/Switch Dev/Applications"
+	cp build/darwin/icons.icns "/Volumes/Switch Dev/.VolumeIcon.icns"
+	SetFile -c 'icnC' "/Volumes/Switch Dev/.VolumeIcon.icns"
+	SetFile -a C "/Volumes/Switch Dev"
 	@# 设置窗口布局
 	osascript -e 'tell application "Finder"' \
-		-e 'set dmg to disk "Switch Free"' \
+		-e 'set dmg to disk "Switch Dev"' \
 		-e 'open dmg' \
 		-e 'set dmgWin to container window of dmg' \
 		-e 'set current view of dmgWin to icon view' \
@@ -142,16 +142,16 @@ dmg-universal: package-universal
 		-e 'set arrangement of icon view options of dmgWin to not arranged' \
 		-e 'set label position of icon view options of dmgWin to bottom' \
 		-e 'set bounds of dmgWin to {100, 100, 620, 460}' \
-		-e 'set position of item "Switch Free.app" of dmgWin to {175, 190}' \
+		-e 'set position of item "Switch Dev.app" of dmgWin to {175, 190}' \
 		-e 'set position of item "Applications" of dmgWin to {435, 190}' \
 		-e 'close dmgWin' \
 		-e 'end tell'
 	@sync
 	@sleep 2
 	@# 卸载并压缩为只读 DMG
-	hdiutil detach "/Volumes/Switch Free"
-	hdiutil convert /tmp/switch-free_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-universal.dmg
-	@rm -f /tmp/switch-free_rw.dmg
+	hdiutil detach "/Volumes/Switch Dev"
+	hdiutil convert /tmp/switch-dev_rw.dmg -format UDZO -o $(DIST)/$(APP)-darwin-universal.dmg
+	@rm -f /tmp/switch-dev_rw.dmg
 	@echo "✅ Universal DMG 打包完成: $(DIST)/$(APP)-darwin-universal.dmg"
 
 ## 交叉编译 Windows .exe（含图标嵌入）
@@ -208,8 +208,8 @@ build-darwin-arm64: sync-version build-frontend
 		CGO_LDFLAGS="-mmacosx-version-min=10.15" \
 		MACOSX_DEPLOYMENT_TARGET="10.15" \
 		go build -tags production -trimpath -buildvcs=false \
-		-ldflags="-w -s" -o $(DIST)/switch-free-darwin-arm64 .
-	@echo "✅ macOS arm64: $(DIST)/switch-free-darwin-arm64"
+		-ldflags="-w -s" -o $(DIST)/$(APP)-darwin-arm64 .
+	@echo "✅ macOS arm64: $(DIST)/$(APP)-darwin-arm64"
 
 ## 构建 macOS amd64 裸二进制
 build-darwin-amd64: sync-version build-frontend
@@ -219,8 +219,8 @@ build-darwin-amd64: sync-version build-frontend
 		CGO_LDFLAGS="-mmacosx-version-min=10.15" \
 		MACOSX_DEPLOYMENT_TARGET="10.15" \
 		go build -tags production -trimpath -buildvcs=false \
-		-ldflags="-w -s" -o $(DIST)/switch-free-darwin-amd64 .
-	@echo "✅ macOS amd64: $(DIST)/switch-free-darwin-amd64"
+		-ldflags="-w -s" -o $(DIST)/$(APP)-darwin-amd64 .
+	@echo "✅ macOS amd64: $(DIST)/$(APP)-darwin-amd64"
 
 ## 交叉编译 Windows amd64 裸二进制（CGO_ENABLED=0，含图标嵌入）
 build-windows-amd64: sync-version build-frontend
@@ -232,9 +232,9 @@ build-windows-amd64: sync-version build-frontend
 		-out wails_windows_amd64.syso
 	GOOS=windows CGO_ENABLED=0 GOARCH=amd64 \
 		go build -tags production -trimpath -buildvcs=false \
-		-ldflags="-w -s -H windowsgui" -o $(DIST)/switch-free-windows-amd64.exe .
+		-ldflags="-w -s -H windowsgui" -o $(DIST)/$(APP)-windows-amd64.exe .
 	@rm -f wails_windows_amd64.syso
-	@echo "✅ Windows amd64: $(DIST)/switch-free-windows-amd64.exe"
+	@echo "✅ Windows amd64: $(DIST)/$(APP)-windows-amd64.exe"
 
 ## 构建全平台裸二进制到 dist/（自动更新检测的资产）
 build-binaries: build-darwin-arm64 build-darwin-amd64 build-windows-amd64
@@ -318,7 +318,7 @@ release:
 	@echo "🔄 创建 Release $(TAG) 到 $(REPO)..."
 	gh release create $(TAG) \
 		--repo $(REPO) \
-		--title "Switch Free $(TAG)" \
+		--title "Switch Dev $(TAG)" \
 		--notes-file .release-notes.tmp \
 		|| echo "⚠️ Release 可能已存在，尝试 upload 资产"
 	@rm -f .release-notes.tmp

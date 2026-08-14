@@ -238,7 +238,7 @@ func (m *DevEcoCredManager) EnsureCreds() (*DevEcoCred, error) {
 	}
 
 	// access token 失效 -> 用 jwtToken 尝试刷新
-	fmt.Printf("[switch-free] DevEco access token 失效（status=%d），尝试用 jwtToken 刷新\n", status)
+	fmt.Printf("[switch-dev] DevEco access token 失效（status=%d），尝试用 jwtToken 刷新\n", status)
 	rf, err := m.RefreshToken(fresh)
 	if err != nil {
 		m.mu.Lock()
@@ -282,7 +282,7 @@ func (m *DevEcoCredManager) CredStatus() *CredStatusInfo {
 	defer m.mu.RUnlock()
 
 	info := &CredStatusInfo{
-		Source: "auth.json (三层加密)",
+		Source: "auth.json",
 	}
 
 	if m.cred != nil {

@@ -3,7 +3,7 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "switch-free"
+name: "switch-dev"
 arch: ${GOARCH}
 platform: "linux"
 version: "0.1.0"
@@ -17,12 +17,12 @@ license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/switch-free"
-    dst: "/usr/local/bin/switch-free"
+  - src: "./bin/switch-dev"
+    dst: "/usr/local/bin/switch-dev"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/switch-free.png"
-  - src: "./build/linux/switch-free.desktop"
-    dst: "/usr/share/applications/switch-free.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/switch-dev.png"
+  - src: "./build/linux/switch-dev.desktop"
+    dst: "/usr/share/applications/switch-dev.desktop"
 
 # Default dependencies for Debian 12/Ubuntu 22.04+ with WebKit 4.1
 depends:

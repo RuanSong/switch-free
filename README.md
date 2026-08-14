@@ -1,4 +1,4 @@
-# ⚡ Switch Free
+# ⚡ Switch Dev
 
 <div align="center">
 
@@ -19,15 +19,15 @@
 
 装过 JoyCode、DevEco Code、OpenCode 或 WorkBuddy 的开发者，后台都有免费模型额度（京东云的 JoyAI/Kimi/GLM、华为的 GLM-5.1、OpenCode Zen 的 free 模型、腾讯 CodeBuddy 的 GLM/MiniMax/Kimi/DeepSeek/混元）。但这些工具的凭据是**登录态**，请求要**动态签名**、要**注入业务字段**，没法直接配进 Claude Code / Codex。
 
-Switch Free 把这一切封装成一句话：
+Switch Dev 把这一切封装成一句话：
 
-> **装好并登录一个工具 → 启动 Switch Free → Claude Code 指向 `127.0.0.1:8787` → 免费开跑。**
+> **装好并登录一个工具 → 启动 Switch Dev → Claude Code 指向 `127.0.0.1:8787` → 免费开跑。**
 
 ---
 
 ## ✨ 为什么值得用
 
-| 对比 | 官方 API | **Switch Free** |
+| 对比 | 官方 API | **Switch Dev** |
 |------|---------|-----------------|
 | 成本 | 💸 按 token 付费 | **🆓 复用已有免费额度** |
 | API Key | 要申请、要绑定支付 | **不需要**，动态读登录态 |
@@ -59,7 +59,7 @@ Switch Free 把这一切封装成一句话：
 ### 第 2 步：启动
 
 ```bash
-./bin/switch-free        # macOS / Linux
+./bin/switch-dev        # macOS / Linux
 # Windows 双击 .exe；macOS 也可打包成 .app 双击
 ```
 
@@ -165,7 +165,7 @@ wire_api = "chat"
 Claude Code / Codex / cc-switch
    │  Anthropic /v1/messages  或  OpenAI /v1/chat/completions
    ▼
-┌─────────────── Switch Free 桌面应用（Wails v3 + Go + React）──────┐
+┌─────────────── Switch Dev 桌面应用（Wails v3 + Go + React）──────┐
 │                                                                   │
 │  前端管理面板：仪表盘 / 凭据 / 模型 / 统计 / 日志 / 设置           │
 │       ↕ Wails 绑定 + 事件推送                                     │
@@ -236,7 +236,7 @@ go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.74
 
 # 构建（生成绑定 + 前端 + 桌面二进制）
 wails3 build
-# 产物：bin/switch-free
+# 产物：bin/switch-dev
 
 # 开发模式（热重载）
 wails3 dev
@@ -256,7 +256,7 @@ wails3 generate bindings -ts -d frontend/bindings ./...
 
 ### 本地构建（macOS 桌面版）
 ```bash
-make build           # wails3 build → bin/switch-free
+make build           # wails3 build → bin/switch-dev
 make build-server    # 无 GUI 纯 HTTP 代理版
 make version         # 查看当前版本
 ```
@@ -273,14 +273,14 @@ make tag v=0.1.0   # 打 tag
 make release v=0.1.0  # 创建 GitHub Release
 ```
 
-发布后，**GitHub Actions 会自动**在 macOS/Windows/Linux 三个平台构建裸二进制，并上传到 Release 作为资产（`switch-free-darwin-amd64` / `-arm64` / `-windows-amd64.exe` / `-linux-amd64`）。用户端的自动升级即从这些资产下载替换。
+发布后，**GitHub Actions 会自动**在 macOS/Windows/Linux 三个平台构建裸二进制，并上传到 Release 作为资产（`switch-dev-darwin-amd64` / `-arm64` / `-windows-amd64.exe` / `-linux-amd64`）。用户端的自动升级即从这些资产下载替换。
 
 > 依赖：`gh` CLI（需 `gh auth login`）、GitHub Actions 首次运行需开启 Actions 权限。
 
 ---
 
 ## 📁 项目结构
-switch-free/
+switch-dev/
 ├── main.go                # 入口：Wails app + 窗口 + 托盘 + 启动代理 + 更新检查
 ├── proxy/                 # 代理核心
 │   ├── models.go          # 模型白名单 + 别名 + auto 策略
@@ -333,13 +333,13 @@ switch-free/
 ## ❓ FAQ
 
 **Q：真的免费吗？会不会扣我的钱？**
-Switch Free 只调用你已登录工具自带的额度，不经过任何付费 API。费用统计显示的是"按费率表估算"，实际消耗看各工具后台。
+Switch Dev 只调用你已登录工具自带的额度，不经过任何付费 API。费用统计显示的是"按费率表估算"，实际消耗看各工具后台。
 
 **Q：一个都不装能跑吗？**
 能启动，但没有上游可用。装任意一个并登录后自动恢复（无需重启）。
 
 **Q：凭据安全吗？**
-凭据只存在你本地各工具的配置里，Switch Free 动态读取、不硬编码、不上传。别把 `8787` 暴露公网。
+凭据只存在你本地各工具的配置里，Switch Dev 动态读取、不硬编码、不上传。别把 `8787` 暴露公网。
 
 **Q：支持流式吗？**
 支持。上游统一非流式，代理伪流式拆成 SSE，Claude Code 的流式体验正常。

@@ -116,7 +116,7 @@ func (u *OpenCodeUpstream) Call(ctx context.Context, body []byte) (*Response, er
 	}
 
 	if isOpenCodeKeyInvalid(resp) {
-		fmt.Println("[switch-free] OpenCode 收到 401（apiKey 失效），重读 auth.json 并重试一次")
+		fmt.Println("[switch-dev] OpenCode 收到 401（apiKey 失效），重读 auth.json 并重试一次")
 		u.mgr.InvalidateCreds()
 		oldKey := cred.APIKey
 		newCred, err := u.mgr.EnsureCreds()
@@ -171,7 +171,7 @@ func (u *OpenCodeUpstream) CallStream(ctx context.Context, body []byte) (*Stream
 		return nil, err
 	}
 	if sr.StatusCode == 401 {
-		fmt.Println("[switch-free] OpenCode 流式收到 401（apiKey 失效），重读 auth.json 并重试一次")
+		fmt.Println("[switch-dev] OpenCode 流式收到 401（apiKey 失效），重读 auth.json 并重试一次")
 		sr.Body.Close()
 		u.mgr.InvalidateCreds()
 		oldKey := cred.APIKey
@@ -231,7 +231,7 @@ func (u *OpenCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *
 	peekStr := string(peeked)
 	if len(peeked) == 0 {
 		httpResp.Body.Close()
-		fmt.Printf("[switch-free] opencode 流式上游返回空流，降级\n")
+		fmt.Printf("[switch-dev] opencode 流式上游返回空流，降级\n")
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
@@ -244,7 +244,7 @@ func (u *OpenCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		fmt.Printf("[switch-free] opencode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		fmt.Printf("[switch-dev] opencode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),

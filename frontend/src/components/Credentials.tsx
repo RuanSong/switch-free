@@ -17,16 +17,65 @@ const AGENT_ICON: Record<string, { initial: string; color: string }> = {
 };
 
 export default function Credentials({ creds }: Props) {
+  // OpenCode 本质是 API Key 配置，不在凭据页作为本地 upstream 展示，
+  // 用户可在「供应商配置」里添加。
+  const builtins = ["joycode", "deveco", "workbuddy"];
+  // 只显示已安装/已配置的内置上游；未安装的静默隐藏
+  const visibleBuiltins = builtins.filter((u) => {
+    const st = creds?.[u as keyof AllCredStatus] ?? null;
+    return !!st?.installed || !!st?.valid;
+  });
+  const freeIds = Object.keys(creds?.freeAPIs ?? {});
+  const hasAny = visibleBuiltins.length > 0 || freeIds.length > 0;
+
   return (
     <div className="p-6 space-y-6">
-      <div className="space-y-4">
-        <CredCard upstream="joycode" status={creds?.joycode ?? null} />
-        <CredCard upstream="deveco" status={creds?.deveco ?? null} />
-        <CredCard upstream="opencode" status={creds?.opencode ?? null} />
-        <CredCard upstream="workbuddy" status={creds?.workbuddy ?? null} />
-        {/* 免费 API 供应商（动态，多个平级） */}
-        {Object.entries(creds?.freeAPIs ?? {}).map(([id, st]) => (
-          <CredCard key={id} upstream={id} status={st ?? null} isFreeApi />
+      {hasAny ? (
+        <div className="space-y-4">
+          {visibleBuiltins.map((u) => (
+            <CredCard
+              key={u}
+              upstream={u}
+              status={(creds?.[u as keyof AllCredStatus] as CredStatusInfo | null) ?? null}
+            />
+          ))}
+          {/* 供应商配置（动态，多个平级） */}
+          {freeIds.map((id) => (
+            <CredCard key={id} upstream={id} status={(creds?.freeAPIs?.[id] as CredStatusInfo | null) ?? null} isFreeApi />
+          ))}
+        </div>
+      ) : (
+        <NoUpstream />
+      )}
+    </div>
+  );
+}
+
+// 未检测到任何本地 upstream 时的提示
+function NoUpstream() {
+  const installList = [
+    { name: "JoyCode", url: "https://joycode.com" },
+    { name: "DevEco Code", url: "https://developer.huawei.com" },
+    { name: "WorkBuddy", url: "https://workbuddy.cn" },
+  ];
+  return (
+    <div className="bg-[var(--color-surface)] rounded-xl p-8 border border-[var(--color-border)] text-center">
+      <div className="text-4xl mb-3">🔍</div>
+      <h2 className="font-semibold mb-2">未检测到已安装的上游</h2>
+      <p className="text-sm text-[var(--color-text-dim)] mb-5">
+        程序会静默检测本地已安装的工具，安装后重新打开此页即可显示。你也可以安装以下支持的上游：
+      </p>
+      <div className="flex flex-wrap justify-center gap-2">
+        {installList.map((it) => (
+          <a
+            key={it.name}
+            href={it.url}
+            target="_blank"
+            rel="noreferrer"
+            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+          >
+            {it.name}
+          </a>
         ))}
       </div>
     </div>
@@ -99,8 +148,8 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
             </span>
             <span className="font-semibold text-lg">{name}</span>
             {isFreeApi ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-primary)]/15 text-[var(--color-primary)] uppercase">
-                FREE
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-primary)]/15 text-[var(--color-primary)]">
+                供应商
               </span>
             ) : (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)] uppercase">
@@ -140,7 +189,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
           // 免费 API 未配置：提示去设置页
           <div className="mt-1 pt-3 border-t border-[var(--color-border)]">
             <div className="text-xs text-[var(--color-text-dim)]">
-              该免费 API 供应商未配置或未评测通过模型。请到「设置 → 免费 API」配置 API Key 并评测模型。
+              该供应商未配置或未评测通过模型。请到「供应商配置」页配置 API Key 并评测模型。
             </div>
           </div>
         )

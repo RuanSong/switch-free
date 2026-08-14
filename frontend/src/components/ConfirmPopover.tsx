@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-// ConfirmPopover 点 ✕ 后在按钮附近弹出一个小气泡二次确认。
+// ConfirmPopover 点击触发按钮后在按钮附近弹出一个小气泡二次确认。
 //
 // 用 createPortal 挂到 body：方案下拉容器有 overflow-y-auto，
 // 内部绝对定位会被裁掉，portal 能绕开裁剪和所有 z-index 堆叠上下文。
@@ -10,11 +10,14 @@ export default function ConfirmPopover({
   title = "确认删除？",
   confirmLabel = "删除",
   triggerClassName,
+  children,
 }: {
   onConfirm: () => void;
   title?: string;
   confirmLabel?: string;
   triggerClassName?: string;
+  /** 触发按钮内容；不传则显示默认的 ✕ */
+  children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -80,7 +83,7 @@ export default function ConfirmPopover({
         title={open ? "" : title}
         className={`${triggerClassName ?? ""} ${open ? "!opacity-100" : ""}`}
       >
-        ✕
+        {children ?? "✕"}
       </button>
 
       {open && pos &&
@@ -90,28 +93,30 @@ export default function ConfirmPopover({
             data-confirm-popover
             role="dialog"
             aria-label={title}
-            className="fixed z-[200] flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl"
+            className="fixed z-[200] flex flex-col gap-2.5 px-3.5 py-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl w-[min(90vw,300px)]"
             style={{ top: pos.top, left: pos.left, transform: "translate(-100%, -100%)" }}
             onClick={(e) => e.stopPropagation()}
           >
-            <span className="text-xs whitespace-nowrap">{title}</span>
-            <button
-              type="button"
-              onClick={() => {
-                onConfirm();
-                setOpen(false);
-              }}
-              className="px-2 py-0.5 text-xs rounded bg-[var(--color-danger)]/80 hover:bg-[var(--color-danger)] text-white"
-            >
-              {confirmLabel}
-            </button>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="px-2 py-0.5 text-xs rounded bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-            >
-              取消
-            </button>
+            <span className="text-xs leading-relaxed text-[var(--color-text)]">{title}</span>
+            <div className="flex flex-row items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="shrink-0 px-2.5 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] text-[var(--color-text)] whitespace-nowrap"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onConfirm();
+                  setOpen(false);
+                }}
+                className="shrink-0 px-2.5 py-1 text-xs rounded-md bg-[var(--color-danger)]/80 hover:bg-[var(--color-danger)] text-white whitespace-nowrap"
+              >
+                {confirmLabel}
+              </button>
+            </div>
           </div>,
           document.body
         )}

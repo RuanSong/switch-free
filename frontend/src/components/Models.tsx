@@ -1,56 +1,98 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ModelService } from "../../bindings/switchfree/service";
-import type { ModelDetail } from "../../bindings/switchfree/service/models";
+import type { ModelDetail, AllCredStatus } from "../../bindings/switchfree/service/models";
 import type { Config } from "../../bindings/switchfree/config/models";
 
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
-  opencode: "OpenCode",
   workbuddy: "WorkBuddy",
 };
 
 const UPSTREAM_COLOR: Record<string, string> = {
   joycode: "bg-[var(--color-success)]/20 text-[var(--color-success)]",
   deveco: "bg-[var(--color-danger)]/20 text-[var(--color-danger)]",
-  opencode: "bg-[var(--color-primary)]/20 text-[var(--color-primary)]",
   workbuddy: "bg-pink-500/20 text-pink-400",
 };
 
-export default function Models({ config }: { config: Config | null }) {
+// 供应商 source 形如 "名称 (http://...)"，取括号前的名称
+function upstreamDisplayName(upstream: string, creds: AllCredStatus | null): string {
+  if (UPSTREAM_LABEL[upstream]) return UPSTREAM_LABEL[upstream];
+  const src = creds?.freeAPIs?.[upstream]?.source ?? "";
+  const name = src.split(" (")[0].trim();
+  return name || upstream;
+}
+
+export default function Models({ config, creds }: { config: Config | null; creds: AllCredStatus | null }) {
   const [models, setModels] = useState<ModelDetail[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // 过滤状态
+  const [activeUpstream, setActiveUpstream] = useState<string>(""); // "" = 全部
+
   useEffect(() => {
     ModelService.GetModels()
-      .then((m) => setModels((m ?? []).filter((x): x is ModelDetail => x !== null)))
+      .then((m) =>
+        setModels(
+          (m ?? [])
+            .filter((x): x is ModelDetail => x !== null)
+            .filter((x) => x.upstream !== "opencode")
+        )
+      )
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="p-6 text-[var(--color-text-dim)]">加载中...</div>;
+  // 当前配置选中的模型集合
+  const selectedSet = useMemo(() => {
+    const s = new Set<string>();
+    if (config) {
+      const addRef = (u: string, m: string) => s.add(`${u}/${m}`);
+      (config.autoChain ?? []).forEach((c) => c.models.forEach((m) => addRef(c.upstream, m)));
+      Object.entries(config.manualFallbacks ?? {}).forEach(([key, chain]) => {
+        s.add(key);
+        (chain ?? []).forEach((r) => addRef(r.upstream, r.model));
+      });
+      if (config.globalFallback) addRef(config.globalFallback.upstream, config.globalFallback.model);
+    }
+    return s;
+  }, [config]);
 
-  // 计算当前配置选中的模型集合（auto 链 + 手动降级 + 兜底）
-  const selectedSet = new Set<string>();
-  if (config) {
-    const addRef = (u: string, m: string) => selectedSet.add(`${u}/${m}`);
-    (config.autoChain ?? []).forEach((c) => c.models.forEach((m) => addRef(c.upstream, m)));
-    Object.entries(config.manualFallbacks ?? {}).forEach(([key, chain]) => {
-      // 手动模式的 key 是模型 id，upstream 需推断
-      selectedSet.add(key); // 标记模型本身
-      (chain ?? []).forEach((r) => addRef(r.upstream, r.model));
+  // 上游选项（按实际模型聚合，带数量）
+  const upstreamOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of models) {
+      counts.set(m.upstream, (counts.get(m.upstream) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([up, count]) => ({
+      upstream: up,
+      label: upstreamDisplayName(up, creds),
+      count,
+    }));
+  }, [models, creds]);
+
+  // 过滤后的模型
+  const filtered = useMemo(() => {
+    return models.filter((m) => {
+      if (activeUpstream && m.upstream !== activeUpstream) return false;
+      return true;
     });
-    if (config.globalFallback) addRef(config.globalFallback.upstream, config.globalFallback.model);
-  }
+  }, [models, activeUpstream]);
 
   // 排序：选中的排前面
-  const sorted = [...models].sort((a, b) => {
-    const aSel = isSelected(selectedSet, a) ? 0 : 1;
-    const bSel = isSelected(selectedSet, b) ? 0 : 1;
-    return aSel - bSel;
-  });
+  const sorted = useMemo(
+    () =>
+      [...filtered].sort((a, b) => {
+        const aSel = isSelected(selectedSet, a) ? 0 : 1;
+        const bSel = isSelected(selectedSet, b) ? 0 : 1;
+        return aSel - bSel;
+      }),
+    [filtered, selectedSet]
+  );
+
+  if (loading) return <div className="p-6 text-[var(--color-text-dim)]">加载中...</div>;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-4">
 
       {/* 当前配置概览 */}
       {config && (
@@ -111,6 +153,32 @@ export default function Models({ config }: { config: Config | null }) {
         </section>
       )}
 
+      {/* 过滤工具栏：上游标签（放不下自动换行） */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <UpstreamChip
+          label="全部"
+          count={models.length}
+          active={activeUpstream === ""}
+          onClick={() => setActiveUpstream("")}
+        />
+        {upstreamOptions.map((o) => (
+          <UpstreamChip
+            key={o.upstream}
+            label={o.label}
+            count={o.count}
+            active={activeUpstream === o.upstream}
+            color={UPSTREAM_COLOR[o.upstream]}
+            onClick={() =>
+              setActiveUpstream((cur) => (cur === o.upstream ? "" : o.upstream))
+            }
+          />
+        ))}
+      </div>
+
+      <div className="text-xs text-[var(--color-text-dim)] h-4 leading-4">
+        共 {models.length} 个模型，显示 {sorted.length} 个
+      </div>
+
       {/* 模型表格 */}
       <section className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-x-auto">
         <table className="w-full text-sm min-w-[720px]">
@@ -127,42 +195,50 @@ export default function Models({ config }: { config: Config | null }) {
             </tr>
           </thead>
           <tbody>
-            {sorted.map((m) => {
-              const sel = isSelected(selectedSet, m);
-              return (
-                <tr key={m.id} className={`border-b border-[var(--color-border)] last:border-0 ${sel ? "bg-[var(--color-primary)]/5" : ""}`}>
-                  <td className="px-4 py-3">
-                    {sel && <span className="text-[var(--color-primary)]" title="当前配置选中">★</span>}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">{m.id}</td>
-                  <td className="px-4 py-3">{m.label}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full ${
-                        UPSTREAM_COLOR[m.upstream] ?? "bg-[var(--color-surface-2)]"
-                      }`}
-                    >
-                      {UPSTREAM_LABEL[m.upstream] ?? m.upstream}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{m.stream ? "✓" : "✗"}</td>
-                  <td className="px-4 py-3 text-right font-mono text-xs">
-                    {m.context > 0 ? (m.context / 1000).toFixed(0) + "k" : "-"}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono text-xs">
-                    {m.output > 0 ? (m.output / 1000).toFixed(0) + "k" : "-"}
-                  </td>
-                  <td className="px-4 py-3 text-xs space-x-1">
-                    {m.toolCall && (
-                      <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)]">tool</span>
-                    )}
-                    {m.vision && (
-                      <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)]">vision</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
+            {sorted.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="px-4 py-10 text-center text-[var(--color-text-dim)]">
+                  没有匹配的模型
+                </td>
+              </tr>
+            ) : (
+              sorted.map((m) => {
+                const sel = isSelected(selectedSet, m);
+                return (
+                  <tr key={m.id} className={`border-b border-[var(--color-border)] last:border-0 ${sel ? "bg-[var(--color-primary)]/5" : ""}`}>
+                    <td className="px-4 py-3">
+                      {sel && <span className="text-[var(--color-primary)]" title="当前配置选中">★</span>}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs">{m.id}</td>
+                    <td className="px-4 py-3">{m.label}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${
+                          UPSTREAM_COLOR[m.upstream] ?? "bg-[var(--color-surface-2)]"
+                        }`}
+                      >
+                        {upstreamDisplayName(m.upstream, creds)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">{m.stream ? "✓" : "✗"}</td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      {m.context > 0 ? (m.context / 1000).toFixed(0) + "k" : "-"}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      {m.output > 0 ? (m.output / 1000).toFixed(0) + "k" : "-"}
+                    </td>
+                    <td className="px-4 py-3 text-xs space-x-1">
+                      {m.toolCall && (
+                        <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)]">tool</span>
+                      )}
+                      {m.vision && (
+                        <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)]">vision</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
       </section>
@@ -170,7 +246,36 @@ export default function Models({ config }: { config: Config | null }) {
   );
 }
 
-// isSelected 判断模型是否在当前配置选中集合里
+function UpstreamChip({
+  label,
+  count,
+  active,
+  color,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  color?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border transition-colors ${
+        active
+          ? color
+            ? `${color} border-current/30`
+            : "bg-[var(--color-primary)]/15 text-[var(--color-primary)] border-[var(--color-primary)]/40"
+          : "bg-[var(--color-surface-2)] text-[var(--color-text-dim)] border-[var(--color-border)] hover:text-[var(--color-text)]"
+      }`}
+    >
+      <span>{label}</span>
+      <span className="opacity-70">{count}</span>
+    </button>
+  );
+}
+
 function isSelected(set: Set<string>, m: ModelDetail): boolean {
   return set.has(`${m.upstream}/${m.id}`) || set.has(m.id);
 }

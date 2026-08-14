@@ -1,6 +1,6 @@
 # Changelog
 
-本文件记录 Switch Free 每个版本的变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
+本文件记录 Switch Dev 每个版本的变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 发布时，`make release` 会自动从本文件提取对应版本的章节作为 GitHub Release Notes。

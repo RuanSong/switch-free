@@ -35,6 +35,9 @@ func (s *CredsService) GetAgents() []*AgentDetail {
 	result := make([]*AgentDetail, 0, len(creds.AgentRegistry))
 	for i := range creds.AgentRegistry {
 		a := &creds.AgentRegistry[i]
+		if a.Hidden {
+			continue // 不在默认引导/凭据流程显示
+		}
 		detail := &AgentDetail{
 			Name:        a.Name,
 			Upstream:    a.Upstream,

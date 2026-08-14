@@ -35,6 +35,11 @@ type CatalogModel struct {
 	Name      string `json:"name"`
 	Context   string `json:"context"`   // "1M"、"131K"、"32K" 文本
 	RateLimit string `json:"rate_limit"` // 免费方式/限流描述
+	// 能力标记（来自上游目录，用于前端展示/过滤）
+	Reasoning       bool `json:"reasoning,omitempty"`        // 思维链/推理模型
+	ToolCall        bool `json:"tool_call,omitempty"`        // 支持函数/工具调用
+	Vision          bool `json:"vision,omitempty"`           // 支持图片/多模态输入
+	StructuredOutput bool `json:"structured_output,omitempty"` // 支持结构化输出（JSON schema）
 }
 
 // Catalog 目录根结构
@@ -57,7 +62,7 @@ func SetEmbedCatalog(data []byte) {
 }
 
 // GitHubCatalogURL 目录的 GitHub raw 地址
-const GitHubCatalogURL = "https://raw.githubusercontent.com/RuanSong/switch-free/main/data/free_apis_catalog.json"
+const GitHubCatalogURL = "https://raw.githubusercontent.com/RuanSong/switch-dev/main/data/free_apis_catalog.json"
 
 // CatalogLoader 目录加载器（embed + GitHub + 本地缓存）
 type CatalogLoader struct {
@@ -136,7 +141,7 @@ func (l *CatalogLoader) fetchGitHub() (*Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "switch-free")
+	req.Header.Set("User-Agent", "switch-dev")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

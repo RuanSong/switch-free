@@ -4,9 +4,11 @@
         <key>CFBundlePackageType</key>
             <string>APPL</string>
         <key>CFBundleName</key>
-            <string>Switch Free</string>
+            <string>Switch Dev</string>
+        <key>CFBundleDisplayName</key>
+            <string>Switch Dev</string>
         <key>CFBundleExecutable</key>
-            <string>switch-free</string>
+            <string>switch-dev</string>
         <key>CFBundleIdentifier</key>
             <string>com.switchfree.app</string>
         <key>CFBundleVersion</key>
@@ -24,6 +26,6 @@
         <key>NSHighResolutionCapable</key>
             <string>true</string>
         <key>NSHumanReadableCopyright</key>
-            <string>© 2025-2026, Switch Free Contributors</string>
+            <string>© 2025-2026, Switch Dev Contributors</string>
     </dict>
 </plist>

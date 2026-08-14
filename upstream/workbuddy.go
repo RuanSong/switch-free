@@ -81,7 +81,7 @@ func (u *WorkBuddyUpstream) Call(ctx context.Context, body []byte) (*Response, e
 	}
 
 	if isWorkBuddyTokenInvalid(resp) {
-		fmt.Println("[switch-free] WorkBuddy 收到 401/403（token 失效），刷新并重试一次")
+		fmt.Println("[switch-dev] WorkBuddy 收到 401/403（token 失效），刷新并重试一次")
 		u.mgr.InvalidateCreds()
 		newCred, err := u.mgr.EnsureCreds()
 		if err != nil {

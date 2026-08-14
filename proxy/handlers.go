@@ -237,7 +237,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		// 上游错误
 		errMsg, errCode := extractUpstreamError([]byte(trimmed))
 		isDenied := strings.Contains(errMsg, "访问受限") || strings.Contains(strings.ToLower(errCode), "denied")
-		fmt.Printf("[switch-free] 上游错误: [%s] %s\n", errCode, errMsg)
+		fmt.Printf("[switch-dev] 上游错误: [%s] %s\n", errCode, errMsg)
 		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, fmt.Sprintf("[%s] %s", errCode, errMsg), "POST", "/v1/messages", stream, reqBodyStr, trimmed)
 		e.Source = source
 		s.recordLog(e)
@@ -453,7 +453,7 @@ func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.Str
 		if streamErr != nil {
 			errMsg += ": " + streamErr.Error()
 		}
-		fmt.Printf("[switch-free] 流式空转: up=%s model=%s %s\n", upName, requestedModel, errMsg)
+		fmt.Printf("[switch-dev] 流式空转: up=%s model=%s %s\n", upName, requestedModel, errMsg)
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, errMsg, "POST", "/v1/messages", true, reqBodyStr, "")
 		entry.UsedModel = usedModel

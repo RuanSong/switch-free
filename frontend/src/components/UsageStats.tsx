@@ -56,7 +56,7 @@ export default function UsageStats() {
   }, [load]);
 
   // 最大 token 数（条形图比例用）
-  const maxAgentTokens = Math.max(...(data?.byAgent ?? []).map((a) => a.tokens), 1);
+  const maxProviderTokens = Math.max(...(data?.byProvider ?? []).map((a) => a.tokens), 1);
   const maxModelTokens = Math.max(...(data?.byModel ?? []).map((m) => m.tokens), 1);
 
   return (
@@ -90,32 +90,32 @@ export default function UsageStats() {
             <SumCard label="总 Token" value={fmtTokens(data.totalTokens)} sub={`输入 ${fmtTokens(data.totalInput)} / 输出 ${fmtTokens(data.totalOutput)}`} color="text-[var(--color-text)]" />
             <SumCard label="总请求" value={String(data.totalReqs)} sub={`成功 ${data.successReqs}`} color="text-[var(--color-primary)]" />
             <SumCard label="总费用" value={`$${data.totalCost.toFixed(5)}`} sub="按费率表计算" color="text-[var(--color-success)]" />
-            <SumCard label="Agent 数" value={String(data.byAgent.length)} sub={`模型 ${data.byModel.length} 个`} color="text-[var(--color-warning)]" />
+            <SumCard label="供应商数" value={String(data.byProvider.length)} sub={`模型 ${data.byModel.length} 个`} color="text-[var(--color-warning)]" />
           </div>
 
-          {/* Agent 维度 */}
+          {/* 供应商维度 */}
           <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
-            <h2 className="font-semibold mb-3">按 Agent 统计</h2>
-            {data.byAgent.length === 0 ? (
+            <h2 className="font-semibold mb-3">按供应商统计</h2>
+            {data.byProvider.length === 0 ? (
               <div className="text-sm text-[var(--color-text-dim)] text-center py-4">该范围无数据</div>
             ) : (
               <div className="space-y-3">
-                {data.byAgent.map((a) => (
-                  <div key={a.agent}>
+                {data.byProvider.map((p) => (
+                  <div key={p.provider}>
                     <div className="flex items-center justify-between mb-1 text-sm">
-                      <span className="font-medium">{a.agentLabel}</span>
+                      <span className="font-medium">{p.providerLabel}</span>
                       <span className="text-[var(--color-text-dim)] text-xs">
-                        {fmtTokens(a.tokens)} tokens · {a.requests} 请求 · ${a.cost.toFixed(5)}
+                        {fmtTokens(p.tokens)} tokens · {p.requests} 请求 · ${p.cost.toFixed(5)}
                       </span>
                     </div>
                     <div className="h-2 rounded bg-[var(--color-bg)] overflow-hidden">
                       <div
                         className="h-full rounded bg-[var(--color-primary)]"
-                        style={{ width: `${(a.tokens / maxAgentTokens) * 100}%` }}
+                        style={{ width: `${(p.tokens / maxProviderTokens) * 100}%` }}
                       />
                     </div>
                     <div className="text-xs text-[var(--color-text-dim)] mt-0.5">
-                      输入 {fmtTokens(a.input)} · 输出 {fmtTokens(a.output)}
+                      输入 {fmtTokens(p.input)} · 输出 {fmtTokens(p.output)}
                     </div>
                   </div>
                 ))}
@@ -133,7 +133,7 @@ export default function UsageStats() {
                 {data.byModel.map((m) => (
                   <div key={m.model}>
                     <div className="flex items-center justify-between mb-1 text-sm">
-                      <span className="font-mono">{m.model}</span>
+                      <span className="font-mono">{m.modelLabel || m.model}</span>
                       <span className="text-[var(--color-text-dim)] text-xs">
                         {fmtTokens(m.tokens)} tokens · {m.requests} 请求 · {m.percent.toFixed(1)}% · ${m.cost.toFixed(5)}
                       </span>

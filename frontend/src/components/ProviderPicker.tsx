@@ -74,9 +74,10 @@ interface Props {
   onChange: (id: string) => void;
   existingIds?: string[];
   placeholder?: string;
+  disabled?: boolean;
 }
 
-export default function ProviderPicker({ providers, value, onChange, existingIds = [], placeholder = "选择供应商..." }: Props) {
+export default function ProviderPicker({ providers, value, onChange, existingIds = [], placeholder = "选择供应商...", disabled = false }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
@@ -117,10 +118,37 @@ export default function ProviderPicker({ providers, value, onChange, existingIds
     return false;
   }, []);
 
-  // 组合筛选：搜索 + 标签
+  // 搜索相关度打分：厂商名/id 命中优先于旗下模型命中；精确/前缀命中再优先。
+  // 分数越高越靠前；同分时保持目录原始顺序。
+  const matchScore = useCallback((p: CatalogProvider, q: string): number => {
+    if (!q) return 0;
+    const needle = q.toLowerCase();
+    const name = p.name.toLowerCase();
+    const id = p.id.toLowerCase();
+    const base = p.base_url?.toLowerCase() ?? "";
+    if (name === needle || id === needle) return 100;
+    if (name.startsWith(needle) || id.startsWith(needle)) return 90;
+    if (name.includes(needle) || id.includes(needle)) return 80;
+    if (base.includes(needle)) return 60;
+    for (const m of p.free_models ?? []) {
+      const mid = m.id?.toLowerCase() ?? "";
+      const mname = m.name?.toLowerCase() ?? "";
+      if (mid === needle || mname === needle) return 50;
+      if (mid.startsWith(needle) || mname.startsWith(needle)) return 45;
+      if (mid.includes(needle) || mname.includes(needle)) return 40;
+    }
+    return 0;
+  }, []);
+
+  // 组合筛选：搜索 + 标签。
+  // 无搜索词时只列出未添加的供应商（保持目录顺序）；
+  // 有搜索词时把已添加的供应商也纳入结果（正常参与相关度排序），但标记为已添加、禁选，
+  // 否则像搜 "deepseek" 时 DeepSeek 已添加会被整体隐藏，反而排在一堆有同名模型的别家后面。
   const filtered = useMemo(() => {
     const activeTags = allTags.filter((t) => selectedTags.has(t.key));
-    return visibleProviders.filter((p) => {
+    const hasQuery = query.trim().length > 0;
+    const base = hasQuery ? providers : visibleProviders;
+    const list = base.filter((p) => {
       if (!matchesQuery(p, query)) return false;
       // 同类别 OR：该供应商要满足每个类别中至少一个选中的标签
       const byCategory = new Map<TagCategory, Tag[]>();
@@ -133,7 +161,13 @@ export default function ProviderPicker({ providers, value, onChange, existingIds
       }
       return true;
     });
-  }, [visibleProviders, query, selectedTags, allTags, matchesQuery]);
+    const q = query.trim();
+    if (!q) return list;
+    return list
+      .map((p, idx) => ({ p, idx, score: matchScore(p, q) }))
+      .sort((a, b) => b.score - a.score || a.idx - b.idx)
+      .map((x) => x.p);
+  }, [providers, visibleProviders, query, selectedTags, allTags, matchesQuery, matchScore]);
 
   // 每个标签在当前筛选（搜索 + 其他标签）下的计数
   const tagCounts = useMemo(() => {
@@ -219,14 +253,24 @@ export default function ProviderPicker({ providers, value, onChange, existingIds
       handleClose();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+      setHighlight((h) => {
+        for (let i = h + 1; i < filtered.length; i++) {
+          if (!existingSet.has(filtered[i].id)) return i;
+        }
+        return h;
+      });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlight((h) => Math.max(h - 1, 0));
+      setHighlight((h) => {
+        for (let i = h - 1; i >= 0; i--) {
+          if (!existingSet.has(filtered[i].id)) return i;
+        }
+        return h;
+      });
     } else if (e.key === "Enter") {
       e.preventDefault();
       const p = filtered[highlight];
-      if (p) {
+      if (p && !existingSet.has(p.id)) {
         onChange(p.id);
         handleClose();
       }
@@ -252,8 +296,9 @@ export default function ProviderPicker({ providers, value, onChange, existingIds
       {/* 触发器 */}
       <button
         type="button"
-        onClick={() => (open ? handleClose() : handleOpen())}
-        className="w-full px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] text-left flex items-center gap-1"
+        disabled={disabled}
+        onClick={() => !disabled && (open ? handleClose() : handleOpen())}
+        className="w-full px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] text-left flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {selected ? (
           <span className="truncate flex-1 flex items-center gap-1.5">
@@ -328,19 +373,28 @@ export default function ProviderPicker({ providers, value, onChange, existingIds
               filtered.map((p, idx) => {
                 const isHighlight = idx === highlight;
                 const ctxNum = parseContextToNum(p.max_context);
+                const already = existingSet.has(p.id);
                 return (
                   <button
                     key={p.id}
                     type="button"
+                    disabled={already}
                     onMouseEnter={() => setHighlight(idx)}
-                    onClick={() => selectProvider(p)}
+                    onClick={() => !already && selectProvider(p)}
                     className={`w-full text-left px-3 py-2 flex items-start gap-2 ${
-                      isHighlight ? "bg-[var(--color-primary)]/10" : "hover:bg-[var(--color-surface-2)]"
+                      already
+                        ? "opacity-50 cursor-not-allowed"
+                        : isHighlight
+                        ? "bg-[var(--color-primary)]/10"
+                        : "hover:bg-[var(--color-surface-2)]"
                     }`}
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="text-sm font-medium truncate">{p.name}</span>
+                        {already && (
+                          <span className="text-[10px] px-1 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)] shrink-0">已添加</span>
+                        )}
                         {p.region === "domestic" && (
                           <span className="text-[10px] px-1 rounded bg-amber-500/15 text-amber-400 shrink-0">国内</span>
                         )}

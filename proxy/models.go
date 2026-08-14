@@ -223,6 +223,30 @@ func stripFreePrefix(internalID string) string {
 	return modelID
 }
 
+// ActualUpstreamModel 返回真正发往各上游 base_url 请求体里的 model 名，
+// 即把代理内部路由 id 还原为上游认的名字：
+//   - free/<pid>/<mid> → <mid>
+//   - wb/<mid>         → <mid>
+//   - DevEco 本地 id    → 网关 upstream 名（DevEcoModelByID.Upstream）
+//   - 其他（joycode/opencode 等）→ 原样
+//
+// 用于统计：按"实际请求到 base_url 接口的 model"聚合，而不是按内部 id。
+func ActualUpstreamModel(internalID string) string {
+	if internalID == "" {
+		return ""
+	}
+	if IsFreeModel(internalID) {
+		return stripFreePrefix(internalID)
+	}
+	if len(internalID) >= 3 && internalID[:3] == "wb/" {
+		return stripWbPrefix(internalID)
+	}
+	if dm := DevEcoModelByID[internalID]; dm != nil && dm.Upstream != "" {
+		return dm.Upstream
+	}
+	return internalID
+}
+
 // ====== Auto 模式 ======
 
 const (

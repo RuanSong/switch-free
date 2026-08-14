@@ -1,4 +1,4 @@
-# Switch Free (Wails v3 版)
+# Switch Dev (Wails v3 版)
 
 ## 项目性质
 把 JoyCode/DevEco/OpenCode/WorkBuddy 四套 AI 编程工具的模型能力，通过本地代理暴露为标准 Anthropic/OpenAI 接口，供 Claude Code/cc-switch 复用。带 Wails v3 桌面 GUI。
@@ -29,7 +29,7 @@
 
 ## 构建
 ```bash
-wails3 build          # 产物 bin/switch-free
+wails3 build          # 产物 bin/switch-dev
 wails3 dev            # 开发热重载
 wails3 task build:server  # 无 GUI 服务模式
 make build-binaries V=x.y.z  # 构建全平台裸二进制到 dist/（发布/自动更新用）
@@ -41,10 +41,10 @@ make build-binaries V=x.y.z  # 构建全平台裸二进制到 dist/（发布/自
 - 检测时机：**启动后延迟 3s 首次检查 + 每 6 小时周期检查**（`main.go: startUpdateCheck`），发现新版本推 `update:available` 事件；前端 UpdatePanel 也提供「立即检查」手动触发
 - 检测逻辑（`updater/github.go`）：GET `https://api.github.com/repos/{Owner}/{Repo}/releases/latest`，比较 `tag_name`（去 v 前缀）与当前版本，仅看 **non-prerelease 的最新 release**
 - **更新分级**（`UpdateInfo.Critical`）：major 或 minor 段变化（如 0.0.x → 0.1.0）= 强制更新，前端不显示「稍后再说」；仅 patch 段变化（0.0.3 → 0.0.4）= 可选更新，可忽略
-- 资产名匹配（`assetName()` 硬编码）：`switch-free-darwin-arm64` / `switch-free-darwin-amd64` / `switch-free-windows-amd64.exe`（+ linux 运行时检测 `switch-free-linux-amd64`，但 `make build-binaries` 暂不构建 linux），**发布时资产文件名必须精确匹配**
+- 资产名匹配（`assetName()` 硬编码）：`switch-dev-darwin-arm64` / `switch-dev-darwin-amd64` / `switch-dev-windows-amd64.exe`（+ linux 运行时检测 `switch-dev-linux-amd64`，但 `make build-binaries` 暂不构建 linux），**发布时资产文件名必须精确匹配**
 - 下载应用（`updater/updater.go`）：`downloadAsset` 下载到临时文件（临时文件由 `ApplyUpdate` 用完后清理，**不能在 downloadAsset 里 defer Remove**）-> `github.com/minio/selfupdate` 原子替换运行中二进制 -> 提示重启
 - changelog：`UpdateInfo.Notes` 取自 GitHub Release body，由 `make release` 从 `CHANGELOG.md` 自动提取对应版本章节；前端 UpdatePanel 展示
-- 配置：`Config.AutoUpdate`（Enabled/Provider/GitHub{Owner,Repo,Token}/UpdateURL/Channel），默认 `RuanSong/switch-free` 公开仓库，无需 Token
+- 配置：`Config.AutoUpdate`（Enabled/Provider/GitHub{Owner,Repo,Token}/UpdateURL/Channel），默认 `RuanSong/switch-dev` 公开仓库，无需 Token
 
 ## 发布流程（一键）
 ```bash

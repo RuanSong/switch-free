@@ -28,15 +28,15 @@ func assetName() string {
 	switch runtime.GOOS {
 	case "darwin":
 		if runtime.GOARCH == "arm64" {
-			return "switch-free-darwin-arm64"
+			return "switch-dev-darwin-arm64"
 		}
-		return "switch-free-darwin-amd64"
+		return "switch-dev-darwin-amd64"
 	case "windows":
-		return "switch-free-windows-amd64.exe"
+		return "switch-dev-windows-amd64.exe"
 	case "linux":
-		return "switch-free-linux-amd64"
+		return "switch-dev-linux-amd64"
 	}
-	return "switch-free-" + runtime.GOOS + "-" + runtime.GOARCH
+	return "switch-dev-" + runtime.GOOS + "-" + runtime.GOARCH
 }
 
 // CheckGitHubRelease 查 GitHub latest release
@@ -48,7 +48,7 @@ func CheckGitHubRelease(gh config.GitHubConfig, currentVersion string) (*UpdateI
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "switch-free-updater")
+	req.Header.Set("User-Agent", "switch-dev-updater")
 	if gh.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+gh.Token)
 	}
@@ -140,7 +140,7 @@ func parseVersion(s string) [3]int {
 // downloadAsset 下载资产到临时文件，带进度回调
 func downloadAsset(url string, total int64, progress func(UpdateStatus)) (string, error) {
 	// 创建临时文件
-	tmp, err := os.CreateTemp("", "switch-free-update-*.bin")
+	tmp, err := os.CreateTemp("", "switch-dev-update-*.bin")
 	if err != nil {
 		return "", err
 	}

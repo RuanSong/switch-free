@@ -319,8 +319,6 @@ function agentLabel(upstream: string): string {
       return "京东 JoyCode";
     case "deveco":
       return "华为 DevEco";
-    case "opencode":
-      return "OpenCode";
     default:
       return upstream || "-";
   }

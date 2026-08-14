@@ -14,12 +14,16 @@ export function ModelSelect({
   onChange,
   placeholder,
   className,
+  disabledIds,
+  hideFreeBadge,
 }: {
   options: ModelSelectOption[];
   value: string;
   onChange: (id: string) => void;
   placeholder?: string;
   className?: string;
+  disabledIds?: Set<string>;
+  hideFreeBadge?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -48,7 +52,7 @@ export function ModelSelect({
         {selected ? (
           <>
             <span className="truncate flex-1">{selected.label}</span>
-            {selected.free && <FreeBadge />}
+            {selected.free && !hideFreeBadge && <FreeBadge />}
           </>
         ) : (
           <span className="text-[var(--color-text-dim)]">{placeholder ?? "选择模型..."}</span>
@@ -61,17 +65,26 @@ export function ModelSelect({
           {options.length === 0 && (
             <div className="px-2 py-1.5 text-xs text-[var(--color-text-dim)]">无模型</div>
           )}
-          {options.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => { onChange(m.id); setOpen(false); }}
-              className={`w-full px-2 py-1.5 text-xs text-left hover:bg-[var(--color-surface-2)] flex items-center gap-1 ${m.id === value ? "bg-[var(--color-primary)]/10" : ""}`}
-            >
-              <span className="truncate flex-1">{m.label}</span>
-              {m.free && <FreeBadge />}
-            </button>
-          ))}
+          {options.map((m) => {
+            const disabled = m.id !== value && (disabledIds?.has(m.id) ?? false);
+            return (
+              <button
+                key={m.id}
+                type="button"
+                disabled={disabled}
+                onClick={() => { onChange(m.id); setOpen(false); }}
+                className={`w-full px-2 py-1.5 text-xs text-left flex items-center gap-1 ${
+                  disabled
+                    ? "opacity-40 cursor-not-allowed"
+                    : "hover:bg-[var(--color-surface-2)]"
+                } ${m.id === value ? "bg-[var(--color-primary)]/10" : ""}`}
+              >
+                <span className="truncate flex-1">{m.label}</span>
+                {m.free && !hideFreeBadge && <FreeBadge />}
+                {disabled && <span className="text-[9px] text-[var(--color-text-dim)]">已添加</span>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

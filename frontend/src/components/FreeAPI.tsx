@@ -1,8 +1,12 @@
-import { useEffect, useState, useCallback } from "react";
-import { FreeAPIService } from "../../bindings/switchfree/service";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { FreeAPIService, ConfigService } from "../../bindings/switchfree/service";
 import type { Catalog, CatalogModel, ProviderConfig, ProviderModel } from "../../bindings/switchfree/freeapi/models";
 import { useWailsEvent } from "../hooks/useWailsEvent";
 import ProviderPicker from "./ProviderPicker";
+import ConfirmPopover from "./ConfirmPopover";
+import ShareDialog from "./ShareDialog";
+import UnlockScreen from "./UnlockScreen";
+import SecuritySettings from "./SecuritySettings";
 
 // 能力推断：从模型名判断（工具/视觉/推理）
 function inferVision(name: string): boolean {
@@ -28,6 +32,15 @@ function parseContext(s: string): number {
   return Math.round(num);
 }
 
+// 把存储的 context 整数还原为紧凑文本（131000 -> "131K"）；0 返回空串
+function formatContext(n: number): string {
+  if (!n) return "";
+  if (n >= 1_000_000_000) return (n / 1_000_000_000) + "B";
+  if (n >= 1_000_000) return (n / 1_000_000) + "M";
+  if (n >= 1_000) return (n / 1_000) + "K";
+  return String(n);
+}
+
 export default function FreeAPI() {
   const [providers, setProviders] = useState<Record<string, ProviderConfig | null>>({});
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -41,6 +54,8 @@ export default function FreeAPI() {
   const [customId, setCustomId] = useState("");
   const [baseURL, setBaseURL] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false); // 眼睛切换明文/密文
+  const [editingImported, setEditingImported] = useState(false); // 当前编辑的是否为导入供应商
   const [candidateModels, setCandidateModels] = useState<CatalogModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
 
@@ -48,9 +63,37 @@ export default function FreeAPI() {
   const [benchmarking, setBenchmarking] = useState<Record<string, boolean>>({});
   const [benchResult, setBenchResult] = useState<Record<string, any>>({});
 
+  // 候选模型多选 + 搜索 + 批量测评状态
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [modelSearch, setModelSearch] = useState("");
+  const [onlyPassed, setOnlyPassed] = useState(false);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0 });
+  // 正在移除（取消加入）的模型 id，用于按钮 loading/禁用
+  const [removingId, setRemovingId] = useState("");
+
+  // 分享/导入对话框；shareInitialId 非空时打开即快捷分享该供应商
+  const [showShare, setShowShare] = useState(false);
+  const [shareInitialId, setShareInitialId] = useState<string | undefined>(undefined);
+
+  // 安全：启动锁 + 设置
+  const [locked, setLocked] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  // 通用配置（是否进入编辑时自动拉取并测评模型）
+  const [autoBenchOnEdit, setAutoBenchOnEdit] = useState(false);
+
+  // 进入编辑/新增时的表单快照（name/baseURL/apiKey），用于判断是否有未保存变化
+  const formBaseline = useRef<{ name: string; baseURL: string; apiKey: string } | null>(null);
+  // 切换目标确认：有未保存变化时暂存要执行的动作，用户选择保存/放弃后执行
+  const [pendingSwitch, setPendingSwitch] = useState<null | (() => void)>(null);
+  const [savingBeforeSwitch, setSavingBeforeSwitch] = useState(false);
+
   const [refreshing, setRefreshing] = useState(false);
   // 正在编辑的供应商 id（空表示新增）
   const [editingId, setEditingId] = useState<string>("");
+  // 当前表单对应的有效供应商 id（编辑时 = editingId；新增目录选择时 = selectedCatalog；
+  // 新增自定义时自动生成并固化）。用于把已验证模型关联到正确的供应商，无论是否已手动保存。
+  const [effectiveId, setEffectiveId] = useState<string>("");
 
   const load = useCallback(async () => {
     const [ps, cat] = await Promise.all([
@@ -69,9 +112,93 @@ export default function FreeAPI() {
     load();
   }, [load]);
 
+  // 启动后检查是否被锁定（钥匙串没有记住主密码等）
+  const checkLock = useCallback(() => {
+    FreeAPIService.GetLockStatus()
+      .then((info) => {
+        setLocked(!!info?.isLocked);
+        setHasMaster(!!info?.masterSet);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    checkLock();
+    // 读取通用配置：是否进入编辑时自动拉取并测评
+    ConfigService.GetConfig()
+      .then((c) => setAutoBenchOnEdit(!!c?.provider?.autoBenchmarkOnEdit))
+      .catch(() => {});
+  }, [checkLock]);
+
+  // 无操作自动锁定 + 手动锁定
+  const lastActivity = useRef<number>(Date.now());
+  const idleSecondsRef = useRef<number>(0);
+  const [hasMaster, setHasMaster] = useState(false);
+  const doLock = useCallback(async () => {
+    await FreeAPIService.Lock();
+    setLocked(true);
+  }, []);
+  useEffect(() => {
+    FreeAPIService.GetIdleLockSeconds()
+      .then((s) => (idleSecondsRef.current = s || 0))
+      .catch(() => {});
+    FreeAPIService.GetLockStatus()
+      .then((info) => setHasMaster(!!info?.masterSet))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    const onActivity = () => {
+      lastActivity.current = Date.now();
+    };
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "click"];
+    events.forEach((e) => window.addEventListener(e, onActivity, true));
+    const timer = setInterval(() => {
+      if (locked || !hasMaster || idleSecondsRef.current <= 0) return;
+      const idleMs = Date.now() - lastActivity.current;
+      if (idleMs >= idleSecondsRef.current * 1000) {
+        doLock();
+      }
+    }, 5000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, onActivity, true));
+      clearInterval(timer);
+    };
+  }, [locked, hasMaster, doLock]);
+
   // 凭据变化时刷新（新增/删除供应商后）
   useWailsEvent("freeapi:change", () => load());
   useWailsEvent("cred:change", () => load());
+  // 后端批量测评进度/结果
+  const batchOkRef = useRef<string[]>([]);
+  const batchTargetsRef = useRef<CatalogModel[]>([]);
+  useWailsEvent("freeapi:bench", (data: any) => {
+    const mid = data?.modelId as string;
+    if (mid) {
+      const res = data.result ?? {};
+      setBenchResult((p) => ({ ...p, [mid]: res }));
+      setBenchmarking((p) => ({ ...p, [mid]: false }));
+      if (res?.success) {
+        batchOkRef.current = [...batchOkRef.current, mid];
+      }
+    }
+    if (typeof data?.done === "number" && typeof data?.total === "number") {
+      setBatchProgress({ done: data.done, total: data.total });
+    }
+  });
+
+  // 批量测评全部完成（后台 goroutine 结束）
+  useWailsEvent("freeapi:bench-done", (data: any) => {
+    setBatchRunning(false);
+    const targets = batchTargetsRef.current;
+    for (const m of targets) {
+      setBenchmarking((p) => ({ ...p, [m.id]: false }));
+    }
+    const okIds = batchOkRef.current;
+    setSelectedIds((ids) => ids.filter((id) => okIds.includes(id)));
+    const total = data?.total ?? targets.length;
+    flash("ok", `批量测评完成：成功 ${okIds.length}/${total}`);
+    batchTargetsRef.current = [];
+  });
 
   const flash = (type: "ok" | "err", text: string) => {
     setMsg({ type, text });
@@ -81,28 +208,42 @@ export default function FreeAPI() {
   // 选择目录供应商 -> 自动填 base_url
   const onSelectCatalog = (id: string) => {
     setSelectedCatalog(id);
+    setEffectiveId(""); // 目录模式以 selectedCatalog 为准
     const p = catalog?.providers.find((x) => x.id === id);
     setBaseURL(p?.base_url ?? "");
     setCandidateModels(p?.free_models ?? []);
     setBenchResult({});
+    setSelectedIds([]);
+    setModelSearch("");
+    setOnlyPassed(false);
+    setBatchProgress({ done: 0, total: 0 });
   };
 
-  // 自定义：id 自动生成（若为空）
-  const ensureCustomId = () => {
-    if (!customId.trim()) {
-      return "custom-" + Math.random().toString(36).slice(2, 8);
-    }
-    return customId.trim();
+  // 当前表单对应的供应商 id（编辑 / 目录新增 / 自定义新增统一入口）
+  // 自定义新增时若无 id 则生成并固化，保证「评测 -> 加入」全程关联同一供应商
+  const getEffectiveId = (): string => {
+    if (editingId) return editingId;
+    if (fromCatalog && selectedCatalog) return selectedCatalog;
+    if (customId.trim()) return customId.trim();
+    if (effectiveId) return effectiveId;
+    const id = "custom-" + Math.random().toString(36).slice(2, 8);
+    setEffectiveId(id);
+    setCustomId(id);
+    return id;
   };
 
-  // 测试连接 + 拉取模型（用 baseURL + apiKey）
-  const testAndFetch = async () => {
+  // 测试连接 + 拉取模型（用 baseURL + apiKey）；autoBench=true 时拉取成功后自动测评全部模型
+  const testAndFetch = async (autoBench = false): Promise<CatalogModel[] | undefined> => {
     if (!baseURL.trim() || !apiKey.trim()) {
       flash("err", "请先填写 BaseURL 和 API Key");
       return;
     }
     setLoadingModels(true);
     setBenchResult({});
+    setSelectedIds([]);
+    setModelSearch("");
+    setOnlyPassed(false);
+    setBatchProgress({ done: 0, total: 0 });
     try {
       const fetched = await FreeAPIService.FetchProviderModels(baseURL.trim(), apiKey.trim());
       if (!fetched || fetched.length === 0) {
@@ -126,6 +267,13 @@ export default function FreeAPI() {
       });
       setCandidateModels(merged);
       flash("ok", `拉取到 ${fetched.length} 个模型`);
+      if (autoBench && merged.length > 0) {
+        // 自动勾选全部并批量测评
+        setSelectedIds(merged.map((m) => m.id));
+        // 等状态刷新后再跑
+        setTimeout(() => runBatchBenchmark(merged), 0);
+      }
+      return merged;
     } catch (e) {
       flash("err", `拉取失败: ${e}`);
     } finally {
@@ -133,7 +281,7 @@ export default function FreeAPI() {
     }
   };
 
-  // 评测单个模型
+  // 评测单个模型；对已加入的模型，测完自动把最新速度回写保存
   const benchmarkOne = async (model: CatalogModel) => {
     if (!baseURL.trim() || !apiKey.trim()) {
       flash("err", "请先填写 API Key");
@@ -143,6 +291,21 @@ export default function FreeAPI() {
     try {
       const res = await FreeAPIService.BenchmarkModel(baseURL.trim(), apiKey.trim(), model.id, "", 256);
       setBenchResult((p) => ({ ...p, [model.id]: res ?? {} }));
+      // 已加入模型：把新测速持久化（AddVerifiedModel 同 id 覆盖，保留 healthy/failCount）
+      if (res?.success) {
+        const pid = getEffectiveId();
+        if (providers[pid]?.models?.some((x) => x.id === model.id && x.verified)) {
+          await FreeAPIService.AddVerifiedModel(pid, {
+            id: model.id,
+            context: parseContext(model.context),
+            verified: true,
+            healthy: true,
+            failCount: 0,
+            tps: res.tps ?? 0,
+          } as ProviderModel);
+          await load();
+        }
+      }
     } catch (e) {
       setBenchResult((p) => ({ ...p, [model.id]: { success: false, errorMsg: String(e) } }));
     } finally {
@@ -150,49 +313,201 @@ export default function FreeAPI() {
     }
   };
 
-  // 评测通过 -> 加入供应商
-  const addVerifiedModel = async (model: CatalogModel) => {
-    const providerId = selectedCatalog || ensureCustomId();
-    const p = providers[providerId];
-    if (!p) {
-      flash("err", "请先保存供应商配置");
+  // 对指定模型批量测评；并发数由后端根据模型数量自动决定
+  const runBatchBenchmark = async (targets: CatalogModel[]) => {
+    if (targets.length === 0) return;
+    if (!baseURL.trim() || !apiKey.trim()) {
+      flash("err", "请先填写 BaseURL 和 API Key");
       return;
     }
+    setBatchRunning(true);
+    setBatchProgress({ done: 0, total: targets.length });
+    // 标记所有目标为测评中
+    for (const m of targets) {
+      setBenchmarking((p) => ({ ...p, [m.id]: true }));
+    }
+    batchOkRef.current = [];
+    batchTargetsRef.current = targets;
+
+    try {
+      await FreeAPIService.BatchBenchmark(
+        baseURL.trim(),
+        apiKey.trim(),
+        "",
+        256,
+        targets.map((m) => m.id)
+      );
+    } catch (e) {
+      flash("err", `批量测评失败: ${e}`);
+      setBatchRunning(false);
+      for (const m of targets) {
+        setBenchmarking((p) => ({ ...p, [m.id]: false }));
+      }
+    }
+  };
+
+  const benchmarkSelected = () => {
+    const targets = candidateModels.filter((m) => selectedIds.includes(m.id));
+    return runBatchBenchmark(targets);
+  };
+
+  // 单个勾选切换
+  const toggleSelect = (id: string) => {
+    setSelectedIds((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]
+    );
+  };
+
+  // 批量加入：把所有评测通过（benchResult.success）且尚未加入的模型一次性加入
+  const batchAddPassed = async () => {
+    if (!baseURL.trim() || !apiKey.trim()) {
+      flash("err", "请先填写 BaseURL 和 API Key");
+      return;
+    }
+    const addedIds = new Set(
+      (activeProvider?.models ?? []).filter((m) => m.verified).map((m) => m.id)
+    );
+    const passed = candidateModels.filter(
+      (m) => benchResult[m.id]?.success && !addedIds.has(m.id)
+    );
+    if (passed.length === 0) {
+      flash("err", "没有可加入的测评通过模型");
+      return;
+    }
+    const providerId = getEffectiveId();
+    const catName = fromCatalog
+      ? catalog?.providers.find((x) => x.id === selectedCatalog)?.name
+      : undefined;
+    try {
+      const existing = providers[providerId];
+      if (!existing) {
+        const cfg: ProviderConfig = {
+          id: providerId,
+          name: catName || customName.trim() || providerId,
+          baseURL: baseURL.trim(),
+          apiKey: apiKey.trim(),
+          getAPIKeyURL: catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "",
+          maxContext: 0,
+          custom: !fromCatalog,
+          verified: false,
+          imported: false,
+          models: [],
+        };
+        await FreeAPIService.UpsertProvider(cfg);
+      }
+      // 逐个 AddVerifiedModel（后端更新 provider 级 verified 标记，同 id 覆盖）
+      for (const m of passed) {
+        const pm: ProviderModel = {
+          id: m.id,
+          context: parseContext(m.context),
+          verified: true,
+          healthy: true,
+          failCount: 0,
+          tps: benchResult[m.id]?.tps ?? 0,
+        };
+        await FreeAPIService.AddVerifiedModel(providerId, pm);
+      }
+      flash("ok", `已批量加入 ${passed.length} 个模型`);
+      setSelectedIds((ids) => ids.filter((id) => !passed.some((m) => m.id === id)));
+      await load();
+    } catch (e) {
+      flash("err", `批量加入失败: ${e}`);
+    }
+  };
+
+  // 评测通过 -> 加入供应商
+  // 若供应商尚未保存，先按当前表单值 UpsertProvider，再加入模型（用户无需单独点「保存」）
+  const addVerifiedModel = async (model: CatalogModel) => {
+    if (!baseURL.trim() || !apiKey.trim()) {
+      flash("err", "请先填写 BaseURL 和 API Key");
+      return;
+    }
+    const providerId = getEffectiveId();
+    const catName = fromCatalog
+      ? catalog?.providers.find((x) => x.id === selectedCatalog)?.name
+      : undefined;
     const pm: ProviderModel = {
       id: model.id,
       context: parseContext(model.context),
       verified: true,
       healthy: true,
       failCount: 0,
+      tps: benchResult[model.id]?.tps ?? 0,
     };
     try {
+      const existing = providers[providerId];
+      // 供应商还没落盘：先按当前表单保存（关联已有模型），再加入新模型
+      if (!existing) {
+        const cfg: ProviderConfig = {
+          id: providerId,
+          name: catName || customName.trim() || providerId,
+          baseURL: baseURL.trim(),
+          apiKey: apiKey.trim(),
+          getAPIKeyURL: catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "",
+          maxContext: 0,
+          custom: !fromCatalog,
+          verified: false,
+          imported: false,
+          models: [],
+        };
+        await FreeAPIService.UpsertProvider(cfg);
+      }
       await FreeAPIService.AddVerifiedModel(providerId, pm);
       flash("ok", `模型 ${model.id} 已评测通过并加入`);
+      setSelectedIds((ids) => ids.filter((x) => x !== model.id));
       await load();
     } catch (e) {
       flash("err", `添加失败: ${e}`);
     }
   };
 
+  // 取消加入：把已加入的模型从供应商移除（保留候选列表里的评测结果，可重新加入）
+  const removeModel = async (modelId: string) => {
+    const providerId = getEffectiveId();
+    if (!providers[providerId]) return;
+    setRemovingId(modelId);
+    try {
+      await FreeAPIService.RemoveModel(providerId, modelId);
+      flash("ok", `已移除 ${modelId}`);
+      setSelectedIds((ids) => ids.filter((x) => x !== modelId));
+      await load();
+    } catch (e) {
+      flash("err", `移除失败: ${e}`);
+    } finally {
+      setRemovingId("");
+    }
+  };
+
   // 保存供应商（新建/编辑）
   // 编辑模式（editingId 非空）：用原 id，保留已验证模型和 verified 状态
-  const saveProvider = async () => {
+  // 返回是否保存成功（切换确认时据此决定是否继续）
+  const saveProvider = async (): Promise<boolean> => {
     const isEdit = !!editingId;
-    const providerId = isEdit ? editingId : (selectedCatalog || ensureCustomId());
-    // 编辑时保留已通过的模型；新建时为空
-    const existing = isEdit ? providers[providerId] : null;
+    const providerId = getEffectiveId();
+    // 编辑时保留已通过的模型；若「加入」已自动落盘过供应商，也沿用其已加入模型
+    const existing = providers[providerId];
+    const catName = catalog?.providers.find((x) => x.id === selectedCatalog)?.name;
+    // 导入的供应商不回显 Key：留空表示保留原 Key；其他情况用输入值
+    const enteredKey = apiKey.trim();
+    const isImported = !!existing?.imported;
+    const finalApiKey = isEdit && isImported && enteredKey === ""
+      ? (existing.apiKey ?? "")
+      : enteredKey;
+    // 用户给导入的供应商换了新 Key：该 Key 归用户所有，取消 imported 标记，下次可查看
+    const keepImported = isImported && enteredKey === "";
     const cfg: ProviderConfig = {
       id: providerId,
       name: fromCatalog
-        ? (catalog?.providers.find((x) => x.id === selectedCatalog)?.name ?? providerId)
+        ? (catName ?? providerId)
         : (customName.trim() || providerId),
       baseURL: baseURL.trim(),
-      apiKey: apiKey.trim(),
+      apiKey: finalApiKey,
       getAPIKeyURL: fromCatalog
-        ? (catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "")
+        ? (catName ? catalog?.providers.find((x) => x.id === selectedCatalog)?.get_api_key_url ?? "" : (existing?.getAPIKeyURL ?? ""))
         : (existing?.getAPIKeyURL ?? ""),
       maxContext: existing?.maxContext ?? 0,
       custom: isEdit ? (existing?.custom ?? true) : !fromCatalog,
+      imported: keepImported,
       verified: existing?.verified ?? false,
       models: existing?.models ?? [],
     };
@@ -201,8 +516,10 @@ export default function FreeAPI() {
       flash("ok", isEdit ? `供应商「${cfg.name}」已更新` : `供应商「${cfg.name}」已保存`);
       cancelEdit();
       await load();
+      return true;
     } catch (e) {
       flash("err", `保存失败: ${e}`);
+      return false;
     }
   };
 
@@ -237,47 +554,251 @@ export default function FreeAPI() {
     FreeAPIService.OpenURL(url).catch(() => {});
   };
 
+  // 进入编辑/新增时把主滚动容器平滑滚到顶端（自定义缓动，速度较慢）
+  const scrollFormIntoView = () => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector("main");
+      const start = el ? el.scrollTop : window.scrollY;
+      if (start <= 0) return;
+      const duration = 500; // ms，越大越慢
+      const t0 = performance.now();
+      const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+      const step = (now: number) => {
+        const t = Math.min((now - t0) / duration, 1);
+        const y = start * (1 - easeOutCubic(t));
+        if (el) el.scrollTop = y;
+        else window.scrollTo(0, y);
+        if (t < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  };
+
+  // 开始新增供应商
+  const startNew = () => {
+    setShowAdd(true);
+    setEditingId("");
+    setEffectiveId("");
+    setFromCatalog(true);
+    setSelectedCatalog("");
+    setCustomName("");
+    setCustomId("");
+    setBaseURL("");
+    setApiKey("");
+    setShowApiKey(false);
+    setEditingImported(false);
+    setCandidateModels([]);
+    setBenchResult({});
+    setSelectedIds([]);
+    setModelSearch("");
+    setOnlyPassed(false);
+    setBatchProgress({ done: 0, total: 0 });
+    formBaseline.current = { name: "", baseURL: "", apiKey: "" };
+    scrollFormIntoView();
+  };
+
   // 开始编辑已添加的供应商
   const startEdit = (id: string) => {
     const p = providers[id];
     if (!p) return;
     setEditingId(id);
+    setEffectiveId(id);
     setShowAdd(true);
-    setFromCatalog(false); // 编辑统一走自定义模式（可改 name/baseURL/key）
-    setSelectedCatalog("");
-    setCustomName(p.name);
-    setCustomId(p.id);
+    setShowApiKey(false);
+    setEditingImported(!!p.imported);
+    // 分享导入的供应商：不回显原 Key，留空表示不修改；非导入的正常回显
+    setApiKey(p.imported ? "" : p.apiKey);
     setBaseURL(p.baseURL);
-    setApiKey(p.apiKey);
-    setCandidateModels([]);
-    setBenchResult({});
+    setSelectedIds([]);
+    setModelSearch("");
+    setOnlyPassed(false);
+    setBatchProgress({ done: 0, total: 0 });
+    // 用已保存模型的最近一次测速结果回填，让编辑时显示 "✓ N tok/s"
+    const savedBench: Record<string, any> = {};
+    for (const m of p.models ?? []) {
+      if (m.verified) {
+        savedBench[m.id] = { success: true, tps: m.tps ?? 0 };
+      }
+    }
+    setBenchResult(savedBench);
+    // 自动识别来源：内置目录里能找到同 id 的供应商 -> 目录模式；否则自定义
+    const cat = catalog?.providers.find((x) => x.id === id);
+    if (cat) {
+      setFromCatalog(true);
+      setSelectedCatalog(id);
+      setCustomName("");
+      setCustomId(id);
+      // 预填目录免费模型（已加入的会在列表里标记「✓ 已加入」）
+      setCandidateModels(cat.free_models ?? []);
+    } else {
+      setFromCatalog(false);
+      setSelectedCatalog("");
+      setCustomName(p.name);
+      setCustomId(p.id);
+      // 自定义供应商：预填已加入（verified）模型
+      setCandidateModels(
+        (p.models ?? [])
+          .filter((m) => m.verified)
+          .map((m) => ({
+            id: m.id,
+            name: m.id,
+            context: formatContext(m.context),
+            rate_limit: "",
+          }))
+      );
+    }
+    // 记录进入编辑时的表单快照，用于脏检查
+    formBaseline.current = {
+      name: cat?.name ?? p.name,
+      baseURL: p.baseURL,
+      apiKey: p.apiKey,
+    };
+    scrollFormIntoView();
+    // 进入编辑时，若开关开启且有 BaseURL/API Key，自动拉取模型并测评
+    if (autoBenchOnEdit && p.baseURL && p.apiKey) {
+      setTimeout(() => testAndFetch(true), 0);
+    }
   };
 
   // 取消编辑/新增
   const cancelEdit = () => {
     setEditingId("");
+    setEffectiveId("");
     setShowAdd(false);
     setApiKey("");
+    setShowApiKey(false);
+    setEditingImported(false);
     setBaseURL("");
     setCustomName("");
     setCustomId("");
     setCandidateModels([]);
     setSelectedCatalog("");
+    setBenchResult({});
+    setSelectedIds([]);
+    setModelSearch("");
+    setOnlyPassed(false);
+    setBatchRunning(false);
+    setBatchProgress({ done: 0, total: 0 });
+    formBaseline.current = null;
   };
 
   const providerList = Object.entries(providers ?? {}).filter(([, p]) => p !== null) as [string, ProviderConfig][];
-  const selProvider = providers[selectedCatalog] ?? null;
+  // 当前表单对应的供应商（用于标记候选模型是否已加入）。
+  // 不能只看 selectedCatalog：编辑/自定义模式下它为空，会导致已选模型永远检测不到。
+  const activeProviderId = editingId || selectedCatalog || customId.trim() || effectiveId;
+  const activeProvider = providers[activeProviderId] ?? null;
+
+  // 搜索过滤（模糊匹配 id/name，大小写不敏感）+ 可选「只看测评通过」
+  const q = modelSearch.trim().toLowerCase();
+  const filteredModels = candidateModels.filter((m) => {
+    if (onlyPassed && !benchResult[m.id]?.success) return false;
+    if (q) {
+      const hay = ((m.name || m.id) + " " + m.id).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  // 当前搜索结果均可勾选（含已加入的模型，编辑时可重新勾选测速）
+  const allFilteredSelected =
+    filteredModels.length > 0 && filteredModels.every((m) => selectedIds.includes(m.id));
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedIds((ids) => ids.filter((id) => !filteredModels.some((m) => m.id === id)));
+    } else {
+      setSelectedIds((ids) => {
+        const next = new Set(ids);
+        filteredModels.forEach((m) => next.add(m.id));
+        return Array.from(next);
+      });
+    }
+  };
+  // 测评通过且尚未加入的模型数（驱动「加入通过」按钮显示与计数）
+  const addedIds = new Set((activeProvider?.models ?? []).filter((m) => m.verified).map((m) => m.id));
+  const passedNotAdded = candidateModels.filter(
+    (m) => benchResult[m.id]?.success && !addedIds.has(m.id)
+  ).length;
+
+  // 当前表单的可保存字段（name/baseURL/apiKey），用于与进入时的快照做脏检查
+  const currentFormSnapshot = (): { name: string; baseURL: string; apiKey: string } => {
+    const catName = catalog?.providers.find((x) => x.id === selectedCatalog)?.name;
+    const name = fromCatalog
+      ? (catName ?? selectedCatalog)
+      : (customName.trim() || customId.trim() || editingId || "");
+    return { name, baseURL: baseURL.trim(), apiKey: apiKey.trim() };
+  };
+  // 是否有未保存变化（模型加入/移除即时落盘，不纳入；只看表单字段）
+  const isFormDirty = (): boolean => {
+    if (!formBaseline.current) return false;
+    const cur = currentFormSnapshot();
+    const b = formBaseline.current;
+    return cur.name !== b.name || cur.baseURL !== b.baseURL || cur.apiKey !== b.apiKey;
+  };
+  // 请求切换：有未保存变化则弹确认，否则直接执行目标动作
+  const requestSwitch = (action: () => void) => {
+    if (isFormDirty()) setPendingSwitch(() => action);
+    else action();
+  };
+  // 保存当前表单后再执行切换动作
+  const confirmSaveAndSwitch = async () => {
+    setSavingBeforeSwitch(true);
+    const ok = await saveProvider();
+    setSavingBeforeSwitch(false);
+    if (!ok) return; // 保存失败：留在当前编辑态，不切换
+    // saveProvider 成功后已 cancelEdit + load；执行待切换动作
+    const action = pendingSwitch;
+    setPendingSwitch(null);
+    action?.();
+  };
+  const discardAndSwitch = () => {
+    cancelEdit();
+    const action = pendingSwitch;
+    setPendingSwitch(null);
+    action?.();
+  };
+
+  // 打开分享对话框：initialId 非空则快捷分享单个供应商，否则从菜单选导出/导入
+  const openShare = (initialId?: string) => {
+    setShareInitialId(initialId);
+    setShowShare(true);
+  };
+
+  if (locked) {
+    return (
+      <UnlockScreen
+        onUnlocked={() => {
+          checkLock();
+          load();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="font-semibold">免费 API</h2>
+          <h2 className="font-semibold">供应商配置</h2>
           <p className="text-xs text-[var(--color-text-dim)] mt-0.5">
-            配置免费的大模型 API 供应商，评测通过的模型与内置上游平级使用。
+            配置大模型 API 供应商，评测通过的模型与内置上游平级使用。
           </p>
         </div>
         <div className="flex gap-2">
+          {hasMaster && (
+            <button
+              onClick={doLock}
+              title="立即锁定（需主密码解锁）"
+              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+            >
+              🔒
+            </button>
+          )}
+          <button
+            onClick={() => setShowSecurity(true)}
+            title="安全设置：主密码、恢复码"
+            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+          >
+            🔐
+          </button>
           <button
             onClick={refreshCatalog}
             disabled={refreshing}
@@ -286,7 +807,28 @@ export default function FreeAPI() {
             {refreshing ? "刷新中..." : "🔄 刷新目录"}
           </button>
           <button
-            onClick={() => (showAdd ? cancelEdit() : (setShowAdd(true), setEditingId(""), setFromCatalog(true)))}
+            onClick={() => {
+              if (showAdd) {
+                requestSwitch(() => {
+                  cancelEdit();
+                  openShare();
+                });
+              } else {
+                openShare();
+              }
+            }}
+            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+          >
+            🔗 分享/导入
+          </button>
+          <button
+            onClick={() => {
+              if (showAdd) {
+                requestSwitch(() => cancelEdit());
+              } else {
+                startNew();
+              }
+            }}
             className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90"
           >
             {showAdd ? (editingId ? "取消编辑" : "取消添加") : "＋ 添加供应商"}
@@ -303,22 +845,34 @@ export default function FreeAPI() {
       {/* 添加/编辑表单 */}
       {showAdd && (
         <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] space-y-3">
-          {editingId ? (
+          {editingId && (
             <div className="text-sm font-medium text-[var(--color-primary)]">
               ✏️ 编辑供应商：{providers[editingId]?.name ?? editingId}
             </div>
-          ) : (
+          )}
+          {/* 来源切换 tab（与新增一致；编辑时显示但不可切换，避免改供应商身份） */}
           <div className="flex gap-4 text-sm">
-            <label className="flex items-center gap-1.5">
-              <input type="radio" checked={fromCatalog} onChange={() => setFromCatalog(true)} className="accent-[var(--color-primary)]" />
+            <label className={`flex items-center gap-1.5 ${editingId ? "opacity-60" : "cursor-pointer"}`}>
+              <input
+                type="radio"
+                checked={fromCatalog}
+                disabled={!!editingId}
+                onChange={() => setFromCatalog(true)}
+                className="accent-[var(--color-primary)] disabled:cursor-not-allowed"
+              />
               从内置目录选
             </label>
-            <label className="flex items-center gap-1.5">
-              <input type="radio" checked={!fromCatalog} onChange={() => setFromCatalog(false)} className="accent-[var(--color-primary)]" />
+            <label className={`flex items-center gap-1.5 ${editingId ? "opacity-60" : "cursor-pointer"}`}>
+              <input
+                type="radio"
+                checked={!fromCatalog}
+                disabled={!!editingId}
+                onChange={() => setFromCatalog(false)}
+                className="accent-[var(--color-primary)] disabled:cursor-not-allowed"
+              />
               自定义添加
             </label>
           </div>
-          )}
 
           {fromCatalog ? (
             <div>
@@ -329,6 +883,7 @@ export default function FreeAPI() {
                 onChange={onSelectCatalog}
                 existingIds={Object.keys(providers ?? {})}
                 placeholder="搜索或选择供应商..."
+                disabled={!!editingId}
               />
               {selectedCatalog && (
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
@@ -381,85 +936,204 @@ export default function FreeAPI() {
               className="w-full px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
             />
             <div className="flex gap-2">
-              <input
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                type="password"
-                placeholder="API Key"
-                className="flex-1 px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
-              />
+              <div className="relative flex-1">
+                <input
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  type={showApiKey ? "text" : "password"}
+                  placeholder={
+                    editingImported
+                      ? "已保存（留空不修改）"
+                      : "API Key"
+                  }
+                  autoComplete="off"
+                  className={`w-full px-2 py-1.5 pr-9 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] ${
+                    editingImported ? "opacity-80" : ""
+                  }`}
+                />
+                {!editingImported && apiKey && (
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    title={showApiKey ? "隐藏" : "显示"}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)] hover:text-[var(--color-text)] text-xs leading-none"
+                  >
+                    {showApiKey ? "🙈" : "👁"}
+                  </button>
+                )}
+              </div>
               <button
-                onClick={testAndFetch}
+                onClick={() => testAndFetch()}
                 disabled={loadingModels}
                 className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50 whitespace-nowrap"
               >
-                {loadingModels ? "拉取中..." : "🔍 拉取模型"}
+                {loadingModels ? "拉取中..." : "⬇️ 拉取模型"}
               </button>
             </div>
           </div>
 
-          {/* 候选模型列表（带信息展示 + 评测按钮） */}
+          {/* 候选模型列表（全选 + 搜索[内嵌通过过滤] + 批量按钮固定最右，一行不晃动） */}
           {candidateModels.length > 0 && (
             <div>
-              <div className="text-xs font-medium text-[var(--color-text-dim)] mb-2">
-                候选模型（{candidateModels.length} 个，评测通过后加入）
+              <div className="flex items-center gap-3 mb-2">
+                <label className="flex items-center gap-2 text-sm text-[var(--color-text-dim)] cursor-pointer select-none shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    onChange={toggleSelectAllFiltered}
+                    className="w-4 h-4 accent-[var(--color-primary)] cursor-pointer"
+                  />
+                  {/* 文字块固定宽度：吸收「全选↔取消全选」「N ↔ N/M」长度变化，搜索框不晃 */}
+                  <span className="inline-flex items-center w-32 shrink-0">
+                    {allFilteredSelected ? "取消全选" : "全选"}
+                    <span className={`ml-1.5 ${selectedIds.length > 0 ? "text-[var(--color-primary)]" : ""}`}>
+                      {selectedIds.length > 0
+                        ? `${selectedIds.length}/${candidateModels.length}`
+                        : `${candidateModels.length}`}
+                    </span>
+                  </span>
+                </label>
+                {/* 搜索框：缩小 + 右侧内嵌「只看通过」过滤复选框 */}
+                <div className="relative flex-1 max-w-xs">
+                  <input
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="搜索模型..."
+                    className="w-full pl-9 pr-16 py-2 text-sm rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] focus:outline-none focus:border-[var(--color-primary)]"
+                  />
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)] text-sm">🔍</span>
+                  <label
+                    title="只显示测评通过的模型"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-[var(--color-text-dim)] cursor-pointer select-none px-1 rounded hover:bg-[var(--color-border)]/40"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={onlyPassed}
+                      onChange={(e) => setOnlyPassed(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-[var(--color-primary)] cursor-pointer"
+                    />
+                    通过
+                  </label>
+                </div>
+                {/* 右侧固定宽度按钮区：批量加入通过 + 批量测评，ml-auto 顶到行尾；出现/消失不推挤搜索框 */}
+                <div className="w-[17.5rem] shrink-0 ml-auto flex items-center justify-end gap-2">
+                  {passedNotAdded > 0 && (
+                    <button
+                      onClick={batchAddPassed}
+                      disabled={batchRunning || loadingModels}
+                      className="px-3 py-2 text-sm rounded-lg bg-[var(--color-success)]/15 text-[var(--color-success)] hover:bg-[var(--color-success)]/25 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      ✓ 加入通过 ({passedNotAdded})
+                    </button>
+                  )}
+                  {selectedIds.length > 0 && (
+                    <button
+                      onClick={benchmarkSelected}
+                      disabled={batchRunning || loadingModels}
+                      className="px-3 py-2 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      {batchRunning
+                        ? `测评 ${batchProgress.done}/${batchProgress.total}`
+                        : `⚡ 批量测评 (${selectedIds.length})`}
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                {candidateModels.map((m) => {
-                  const res = benchResult[m.id];
-                  return (
-                    <div key={m.id} className="flex items-center gap-2 bg-[var(--color-bg)] rounded-lg p-2 border border-[var(--color-border)]">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm truncate flex items-center gap-1.5">
-                          {m.name || m.id}
-                          {inferVision(m.id) && <span className="text-[10px] px-1 rounded bg-blue-500/20 text-blue-400 shrink-0">视觉</span>}
-                          {inferReasoning(m.id) && <span className="text-[10px] px-1 rounded bg-purple-500/20 text-purple-400 shrink-0">推理</span>}
-                          {inferTool(m.id) && <span className="text-[10px] px-1 rounded bg-emerald-500/20 text-emerald-400 shrink-0">工具</span>}
+              {batchRunning && (
+                <div className="h-1.5 mb-2 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+                  <div
+                    className="h-full bg-[var(--color-primary)] transition-all"
+                    style={{
+                      width: `${batchProgress.total ? (batchProgress.done / batchProgress.total) * 100 : 0}%`,
+                    }}
+                  />
+                </div>
+              )}
+              <div className="space-y-2 max-h-72 overflow-y-auto">
+                {filteredModels.length === 0 ? (
+                  <div className="text-xs text-[var(--color-text-dim)] py-4 text-center">
+                    没有匹配「{modelSearch}」的模型
+                  </div>
+                ) : (
+                  filteredModels.map((m) => {
+                    const res = benchResult[m.id];
+                    const isAdded = !!activeProvider?.models?.some(
+                      (x) => x.id === m.id && x.verified
+                    );
+                    const checked = selectedIds.includes(m.id);
+                    return (
+                      <div key={m.id} className="flex items-center gap-3 bg-[var(--color-bg)] rounded-lg p-2.5 border border-[var(--color-border)]">
+                        {/* 复选框：已加入的模型也可勾选，用于编辑时批量重新测速 */}
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSelect(m.id)}
+                          className="w-4 h-4 accent-[var(--color-primary)] shrink-0 cursor-pointer"
+                          title={isAdded ? "已加入，可勾选重新测速" : ""}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm truncate flex items-center gap-1.5">
+                            {m.name || m.id}
+                            {inferVision(m.id) && <span className="text-[10px] px-1 rounded bg-blue-500/20 text-blue-400 shrink-0">视觉</span>}
+                            {inferReasoning(m.id) && <span className="text-[10px] px-1 rounded bg-purple-500/20 text-purple-400 shrink-0">推理</span>}
+                            {inferTool(m.id) && <span className="text-[10px] px-1 rounded bg-emerald-500/20 text-emerald-400 shrink-0">工具</span>}
+                          </div>
+                          <div className="text-[11px] text-[var(--color-text-dim)] truncate">
+                            {m.context && <span>上下文 {m.context}</span>}
+                            {m.rate_limit && <span className="ml-2">限流：{m.rate_limit}</span>}
+                          </div>
                         </div>
-                        <div className="text-[11px] text-[var(--color-text-dim)] truncate">
-                          {m.context && <span>上下文 {m.context}</span>}
-                          {m.rate_limit && <span className="ml-2">限流：{m.rate_limit}</span>}
-                        </div>
-                      </div>
-                      {res?.success ? (
-                        <span className="text-xs text-[var(--color-success)] whitespace-nowrap">
-                          ✓ {res.tps?.toFixed(1) ?? "-"} tok/s
-                        </span>
-                      ) : res && !res.success ? (
-                        <span className="text-xs text-[var(--color-danger)] whitespace-nowrap">✗ 失败</span>
-                      ) : null}
-                      {selProvider?.models?.some((x) => x.id === m.id && x.verified) ? (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/20 text-[var(--color-success)] whitespace-nowrap">
-                          ✓ 已加入
-                        </span>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => benchmarkOne(m)}
-                            disabled={benchmarking[m.id]}
-                            className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50 whitespace-nowrap"
-                          >
-                            {benchmarking[m.id] ? "评测中..." : res ? "重新评测" : "评测"}
-                          </button>
-                          {res?.success && (
+                        {res?.success ? (
+                          <span className="text-xs text-[var(--color-success)] whitespace-nowrap">
+                            {res.tps > 0 ? `✓ ${res.tps.toFixed(1)} tok/s` : "✓ 已通过"}
+                          </span>
+                        ) : res && !res.success ? (
+                          <span className="text-xs text-[var(--color-danger)] whitespace-nowrap">✗ 失败</span>
+                        ) : null}
+                        {isAdded ? (
+                          <>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/20 text-[var(--color-success)] whitespace-nowrap">
+                              ✓ 已加入
+                            </span>
+                            {/* 取消加入：红色 − 按钮，从供应商移除该模型 */}
                             <button
-                              onClick={() => addVerifiedModel(m)}
-                              className="px-2 py-1 text-xs rounded-md bg-[var(--color-primary)] hover:opacity-90 whitespace-nowrap"
+                              onClick={() => removeModel(m.id)}
+                              disabled={removingId === m.id || batchRunning}
+                              title="取消加入"
+                              className="w-6 h-6 flex items-center justify-center text-xs rounded-md bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/30 disabled:opacity-50 shrink-0 leading-none"
                             >
-                              ✓ 加入
+                              {removingId === m.id ? "…" : "−"}
                             </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => benchmarkOne(m)}
+                              disabled={benchmarking[m.id]}
+                              className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {benchmarking[m.id] ? "评测中..." : res ? "重新评测" : "评测"}
+                            </button>
+                            {res?.success && (
+                              <button
+                                onClick={() => addVerifiedModel(m)}
+                                className="px-2 py-1 text-xs rounded-md bg-[var(--color-primary)] hover:opacity-90 whitespace-nowrap"
+                              >
+                                ✓ 加入
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           )}
 
           {/* 保存供应商（编辑模式 / 未保存时显示；已从目录选且已保存则隐藏，因为可通过编辑改） */}
-          {(editingId || !selProvider) && (
+          {(editingId || !activeProvider) && (
             <button
               onClick={saveProvider}
               disabled={!baseURL.trim() || !apiKey.trim()}
@@ -474,7 +1148,7 @@ export default function FreeAPI() {
       {/* 已添加供应商列表 */}
       {providerList.length === 0 && !showAdd ? (
         <div className="text-sm text-[var(--color-text-dim)] py-8 text-center bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
-          尚未添加免费 API 供应商。点击「＋ 添加供应商」开始。
+          尚未添加供应商。点击「＋ 添加供应商」开始。
         </div>
       ) : (
         <div className="space-y-3">
@@ -485,6 +1159,11 @@ export default function FreeAPI() {
               <div key={id} className="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)]">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{p.name}</span>
+                  {p.imported && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-primary)]/15 text-[var(--color-primary)]" title="来自分享文件导入">
+                      导入
+                    </span>
+                  )}
                   {p.custom && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] text-[var(--color-text-dim)]">自定义</span>}
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.verified ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-surface-2)] text-[var(--color-text-dim)]"}`}>
                     {p.verified ? `✓ ${verified.length} 模型` : "未评测"}
@@ -495,26 +1174,30 @@ export default function FreeAPI() {
                     </span>
                   )}
                   <div className="ml-auto flex gap-2">
-                    {p.getAPIKeyURL && (
-                      <button
-                        onClick={() => openGetKey(p.getAPIKeyURL!)}
-                        className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-                      >
-                        获取 Key ↗
-                      </button>
-                    )}
                     <button
-                      onClick={() => startEdit(id)}
+                      onClick={() => openShare(id)}
+                      title="分享此供应商"
+                      className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+                    >
+                      🔗 分享
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (editingId === id) return; // 已在编辑该供应商，无操作
+                        requestSwitch(() => startEdit(id));
+                      }}
                       className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
                     >
                       编辑
                     </button>
-                    <button
-                      onClick={() => removeProvider(id)}
-                      className="px-2 py-1 text-xs rounded-md bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/25"
+                    <ConfirmPopover
+                      title={`删除供应商「${p.name}」？已加入模型会一并移除`}
+                      confirmLabel="删除"
+                      onConfirm={() => removeProvider(id)}
+                      triggerClassName="px-2 py-1 text-xs rounded-md bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/25"
                     >
                       删除
-                    </button>
+                    </ConfirmPopover>
                   </div>
                 </div>
                 <div className="text-[11px] text-[var(--color-text-dim)] mt-1 truncate">{p.baseURL}</div>
@@ -541,6 +1224,71 @@ export default function FreeAPI() {
             );
           })}
         </div>
+      )}
+
+      {/* 切换供应商时的未保存变化确认弹窗 */}
+      {pendingSwitch && (
+        <div
+          className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setPendingSwitch(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium mb-1.5">有未保存的修改</div>
+            <p className="text-xs text-[var(--color-text-dim)] mb-4 leading-relaxed">
+              当前供应商的配置已修改，切换会丢失这些改动。要先保存再切换，还是放弃修改？
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPendingSwitch(null)}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+              >
+                取消
+              </button>
+              <button
+                onClick={discardAndSwitch}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] text-[var(--color-danger)] hover:bg-[var(--color-danger)]/15"
+              >
+                放弃
+              </button>
+              <button
+                onClick={confirmSaveAndSwitch}
+                disabled={savingBeforeSwitch}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+              >
+                {savingBeforeSwitch ? "保存中..." : "保存并切换"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showShare && (
+        <ShareDialog
+          providers={providers}
+          initialIds={shareInitialId ? [shareInitialId] : undefined}
+          onClose={() => {
+            setShowShare(false);
+            setShareInitialId(undefined);
+          }}
+          onImported={load}
+        />
+      )}
+
+      {showSecurity && (
+        <SecuritySettings
+          onClose={() => {
+            setShowSecurity(false);
+            checkLock();
+            load();
+          }}
+          onChanged={() => {
+            checkLock();
+            load();
+          }}
+        />
       )}
     </div>
   );

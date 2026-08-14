@@ -1,9 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { ProxyService, CredsService, ConfigService } from "../bindings/switchfree/service";
+import { ProxyService, ConfigService } from "../bindings/switchfree/service";
 import type {
   AllCredStatus,
   LogStats,
-  AgentDetail,
 } from "../bindings/switchfree/service/models";
 import type { ProxyStatus, LogEntry } from "../bindings/switchfree/proxy/models";
 import type { Config } from "../bindings/switchfree/config/models";
@@ -12,7 +11,6 @@ import Dashboard from "./components/Dashboard";
 import Credentials from "./components/Credentials";
 import Models from "./components/Models";
 import Logs from "./components/Logs";
-import SetupGuide from "./components/SetupGuide";
 import Settings from "./components/Settings";
 import UsageStats from "./components/UsageStats";
 import Benchmark from "./components/Benchmark";
@@ -25,33 +23,12 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [creds, setCreds] = useState<AllCredStatus | null>(null);
-  const [agents, setAgents] = useState<AgentDetail[]>([]);
-  const [showSetup, setShowSetup] = useState(false);
   const [stats, setStats] = useState<LogStats | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 拉取 agent 列表（实时探测安装状态）
-  const fetchAgents = useCallback(async () => {
-    try {
-      const list = await CredsService.GetAgents();
-      const next = (list ?? []).filter((a): a is AgentDetail => a !== null);
-      setAgents(next);
-      return next;
-    } catch (e) {
-      console.error("拉取 agent 列表失败", e);
-      return [];
-    }
-  }, []);
-
-  // 重新探测安装状态 + 校验已安装但未登录的凭据
-  const rescanAgents = useCallback(async () => {
-    await CredsService.RefreshAllCreds().catch(() => {});
-    await fetchAgents();
-  }, [fetchAgents]);
-
-  // 拉取仪表盘聚合数据 + agent 列表 + 配置
+  // 拉取仪表盘聚合数据 + 配置。后端会静默探测本地已安装的 upstream。
   const refreshDashboard = useCallback(async () => {
     try {
       const [d, cfg] = await Promise.all([
@@ -65,17 +42,12 @@ export default function App() {
         setLogs(d.recentLogs?.filter((l): l is LogEntry => l !== null) ?? []);
       }
       if (cfg) setConfig(cfg);
-      const agents = await fetchAgents();
-      // 首次加载：若三上游全部未安装，自动弹引导
-      if (agents.length > 0 && agents.every((a) => !a.installed)) {
-        setShowSetup(true);
-      }
     } catch (e) {
       console.error("拉取仪表盘失败", e);
     } finally {
       setLoading(false);
     }
-  }, [fetchAgents]);
+  }, []);
 
   useEffect(() => {
     refreshDashboard();
@@ -86,19 +58,21 @@ export default function App() {
     setConfig(data as Config);
   });
 
-  // 托盘菜单"保存方案"等入口跳转到设置页
-  useWailsEvent("navigate:settings", () => {
-    setTab("settings");
+  // 托盘菜单"功能"子菜单切换主界面 tab（"保存方案..."入口也走 settings）
+  useWailsEvent("navigate:tab", (data) => {
+    const validTabs: Tab[] = ["dashboard", "freeapi", "credentials", "models", "stats", "logs", "benchmark", "settings"];
+    const key = data as Tab;
+    if (validTabs.includes(key)) {
+      setTab(key);
+    }
   });
 
   // 订阅事件
   useWailsEvent("proxy:status", (data) => {
     setProxy(data as ProxyStatus);
   });
-  useWailsEvent("cred:change", async (data) => {
+  useWailsEvent("cred:change", (data) => {
     setCreds(data as AllCredStatus);
-    // 凭据变化时刷新 agent 列表（拿到最新 installed/valid）
-    await fetchAgents();
   });
   useWailsEvent("log:new", (data) => {
     const entry = data as LogEntry;
@@ -115,7 +89,7 @@ export default function App() {
 
   const navItems: { key: Tab; label: string; icon: string }[] = [
     { key: "dashboard", label: "仪表盘", icon: "📊" },
-    { key: "freeapi", label: "供应商", icon: "🆓" },
+    { key: "freeapi", label: "供应商", icon: "🌐" },
     { key: "credentials", label: "凭据", icon: "🔑" },
     { key: "models", label: "模型", icon: "🤖" },
     { key: "stats", label: "统计", icon: "📈" },
@@ -133,7 +107,7 @@ export default function App() {
       <header className="h-[56px] flex-shrink-0 flex items-center gap-6 px-6 bg-[var(--color-surface)] border-b border-[var(--color-border)]">
         <div className="leading-tight flex items-baseline gap-2">
           <span className="text-xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
-          <span className="text-base font-semibold text-[var(--color-text-dim)] tracking-widest">FREE</span>
+          <span className="text-base font-semibold text-[var(--color-text-dim)] tracking-widest">DEV</span>
         </div>
         <nav className="flex items-center gap-1 ml-6">
           {navItems.map((item) => (
@@ -172,7 +146,7 @@ export default function App() {
           ) : tab === "credentials" ? (
             <Credentials creds={creds} />
           ) : tab === "models" ? (
-            <Models config={config} />
+            <Models config={config} creds={creds} />
           ) : tab === "stats" ? (
             <UsageStats />
           ) : tab === "logs" ? (
@@ -180,17 +154,12 @@ export default function App() {
           ) : tab === "settings" ? (
             <Settings creds={creds} config={config} />
           ) : tab === "benchmark" ? (
-            <Benchmark />
+            <Benchmark creds={creds} />
           ) : (
             <UsageStats />
           )}
           </ErrorBoundary>
         </main>
-
-      {/* 首次启动引导弹窗：三上游全部未安装时自动弹出 */}
-      {showSetup && agents.length > 0 && (
-        <SetupGuide agents={agents} onClose={() => setShowSetup(false)} onRefresh={rescanAgents} />
-      )}
     </div>
   );
 }

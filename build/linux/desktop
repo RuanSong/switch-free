@@ -1,13 +1,13 @@
 [Desktop Entry]
 Version=1.0
-Name=Switch Free
+Name=Switch Dev
 Comment=Multi-upstream AI model proxy with visual management
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/switch-free %u
+Exec=/usr/local/bin/switch-dev %u
 Terminal=false
 Type=Application
-Icon=switch-free
+Icon=switch-dev
 Categories=Utility;
-StartupWMClass=switch-free
+StartupWMClass=switch-dev
 
  

@@ -21,7 +21,7 @@ func NewManager(path string) (*Manager, error) {
 	cfg, err := Load(path)
 	if err != nil {
 		// 即使出错也返回可用配置（已降级为默认）
-		fmt.Printf("[switch-free] 配置加载: %v\n", err)
+		fmt.Printf("[switch-dev] 配置加载: %v\n", err)
 	}
 	return &Manager{
 		config: cfg,

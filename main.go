@@ -46,15 +46,8 @@ var realQuit atomic.Bool
 // 全局窗口引用（供托盘菜单使用）
 var mainWindow *application.WebviewWindow
 
-// latestUpdate 最新可用更新信息（nil 表示无更新或尚未检查）
-// 由 startUpdateCheck 写入，托盘菜单读取显示
-var latestUpdate atomic.Pointer[updater.UpdateInfo]
-
 // 全局托盘引用（供动态刷新菜单用）
 var systemTray *application.SystemTray
-
-// 重建托盘菜单的回调（setupSystray 内设置；startUpdateCheck 等地方发现更新时调用）
-var rebuildTrayMenu func()
 
 func main() {
 	// 1. 凭据管理器
@@ -127,7 +120,7 @@ func main() {
 
 	// 7. 创建 Wails 应用
 	app := application.New(application.Options{
-		Name:        "Switch Free",
+		Name:        "Switch Dev",
 		Description: "多上游 AI 模型代理管理器",
 		Services: []application.Service{
 			application.NewService(proxySvc),
@@ -161,7 +154,7 @@ func main() {
 
 	// 7. 主窗口
 	mainWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Switch Free",
+		Title:            "Switch Dev",
 		Width:            960,
 		Height:           680,
 		MinWidth:         800,
@@ -197,7 +190,7 @@ func main() {
 	})
 
 	// 8. 系统托盘
-	setupSystray(app, server, cfgMgr, updaterSvc)
+	setupSystray(app, server, cfgMgr, cfgSvc)
 
 	// 9. 启动代理 + 凭据校验（非致命：失败仅警告，等待客户端登录后自动恢复）
 	go startProxyAndCreds(server, jyUp, deUp, ocUp, wbUp, core)
@@ -240,12 +233,7 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 				kind = "强制更新"
 			}
 			log.Printf("发现新版本 %s（当前 %s，%s）", info.Version, updaterSvc.GetCurrentVersion(), kind)
-			latestUpdate.Store(info)
 			updaterSvc.EmitUpdateAvailable(info)
-			// 刷新托盘菜单（显示"有新版本"）
-			if rebuildTrayMenu != nil {
-				rebuildTrayMenu()
-			}
 		}
 	}
 
@@ -259,7 +247,7 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 // setupSystray 配置系统托盘（跨平台）
 // - 单击/双击托盘图标：显示/聚焦主窗口
 // - 右键菜单：版本号、服务状态+启停、方案切换、检查更新、打开面板、退出
-func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Manager, updaterSvc *service.UpdaterService) *application.SystemTray {
+func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service.ConfigService) *application.SystemTray {
 	tray := app.SystemTray.New()
 	systemTray = tray // 存全局引用，供动态刷新用
 	// macOS 用模板图（透明背景 + 黑色主体），系统按菜单栏明暗自动反色；
@@ -269,7 +257,7 @@ func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Man
 	} else {
 		tray.SetIcon(trayIconColor)
 	}
-	tray.SetTooltip("Switch Free - 双击打开")
+	tray.SetTooltip("Switch Dev - 双击打开")
 
 	// 显示并聚焦主窗口的公共方法
 	showWindow := func() {
@@ -282,15 +270,14 @@ func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Man
 	}
 
 	// 构建菜单（首次）
-	menu := buildTrayMenu(server, cfgMgr, updaterSvc, showWindow, app)
+	menu := buildTrayMenu(server, cfgMgr, cfgSvc, showWindow, app)
 	tray.SetMenu(menu)
 
 	// 重建菜单的公共回调
 	rebuild := func() {
-		newMenu := buildTrayMenu(server, cfgMgr, updaterSvc, showWindow, app)
+		newMenu := buildTrayMenu(server, cfgMgr, cfgSvc, showWindow, app)
 		tray.SetMenu(newMenu)
 	}
-	rebuildTrayMenu = rebuild
 
 	// 配置变化时重建菜单（方案增删改、激活态变化等）
 	cfgMgr.SetOnChange(func() {
@@ -329,29 +316,49 @@ func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Man
 }
 
 // buildTrayMenu 构建托盘右键菜单
-// 菜单项：版本号 / 服务状态（带图标，点击切换启停） / 方案 / 检查更新 / 打开面板 / 退出
-func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *service.UpdaterService, showWindow func(), app *application.App) *application.Menu {
+// 菜单项：版本号+服务状态 / GitHub / 功能(各 tab) / 方案 / 打开面板 / 退出
+func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service.ConfigService, showWindow func(), app *application.App) *application.Menu {
 	menu := application.NewMenu()
 	running := server.IsRunning()
 
-	// ── 版本号（禁用，仅展示） ──
-	menu.Add("Switch Free v"+version.GetVersion()).SetEnabled(false)
+	// ── 版本号 + 服务状态（合并为第一项，禁用仅展示；每次打开菜单时读取最新状态） ──
+	statusLabel := "已停止"
+	if running {
+		statusLabel = "运行中"
+	}
+	menu.Add("Switch Dev v"+version.GetVersion()+" · 服务："+statusLabel).SetEnabled(false)
 
 	menu.AddSeparator()
 
 	// ── GitHub Star 引导 ──
 	menu.Add("⭐ 去 GitHub 点个 Star").OnClick(func(*application.Context) {
-		_ = app.Browser.OpenURL("https://github.com/RuanSong/switch-free")
+		_ = app.Browser.OpenURL("https://github.com/RuanSong/switch-dev")
 	})
 
 	menu.AddSeparator()
 
-	// ── 服务状态（纯展示，禁用；每次打开菜单时由 buildTrayMenu 读取最新状态） ──
-	statusLabel := "服务：已停止"
-	if running {
-		statusLabel = "服务：运行中"
+	// ── 功能（主界面各 tab，点击打开窗口并切到对应 tab） ──
+	tabMenu := menu.AddSubmenu("功能")
+	tabs := []struct {
+		key   string
+		label string
+	}{
+		{"dashboard", "📊 仪表盘"},
+		{"freeapi", "🆓 供应商"},
+		{"credentials", "🔑 凭据"},
+		{"models", "🤖 模型"},
+		{"stats", "📈 统计"},
+		{"logs", "📋 日志"},
+		{"benchmark", "🏁 测评"},
+		{"settings", "⚙️ 设置"},
 	}
-	menu.Add(statusLabel).SetEnabled(false)
+	for _, t := range tabs {
+		tabKey := t.key
+		tabMenu.Add(t.label).OnClick(func(*application.Context) {
+			showWindow()
+			app.Event.Emit("navigate:tab", tabKey)
+		})
+	}
 
 	menu.AddSeparator()
 
@@ -364,15 +371,17 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *ser
 			name := p.Name
 			checked := cfg.ActivePreset == name
 			presetMenu.AddRadio(name, checked).OnClick(func(*application.Context) {
-				// 应用方案；成功后会触发 onChange 回调重建菜单
-				_ = cfgMgr.ApplyPreset(name)
+				// 通过 ConfigService 应用：除改后端配置 + 重建托盘菜单外，
+				// 还会向前端发 config:change，使前端面板与托盘保持一致，
+				// 避免前端用旧配置自动保存覆盖托盘的切换。
+				_ = cfgSvc.ApplyPreset(name)
 			})
 		}
 	} else {
 		// 无方案：显示"保存方案..."入口，点击跳设置页
 		menu.Add("保存方案...").OnClick(func(*application.Context) {
 			showWindow()
-			app.Event.Emit("navigate:settings", nil)
+			app.Event.Emit("navigate:tab", "settings")
 		})
 	}
 
@@ -382,62 +391,6 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *ser
 	menu.Add("打开面板").OnClick(func(*application.Context) {
 		showWindow()
 	})
-
-	menu.AddSeparator()
-
-	// ── 检查更新 / 有新版本 ──
-	updateInfo := latestUpdate.Load()
-	if updateInfo != nil {
-		// 有新版本：显示带箭头的提示，点击打开窗口并弹更新面板
-		updateLabel := "有新版本 v" + updateInfo.Version + " ↗"
-		if updateInfo.Critical {
-			updateLabel = "有新版本 v" + updateInfo.Version + "（强制） ↗"
-		}
-		menu.Add(updateLabel).OnClick(func(*application.Context) {
-			showWindow()
-			// 推送 update:available 事件，前端 UpdatePanel 会弹窗
-			updaterSvc.EmitUpdateAvailable(updateInfo)
-		})
-	} else {
-		checkItem := menu.Add("检查更新")
-		checkItem.OnClick(func(*application.Context) {
-			// 先置为检查中状态（点击后菜单会关闭，但状态已更新，下次打开可见）
-			checkItem.SetLabel("检查中...")
-			checkItem.SetEnabled(false)
-			// 异步检查
-			go func() {
-				info, err := updaterSvc.CheckUpdate()
-				if err != nil {
-					log.Printf("⚠️ 检查更新失败: %v", err)
-					checkItem.SetLabel("检查失败")
-					checkItem.SetEnabled(true)
-					// 3 秒后恢复
-					time.AfterFunc(3*time.Second, func() {
-						checkItem.SetLabel("检查更新")
-						checkItem.SetEnabled(true)
-					})
-					return
-				}
-				if info != nil {
-					latestUpdate.Store(info)
-					// 有新版本：重建整个菜单（显示"有新版本"入口），并弹窗口
-					if rebuildTrayMenu != nil {
-						rebuildTrayMenu()
-					}
-					showWindow()
-					updaterSvc.EmitUpdateAvailable(info)
-				} else {
-					// 无新版本：显示"已是最新版本"，3 秒后恢复
-					checkItem.SetLabel("已是最新版本")
-					checkItem.SetEnabled(true)
-					time.AfterFunc(3*time.Second, func() {
-						checkItem.SetLabel("检查更新")
-						checkItem.SetEnabled(true)
-					})
-				}
-			}()
-		})
-	}
 
 	menu.AddSeparator()
 
@@ -460,7 +413,7 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, updaterSvc *ser
 var rebuildFreeAPIs func()
 
 // registerFreeAPIRefresh 初始化免费 API 上游注册：
-// 遍历 free_apis.json 里 verified 的 provider，为每个创建 FreeAPIUpstream 注册到 server，
+// 遍历 credentials.json 里 verified 的 provider，为每个创建 FreeAPIUpstream 注册到 server，
 // 并填充 proxy.FreeModels 供模型列表/降级链使用。
 func registerFreeAPIRefresh(server *proxy.Server, mgr *freeapi.Manager, monitor *freeapi.Monitor, core *service.Core) {
 	rebuild := func() {

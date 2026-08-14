@@ -14,7 +14,6 @@ import { ModelSelect, FreeBadge } from "./ModelSelect";
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
   deveco: "DevEco",
-  opencode: "OpenCode",
   workbuddy: "WorkBuddy",
 };
 
@@ -259,7 +258,6 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const credValid: Record<string, boolean> = {
     joycode: creds?.joycode?.valid ?? false,
     deveco: creds?.deveco?.valid ?? false,
-    opencode: creds?.opencode?.valid ?? false,
     workbuddy: creds?.workbuddy?.valid ?? false,
     ...Object.fromEntries(
       Object.entries(creds?.freeAPIs ?? {}).map(([id, st]) => [id, st?.valid ?? false])
@@ -287,6 +285,21 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       flash("err", `保存端口失败: ${e}`);
     } finally {
       setSavingPort(false);
+    }
+  };
+
+  // 切换"进入编辑时自动拉取并测评模型"
+  const toggleAutoBench = async (enabled: boolean) => {
+    try {
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      const curFree = cur.provider ?? { autoBenchmarkOnEdit: false };
+      const next = { ...cur, provider: { ...curFree, autoBenchmarkOnEdit: enabled } };
+      await ConfigService.SaveConfig(next);
+      setCfg(next);
+      flash("ok", enabled ? "已开启自动测评" : "已关闭自动测评");
+    } catch (e) {
+      flash("err", `保存失败: ${e}`);
     }
   };
 
@@ -488,6 +501,23 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               {savingKey ? "生成中..." : "🔄 重新生成"}
             </button>
           </div>
+        </section>
+
+        {/* 供应商配置 */}
+        <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <h2 className="font-semibold mb-1">供应商配置</h2>
+          <p className="text-xs text-[var(--color-text-dim)] mb-3">
+            编辑供应商时自动拉取模型列表并批量测评，结果实时显示。关闭后需手动点「拉取模型」。
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!cfg?.provider?.autoBenchmarkOnEdit}
+              onChange={(e) => toggleAutoBench(e.target.checked)}
+              className="w-4 h-4 accent-[var(--color-primary)]"
+            />
+            <span className="text-sm">进入编辑时自动拉取并测评模型</span>
+          </label>
         </section>
       </div>
       )}
@@ -775,7 +805,7 @@ function AutoChainAdder({
   credValid: Record<string, boolean>;
   onAdd: (upstream: string, model: string) => void;
 }) {
-  const validAvailable = available.filter((u) => credValid[u.upstream]);
+  const validAvailable = available.filter((u) => u.upstream !== "opencode" && credValid[u.upstream]);
   const [upstream, setUpstream] = useState(validAvailable[0]?.upstream ?? "");
   const [model, setModel] = useState("");
 
@@ -842,7 +872,7 @@ function ModelPicker({
   value: ModelRef;
   onChange: (ref: ModelRef) => void;
 }) {
-  const validAvailable = available.filter((u) => credValid[u.upstream]);
+  const validAvailable = available.filter((u) => u.upstream !== "opencode" && credValid[u.upstream]);
   const models = validAvailable.find((u) => u.upstream === value.upstream)?.models ?? [];
   return (
     <div className="flex items-center gap-2">
@@ -885,8 +915,8 @@ function AboutSection() {
       <div className="flex flex-col items-center text-center">
         {/* Logo */}
         <img
-          src="/switch-free-64.png"
-          alt="Switch Free"
+          src="/switch-dev-64.png"
+          alt="Switch Dev"
           className="w-16 h-16 mb-4"
           draggable={false}
         />
@@ -894,7 +924,7 @@ function AboutSection() {
         {/* 应用名 */}
         <div className="mb-2">
           <span className="text-2xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
-          <span className="text-lg font-semibold text-[var(--color-text-dim)] tracking-widest ml-1.5">FREE</span>
+          <span className="text-lg font-semibold text-[var(--color-text-dim)] tracking-widest ml-1.5">DEV</span>
         </div>
 
         {/* 版本号 */}
@@ -907,7 +937,7 @@ function AboutSection() {
 
         {/* 功能描述 */}
         <p className="text-sm text-[var(--color-text-dim)] max-w-sm leading-relaxed mb-6">
-          本地多上游 LLM 代理，将 JoyCode / DevEco / OpenCode / WorkBuddy
+          本地多上游 LLM 代理，将 JoyCode / DevEco / WorkBuddy
           模型能力暴露为标准 Anthropic / OpenAI 接口，供 Claude Code 等工具复用。
         </p>
 

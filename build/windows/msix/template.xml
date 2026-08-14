@@ -8,13 +8,13 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="switch-free"
+        Path="switch-dev"
         Arguments=""
-        InstallLocation="C:\Program Files\Local\Switch Free">
+        InstallLocation="C:\Program Files\Local\Switch Dev">
     </Installer>
     <PackageInformation
-        PackageName="Switch Free"
-        PackageDisplayName="Switch Free"
+        PackageName="Switch Dev"
+        PackageDisplayName="Switch Dev"
         PublisherName="CN=Local"
         PublisherDisplayName="Local"
         Version="0.1.0.0"
@@ -27,8 +27,8 @@
             <Application
                 Id="com.switchfree.app"
                 Description="Multi-upstream AI model proxy with visual management"
-                DisplayName="Switch Free"
-                ExecutableName="switch-free"
+                DisplayName="Switch Dev"
+                ExecutableName="switch-dev"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>Switch Free</DisplayName>
+            <DisplayName>Switch Dev</DisplayName>
             <PublisherDisplayName>Local</PublisherDisplayName>
             <Description>Multi-upstream AI model proxy with visual management</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="switch-free.msix" />
+    <SaveLocation PackagePath="switch-dev.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

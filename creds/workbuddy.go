@@ -184,7 +184,7 @@ func (m *WorkBuddyCredManager) CredStatus() *CredStatusInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	info := &CredStatusInfo{Source: "workbuddy-desktop.info (明文)"}
+	info := &CredStatusInfo{Source: "workbuddy-desktop.info"}
 	if m.cred != nil {
 		info.Valid = m.cred.Valid
 		info.UserID = m.cred.Nickname

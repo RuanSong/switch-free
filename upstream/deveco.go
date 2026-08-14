@@ -160,7 +160,7 @@ func (u *DevEcoUpstream) Call(ctx context.Context, body []byte) (*Response, erro
 
 	// token 失效 -> 刷新并重试一次
 	if isDevEcoTokenInvalid(resp) {
-		fmt.Println("[switch-free] DevEco 收到 token 失效信号，触发刷新并重试一次")
+		fmt.Println("[switch-dev] DevEco 收到 token 失效信号，触发刷新并重试一次")
 		u.mgr.InvalidateCreds()
 		oldToken := cred.AccessToken
 		newCred, err := u.mgr.EnsureCreds() // 预检失败会自动用 jwtToken 刷新
@@ -221,7 +221,7 @@ func (u *DevEcoUpstream) CallStream(ctx context.Context, body []byte) (*StreamRe
 	}
 	// token 失效 -> 刷新并重试一次（流式下纯 status 判断）
 	if sr.StatusCode == 401 {
-		fmt.Println("[switch-free] DevEco 流式收到 401（token 失效），刷新并重试一次")
+		fmt.Println("[switch-dev] DevEco 流式收到 401（token 失效），刷新并重试一次")
 		sr.Body.Close()
 		u.mgr.InvalidateCreds()
 		oldToken := cred.AccessToken
@@ -287,7 +287,7 @@ func (u *DevEcoUpstream) doCallStream(ctx context.Context, body []byte, cred *cr
 	peekStr := string(peeked)
 	if len(peeked) == 0 {
 		httpResp.Body.Close()
-		fmt.Printf("[switch-free] deveco 流式上游返回空流，降级\n")
+		fmt.Printf("[switch-dev] deveco 流式上游返回空流，降级\n")
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream empty stream"}`))),
@@ -301,7 +301,7 @@ func (u *DevEcoUpstream) doCallStream(ctx context.Context, body []byte, cred *cr
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		fmt.Printf("[switch-free] deveco 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		fmt.Printf("[switch-dev] deveco 流式上游返回非 SSE 内容，降级: %s\n", snippet)
 		return &StreamResponse{
 			StatusCode: 502,
 			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),

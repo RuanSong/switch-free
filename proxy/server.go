@@ -110,7 +110,7 @@ func (s *Server) Start() error {
 	s.emitStatus()
 	go func() {
 		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("[switch-free] HTTP 服务退出: %v\n", err)
+			fmt.Printf("[switch-dev] HTTP 服务退出: %v\n", err)
 		}
 		s.running.Store(false)
 		s.emitStatus()
@@ -188,6 +188,11 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// X-Switch-Direct:1 为内部测评直连模式（只打请求指定的模型，跳过降级链/兜底）
+	if r.Header.Get("X-Switch-Direct") == "1" {
+		r = r.WithContext(WithDirect(r.Context()))
+	}
+
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/health"):
 		s.handleHealth(w, r)
@@ -245,7 +250,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{
 		"ok":                 jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid,
-		"service":            "switch-free",
+		"service": "switch-dev",
 		"autoResolvesTo":     AutoModel,
 		"joycodeCredValid":   jcStatus.Valid,
 		"joycodeUserId":      jcStatus.UserID,

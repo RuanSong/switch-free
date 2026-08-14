@@ -215,9 +215,18 @@ func windowsConfigDirs() []string {
 	return dirs
 }
 
-// FreeAPIConfigPath 免费 API 独立配置文件路径（存多个供应商配置 + api_key，密钥不进 config.json）
+// FreeAPIConfigPath 返回供应商凭据配置文件路径（credentials.json）。
+// 首次调用时若发现旧文件名 free_apis.json，会自动重命名迁移。
 func FreeAPIConfigPath() string {
-	return filepath.Join(AppConfigDir(), "free_apis.json")
+	dir := AppConfigDir()
+	newPath := filepath.Join(dir, "credentials.json")
+	oldPath := filepath.Join(dir, "free_apis.json")
+	if _, err := os.Stat(newPath); os.IsNotExist(err) {
+		if _, err := os.Stat(oldPath); err == nil {
+			_ = os.Rename(oldPath, newPath)
+		}
+	}
+	return newPath
 }
 
 // FreeCatalogCachePath 免费 API 目录本地缓存路径（GitHub 拉取成功后写入）

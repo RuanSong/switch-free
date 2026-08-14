@@ -5,11 +5,11 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "Switch Free" # The name of the company
-  productName: "Switch Free" # The name of the application
+  companyName: "Switch Dev" # The name of the company
+  productName: "Switch Dev" # The name of the application
   productIdentifier: "com.switchfree.app" # The unique product identifier
   description: "Multi-upstream LLM proxy — exposes JoyCode/DevEco/OpenCode/WorkBuddy models as standard Anthropic/OpenAI APIs for Claude Code" # The application description
-  copyright: "(c) 2025-2026, Switch Free Contributors" # Copyright text
+  copyright: "(c) 2025-2026, Switch Dev Contributors" # Copyright text
   comments: "Local LLM proxy with Wails desktop GUI" # Comments
   version: "0.0.6" # The application version
   cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles

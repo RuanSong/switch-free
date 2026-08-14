@@ -1,6 +1,6 @@
 # 自动升级方案
 
-> 目标：对已发布的 switch-free 程序做后续增量更新，客户端能自动检查新版本并升级。
+> 目标：对已发布的 switch-dev 程序做后续增量更新，客户端能自动检查新版本并升级。
 > 平台：macOS（.app 内单二进制）/ Windows（exe）/ Linux。
 > 已确认：版本号从 build/config.yml 读；先裸二进制自更新，签名/公证后补。
 
@@ -47,7 +47,7 @@
     "provider": "github",
     "github": {
       "owner": "RuanSong",       // GitHub 用户名
-      "repo": "switch-free",     // 仓库名
+      "repo": "switch-dev",     // 仓库名
       "token": ""                 // 可选：私有仓库的 PAT（公开仓库可留空）
     },
     "updateUrl": "",              // 替代 provider 的自定义检查地址（可选，优先于 github）
@@ -65,17 +65,17 @@
 
 ```
 资产命名（按平台/架构）：
-  switch-free-darwin-amd64    # macOS Intel
-  switch-free-darwin-arm64    # macOS Apple Silicon
-  switch-free-windows-amd64.exe
-  switch-free-linux-amd64
+  switch-dev-darwin-amd64    # macOS Intel
+  switch-dev-darwin-arm64    # macOS Apple Silicon
+  switch-dev-windows-amd64.exe
+  switch-dev-linux-amd64
 ```
 
 `selfupdate` 替换的是**单个二进制**，所以发布物是裸二进制（非 .app 包）。macOS 场景：把新二进制塞进现有 .app 的 Contents/MacOS 替换旧的。
 
 > ⚠️ macOS 已签名/公证的 .app 直接替换内部二进制会导致签名失效。两种处理：
 > 1. 应用内替换二进制后重新签名（需开发者证书，复杂）
-> 2. 更新的是"裸二进制启动模式"（当前开发时就是直接跑 bin/switch-free）
+> 2. 更新的是"裸二进制启动模式"（当前开发时就是直接跑 bin/switch-dev）
 > 发布正式版时建议用**签名后打包 .app + 整包替换**，或对二进制自签。
 
 ## 五、版本来源
@@ -122,7 +122,7 @@ GET https://api.github.com/repos/{owner}/{repo}/releases/latest
     "tag_name": "v0.1.0",
     "name": "...",
     "body": "更新说明",
-    "assets": [{ "name": "switch-free-darwin-amd64", "browser_download_url": "...", "size": 12345 }]
+    "assets": [{ "name": "switch-dev-darwin-amd64", "browser_download_url": "...", "size": 12345 }]
 }
 ```
 

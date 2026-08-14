@@ -30,6 +30,9 @@ type AgentInfo struct {
 	// 除凭据文件外，还在 PATH 和 npm 全局 bin 目录查找这些可执行文件，
 	// 任一命中即视为已安装（Windows 上 .cmd/.exe/.ps1 shim 都算）
 	ExecNames []string
+	// Hidden 为 true 时不在默认引导/凭据流程中显示（底层上游仍保留，供显式配置使用）。
+	// OpenCode 本质是 API Key 配置，用户通过「供应商配置」接入即可，故默认隐藏。
+	Hidden bool
 }
 
 // AgentRegistry 已支持的 agent 工具注册表
@@ -66,6 +69,7 @@ var AgentRegistry = []AgentInfo{
 		LoginCmd:    "opencode auth login",
 		LoginURL:    "https://opencode.ai",
 		ExecNames:   []string{"opencode"},
+		Hidden:      true, // 本质是 API Key，统一在「供应商配置」里接入
 	},
 	{
 		Name:        "WorkBuddy",

@@ -81,9 +81,16 @@ type Config struct {
 	AutoUpdate      UpdateConfig                 `json:"update"`          // 自动升级配置
 	Presets         []Preset                     `json:"presets"`         // 已保存的运行模式方案
 	ActivePreset    string                       `json:"activePreset"`    // 当前激活方案名（仅 UI 提示；偏离后置空 = 自定义）
+	Provider        ProviderSettings             `json:"provider"`        // 供应商配置相关偏好
 
 	mu   sync.RWMutex `json:"-"`
 	path string        `json:"-"`
+}
+
+// ProviderSettings 供应商功能偏好
+type ProviderSettings struct {
+	// AutoBenchmarkOnEdit 进入供应商编辑时自动拉取模型并批量测评
+	AutoBenchmarkOnEdit bool `json:"autoBenchmarkOnEdit"`
 }
 
 // DefaultConfigPath 默认配置文件路径
@@ -93,6 +100,10 @@ func DefaultConfigPath() string {
 
 // DefaultPort 默认代理端口
 const DefaultPort = 8787
+
+// DefaultAutoBenchmarkOnEdit 控制"进入编辑时自动拉取并测评模型"的默认开关。
+// 默认关闭，打包时可用 -ldflags "-X switchfree/config.DefaultAutoBenchmarkOnEdit=true" 改为默认开启。
+var DefaultAutoBenchmarkOnEdit = "false"
 
 // generateAPIKey 生成随机 apiKey，格式 rs-<uuid>
 // 首次启动或老配置无此字段时调用
@@ -110,12 +121,15 @@ func Defaults() *Config {
 		Port:            DefaultPort,
 		Presets:         []Preset{},
 		ActivePreset:    "",
+		Provider: ProviderSettings{
+			AutoBenchmarkOnEdit: DefaultAutoBenchmarkOnEdit == "true",
+		},
 		AutoUpdate: UpdateConfig{
 			Enabled:  true,
 			Provider: "github",
 			GitHub: GitHubConfig{
 				Owner: "RuanSong",
-				Repo:  "switch-free",
+				Repo:  "switch-dev",
 			},
 			Channel: "stable",
 		},
