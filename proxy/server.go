@@ -97,8 +97,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/", s.handleDispatch)
 
 	s.httpSrv = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", s.Host, s.Port),
-		Handler: mux,
+		Addr:              fmt.Sprintf("%s:%d", s.Host, s.Port),
+		Handler:           mux,
+		ReadTimeout:       30 * time.Second,  // 读取请求体（含长上下文）的上限
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      300 * time.Second, // 流式推理可能很慢，5 分钟
+		IdleTimeout:       120 * time.Second,
 	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.Host, s.Port))

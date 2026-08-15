@@ -303,6 +303,21 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     }
   };
 
+  // 切换"闲置时自动锁定供应商界面"
+  const toggleIdleAutoLock = async (enabled: boolean) => {
+    try {
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      const curFree = cur.provider ?? { autoBenchmarkOnEdit: false, idleAutoLock: true };
+      const next = { ...cur, provider: { ...curFree, idleAutoLock: enabled } };
+      await ConfigService.SaveConfig(next);
+      setCfg(next);
+      flash("ok", enabled ? "已开启闲置自动锁定" : "已关闭闲置自动锁定");
+    } catch (e) {
+      flash("err", `保存失败: ${e}`);
+    }
+  };
+
   // 重新生成 apiKey：二次确认告知风险 -> 生成 rs-<uuid> -> 保存立即生效
   const regenKey = async () => {
     if (
@@ -518,6 +533,18 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             />
             <span className="text-sm">进入编辑时自动拉取并测评模型</span>
           </label>
+          <label className="flex items-center gap-2 cursor-pointer mt-3">
+            <input
+              type="checkbox"
+              checked={cfg?.provider?.idleAutoLock !== false}
+              onChange={(e) => toggleIdleAutoLock(e.target.checked)}
+              className="w-4 h-4 accent-[var(--color-primary)]"
+            />
+            <span className="text-sm">闲置时自动锁定供应商界面</span>
+          </label>
+          <p className="text-[11px] text-[var(--color-text-dim)] mt-2">
+            无操作 5 分钟后自动锁定供应商界面，需要输入主密码解锁。锁定期间代理调用不受影响。仅在供应商界面已开启主密码后生效。
+          </p>
         </section>
       </div>
       )}

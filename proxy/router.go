@@ -19,6 +19,9 @@ type ModelRef struct {
 	Model    string `json:"model"`
 }
 
+// chainTimeout 降级链总超时（包含所有上游尝试；防串行累加超过客户端超时）
+const chainTimeout = 180 * time.Second
+
 // directCtxKey 直连模式上下文 key：测评等内部请求用，跳过降级链，只打指定模型
 type directCtxKey struct{}
 
@@ -58,6 +61,8 @@ func (s *Server) callUpstreamAnthropic(ctx context.Context, body *AnthropicReque
 	if isDirect(ctx) {
 		chain = directChain(requestedModel) // 直连模式：跳过降级链，只打指定模型
 	}
+	ctx, cancel := context.WithTimeout(ctx, chainTimeout)
+	defer cancel()
 	return s.executeChain(ctx, body, chain, requestedModel)
 }
 
@@ -71,6 +76,8 @@ func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]inte
 	if isDirect(ctx) {
 		chain = directChain(requestedModel)
 	}
+	ctx, cancel := context.WithTimeout(ctx, chainTimeout)
+	defer cancel()
 	return s.executeChain(ctx, rawBody, chain, requestedModel)
 }
 
@@ -274,6 +281,8 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 	if isDirect(ctx) {
 		chain = directChain(requestedModel)
 	}
+	ctx, cancel := context.WithTimeout(ctx, chainTimeout)
+	defer cancel()
 	return s.executeChainStream(ctx, body, chain, requestedModel)
 }
 

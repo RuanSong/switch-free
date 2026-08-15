@@ -16,7 +16,7 @@ import (
 // handleResponses OpenAI /v1/responses 入口（Codex 使用）
 // 内部把 Responses 请求转成 Chat Completions，复用降级链，再转回 Responses 格式
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -162,9 +162,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 	entry.Source = source
 	s.logRequest(entry, resp.Body, requestedModel)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 	writeResponsesPseudoStream(w, &parsed)
 }
 
@@ -172,9 +170,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 
 	usage, firstByteMs, realModel, _ := StreamOpenAIToResponses(w, sr.Body, requestedModel)
 	duration := time.Since(start).Milliseconds()

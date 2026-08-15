@@ -113,35 +113,44 @@ export default function FreeAPI() {
   }, [load]);
 
   // 启动后检查是否被锁定（钥匙串没有记住主密码等）
-  const checkLock = useCallback(() => {
-    FreeAPIService.GetLockStatus()
-      .then((info) => {
+  const checkLock = useCallback(async () => {
+    try {
+      const info = await FreeAPIService.GetLockStatus();
+      setHasMaster(!!info?.masterSet);
+      if (info?.isLocked && info?.remembered) {
+        // 钥匙串记住密码：尝试自动解锁，成功则无感进入
+        const ok = await FreeAPIService.TryAutoUnlock();
+        setLocked(!ok);
+      } else {
         setLocked(!!info?.isLocked);
-        setHasMaster(!!info?.masterSet);
-      })
-      .catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
     checkLock();
-    // 读取通用配置：是否进入编辑时自动拉取并测评
+    // 读取通用配置：是否进入编辑时自动拉取并测评 + 是否闲置自动锁定
     ConfigService.GetConfig()
-      .then((c) => setAutoBenchOnEdit(!!c?.provider?.autoBenchmarkOnEdit))
+      .then((c) => {
+        setAutoBenchOnEdit(!!c?.provider?.autoBenchmarkOnEdit);
+        setIdleAutoLock(c?.provider?.idleAutoLock !== false);
+      })
       .catch(() => {});
   }, [checkLock]);
 
   // 无操作自动锁定 + 手动锁定
   const lastActivity = useRef<number>(Date.now());
-  const idleSecondsRef = useRef<number>(0);
   const [hasMaster, setHasMaster] = useState(false);
+  const [idleAutoLock, setIdleAutoLock] = useState(true);
   const doLock = useCallback(async () => {
     await FreeAPIService.Lock();
-    setLocked(true);
+    // 尝试用钥匙串记住的密码自动解锁；无法自动解锁才显示解锁界面
+    const ok = await FreeAPIService.TryAutoUnlock();
+    setLocked(!ok);
   }, []);
   useEffect(() => {
-    FreeAPIService.GetIdleLockSeconds()
-      .then((s) => (idleSecondsRef.current = s || 0))
-      .catch(() => {});
     FreeAPIService.GetLockStatus()
       .then((info) => setHasMaster(!!info?.masterSet))
       .catch(() => {});
@@ -152,10 +161,11 @@ export default function FreeAPI() {
     };
     const events = ["mousemove", "mousedown", "keydown", "touchstart", "click"];
     events.forEach((e) => window.addEventListener(e, onActivity, true));
+    // 5 分钟（300s）无操作触发 UI 锁定；仅当设置了主密码且开启闲置锁定时生效
     const timer = setInterval(() => {
-      if (locked || !hasMaster || idleSecondsRef.current <= 0) return;
+      if (locked || !hasMaster || !idleAutoLock) return;
       const idleMs = Date.now() - lastActivity.current;
-      if (idleMs >= idleSecondsRef.current * 1000) {
+      if (idleMs >= 300 * 1000) {
         doLock();
       }
     }, 5000);
@@ -163,7 +173,7 @@ export default function FreeAPI() {
       events.forEach((e) => window.removeEventListener(e, onActivity, true));
       clearInterval(timer);
     };
-  }, [locked, hasMaster, doLock]);
+  }, [locked, hasMaster, idleAutoLock, doLock]);
 
   // 凭据变化时刷新（新增/删除供应商后）
   useWailsEvent("freeapi:change", () => load());

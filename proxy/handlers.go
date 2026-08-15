@@ -50,6 +50,9 @@ func setSource(entry *LogEntry, r *http.Request) {
 // 请求/响应体记录上限（防日志膨胀）
 const maxLogBodySize = 4096
 
+// 入站请求体上限（50MB，防 OOM；长上下文 Claude Code 请求通常 < 10MB）
+const maxRequestBodySize = 50 << 20
+
 // truncateBody 截断请求/响应体到上限，超出加省略号
 func truncateBody(s string) string {
 	if len(s) > maxLogBodySize {
@@ -144,7 +147,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 			r.URL.Query().Get("stream"))
 		f.Close()
 	}
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -298,9 +301,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 		model := parsed.Model
 		if model == "" {
 			model = body.Model
@@ -315,7 +316,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 
 // handleOpenAIChatCompletions OpenAI /v1/chat/completions 直通入口
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -387,9 +388,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	s.logRequest(entry, resp.Body, requestedModel)
 
 	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		setSSEHeaders(w)
 		var parsed OpenAIResponse
 		if err := json.Unmarshal(resp.Body, &parsed); err == nil {
 			WriteOpenAISSE(w, &parsed)
@@ -415,6 +414,12 @@ func isResponseContentEmpty(oai *OpenAIResponse) bool {
 	hasToolCalls := len(msg.ToolCalls) > 0
 	hasReasoning := msg.ReasoningContent != ""
 	return !hasText && !hasToolCalls && !hasReasoning
+}
+
+// setSSEHeaders 设置 SSE 流式响应头（含防中间件截断标记）
+func setSSEHeaders(w http.ResponseWriter) {
+	setSSEHeaders(w)
+	w.Header().Set("X-Accel-Buffering", "no") // 防 nginx 等中间件缓冲导致 SSE 截断
 }
 
 // writeAnthropicError 写 Anthropic 格式错误响应
@@ -466,9 +471,7 @@ func (s *Server) fillStreamLog(entry *LogEntry, usage *OpenAIUsage, requestedMod
 func (s *Server) streamAnthropicPassthrough(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 
 	usage, firstByteMs, _ := StreamAnthropicPassthrough(w, sr.Body)
 	duration := time.Since(start).Milliseconds()
@@ -494,9 +497,7 @@ func (s *Server) streamAnthropicPassthrough(w http.ResponseWriter, sr *upstream.
 func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 
 	usage, firstByteMs, realModel, streamErr := StreamOpenAIToAnthropic(w, sr.Body, requestedModel)
 	duration := time.Since(start).Milliseconds()
@@ -535,9 +536,7 @@ func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.Str
 func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	setSSEHeaders(w)
 
 	usage, firstByteMs, _ := StreamOpenAIPassthrough(w, sr.Body)
 	duration := time.Since(start).Milliseconds()

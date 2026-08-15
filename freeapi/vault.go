@@ -62,12 +62,14 @@ func (m *Manager) loadV2(disk *onDiskFile) error {
 			m.kdfMeta = disk.KDF
 			m.wrappedDEK = disk.WrappedDEK
 			m.recoveryMeta = disk.Recovery
-			// 旧文件无 masterSet 字段时：有恢复码即视为用户主动设过主密码
 			m.masterSet = disk.MasterSet || disk.Recovery != nil
 			m.config = m.decryptConfig(disk)
+			m.uiLocked = false
 			m.mu.Unlock()
 			return nil
 		}
+		// 自动解锁失败：钥匙串密码与磁盘不匹配，清除过期条目
+		_ = keystore.Delete(keystore.Account)
 	}
 	// 未能自动解锁：保留磁盘上的加密元数据，但仍加载供应商的明文元数据
 	// （id/名称/baseURL/模型列表/verified 等在磁盘上本就是明文，仅 apiKey 加密），
@@ -78,6 +80,7 @@ func (m *Manager) loadV2(disk *onDiskFile) error {
 	m.recoveryMeta = disk.Recovery
 	m.masterSet = disk.MasterSet || disk.Recovery != nil
 	m.dek = nil
+	m.uiLocked = true
 	m.config = m.decryptConfig(disk) // dek==nil：元数据照常填充，apiKey 留空
 	m.mu.Unlock()
 	return nil
@@ -97,35 +100,73 @@ func (m *Manager) unwrapDEK(password string, kdf *kdfParams, wrapped *sealed) ([
 }
 
 // IsLocked 是否已解锁（DEK 在内存中）
+// IsLocked 是否已锁定（UI 层锁定；DEK 可能仍在内存，代理调用不受影响）
 func (m *Manager) IsLocked() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.dek == nil
+	return m.uiLocked
 }
 
-// Lock 清除内存中的 DEK，下次需要主密码解锁。
+// Lock 锁定 UI（前端显示解锁界面），不清除内存中的 DEK，不影响代理调用。
 // 若尚未设置主密码（无 kdfMeta），则不做任何事（自动加密模式下锁定无意义）。
-// 锁定后仍从磁盘重新加载供应商的明文元数据（不含 apiKey），以便锁定状态下列出/选择模型。
 func (m *Manager) Lock() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.kdfMeta == nil {
 		return
 	}
-	m.dek = nil
-	// 重新读盘，用 dek==nil 的 decryptConfig 只加载明文字段
-	if data, err := os.ReadFile(m.path); err == nil {
-		var disk onDiskFile
-		if err := json.Unmarshal(data, &disk); err == nil && disk.Version >= 2 {
-			m.config = m.decryptConfig(&disk)
-			return
-		}
-	}
-	m.config = &Config{Providers: map[string]*ProviderConfig{}}
+	m.uiLocked = true
 }
 
-// Unlock 用主密码解锁（派生 KEK -> 解 DEK -> 解 apiKey）
+// TryAutoUnlock 尝试用钥匙串记住的密码自动解锁。
+// 返回 nil 表示解锁成功；钥匙串无密码或密码过期返回错误（过期条目会被清除）。
+func (m *Manager) TryAutoUnlock() error {
+	mp, err := keystore.Get(keystore.Account)
+	if err != nil || mp == "" {
+		return errors.New("钥匙串没有记住的密码")
+	}
+	if err := m.Unlock(mp); err != nil {
+		// 钥匙串密码过期：清除，避免 remembered 状态误导
+		_ = keystore.Delete(keystore.Account)
+		return err
+	}
+	return nil
+}
+
+// syncRememberedPassword 解锁成功后防御性同步钥匙串：
+// 若钥匙串中记着旧密码（与当前不匹配），用刚验证的正确密码覆盖。
+func (m *Manager) syncRememberedPassword(password string) {
+	if mp, err := keystore.Get(keystore.Account); err == nil && mp != "" && mp != password {
+		_ = keystore.Set(keystore.Account, password)
+	}
+}
+
+// Unlock 用主密码解锁（派生 KEK -> 解 DEK -> 解 apiKey）。
+// 若 DEK 已在内存（UI 锁定场景），只验证密码并解除 UI 锁定；
+// 若 DEK 不在内存（应用重启场景），从磁盘解密并加载配置。
 func (m *Manager) Unlock(password string) error {
+	m.mu.RLock()
+	dekInMemory := m.dek != nil
+	kdfMeta := m.kdfMeta
+	wrappedDEK := m.wrappedDEK
+	m.mu.RUnlock()
+
+	if dekInMemory {
+		// DEK 已在内存：UI 锁定，只需验证密码正确即可解除
+		if kdfMeta == nil || wrappedDEK == nil {
+			return errors.New("配置未加密，无需解锁")
+		}
+		if _, err := m.unwrapDEK(password, kdfMeta, wrappedDEK); err != nil {
+			return errors.New("密码错误或配置已损坏")
+		}
+		m.mu.Lock()
+		m.uiLocked = false
+		m.mu.Unlock()
+		m.syncRememberedPassword(password)
+		return nil
+	}
+
+	// DEK 不在内存：从磁盘解密
 	data, err := os.ReadFile(m.path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -150,7 +191,9 @@ func (m *Manager) Unlock(password string) error {
 	m.recoveryMeta = disk.Recovery
 	m.masterSet = disk.MasterSet || disk.Recovery != nil
 	m.config = m.decryptConfig(&disk)
+	m.uiLocked = false
 	m.mu.Unlock()
+	m.syncRememberedPassword(password)
 	return nil
 }
 
@@ -163,6 +206,7 @@ func (m *Manager) ResetVault() error {
 	m.wrappedDEK = nil
 	m.recoveryMeta = nil
 	m.masterSet = false
+	m.uiLocked = false
 	m.config = &Config{Providers: map[string]*ProviderConfig{}}
 	m.mu.Unlock()
 
@@ -241,13 +285,16 @@ func (m *Manager) Save() error {
 	m.mu.Lock()
 	cfg := m.config
 	needsInit := m.dek == nil
+	var initMaster string
 	if needsInit {
 		// 已存在加密元数据说明是"已加密但未解锁"，禁止写入
 		if m.kdfMeta != nil {
 			m.mu.Unlock()
 			return errors.New("当前已锁定，请先解锁主密码再保存")
 		}
-		if err := m.initializeEncryptionLocked(); err != nil {
+		var err error
+		initMaster, err = m.initializeEncryptionLocked()
+		if err != nil {
 			m.mu.Unlock()
 			return err
 		}
@@ -265,26 +312,35 @@ func (m *Manager) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.path, data, 0o600)
+	if err := os.WriteFile(m.path, data, 0o600); err != nil {
+		return err
+	}
+	// 写盘成功后才存钥匙串（保证磁盘和钥匙串一致）
+	if initMaster != "" {
+		_ = keystore.Set(keystore.Account, initMaster)
+	}
+	return nil
 }
 
-// initializeEncryptionLocked 生成 DEK + 随机主密码，用主密码包裹 DEK，并把主密码存入钥匙串。
-// 调用方持锁。用于无感升级（方案2：仅钥匙串自动解锁）。
-func (m *Manager) initializeEncryptionLocked() error {
+// initializeEncryptionLocked 生成 DEK + 随机主密码，用主密码包裹 DEK。
+// 调用方持锁。用于无感升级（仅钥匙串自动解锁）。
+// 返回随机主密码，由调用方在写盘成功后存入钥匙串。
+func (m *Manager) initializeEncryptionLocked() (string, error) {
 	dek := randomBytes(32)
 	master := randomRecoveryCode() // 24 位随机密码
 	salt := randomBytes(kdfSaltLen)
 	kek := deriveKey(master, salt)
 	wrapped, err := aesGCMSeal(kek, dek)
 	if err != nil {
-		return err
+		return "", err
 	}
 	m.dek = dek
 	m.kdfSalt = salt
-	// 写入内存元数据（Save 会一并落盘）
-	// 存钥匙串（失败不致命，下次会提示输密码）
-	_ = keystore.Set(keystore.Account, master)
-	return m.stageKeyMetaLocked(salt, wrapped)
+	// 写入内存元数据（Save 会一并落盘）；钥匙串由调用方在写盘后处理
+	if err := m.stageKeyMetaLocked(salt, wrapped); err != nil {
+		return "", err
+	}
+	return master, nil
 }
 
 // stageKeyMetaLocked 把 KDF/wrappedDEK 写入管理器常驻字段，Save 时一并落盘。
@@ -324,7 +380,7 @@ func (m *Manager) GetLocksetInfo() LocksetInfo {
 	hasVault := m.kdfMeta != nil
 	recovery := m.recoveryMeta != nil
 	masterSet := m.masterSet
-	locked := hasVault && m.dek == nil
+	locked := hasVault && m.uiLocked
 	m.mu.RUnlock()
 	// 钥匙串是否有记住的主密码（不暴露密码本身）
 	remembered := false
@@ -385,21 +441,35 @@ func (m *Manager) SetMasterPassword(password string, remember bool) (string, err
 	}
 	// 保存内存里的 providers 配置（apiKey 明文），Save 时会用 DEK 加密写盘
 	cfg := m.config
+	// 快照内存字段（用于 saveConfig 失败时回滚）
+	oldKdfMeta := m.kdfMeta
+	oldWrappedDEK := m.wrappedDEK
+	oldRecoveryMeta := m.recoveryMeta
+	oldMasterSet := m.masterSet
+	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
 
+	// 先写磁盘，成功后才更新钥匙串
+	if err := m.saveConfig(cfg); err != nil {
+		// 回滚内存字段
+		m.mu.Lock()
+		m.kdfMeta = oldKdfMeta
+		m.wrappedDEK = oldWrappedDEK
+		m.recoveryMeta = oldRecoveryMeta
+		m.masterSet = oldMasterSet
+		m.kdfSalt = oldKdfSalt
+		m.mu.Unlock()
+		return "", err
+	}
 	if remember {
 		_ = keystore.Set(keystore.Account, password)
 	} else {
 		_ = keystore.Delete(keystore.Account)
 	}
-	if err := m.saveConfig(cfg); err != nil {
-		return "", err
-	}
-	// 不记住密码：立即清空内存中的 DEK，锁定当前会话，设置即时生效。
+	// 不记住密码：立即锁定 UI 会话（不清 DEK，代理调用不受影响）。
 	if !remember {
 		m.mu.Lock()
-		m.dek = nil
-		m.config = &Config{Providers: map[string]*ProviderConfig{}}
+		m.uiLocked = true
 		m.mu.Unlock()
 	}
 	return recCode, nil
@@ -443,13 +513,31 @@ func (m *Manager) ClearMasterPassword() error {
 	m.recoveryMeta = nil
 	m.masterSet = false
 	cfg := m.config
+	// 快照内存字段（用于 saveConfig 失败时回滚）
+	oldKdfMeta := m.kdfMeta
+	oldWrappedDEK := m.wrappedDEK
+	oldRecoveryMeta := m.recoveryMeta
+	oldMasterSet := m.masterSet
+	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
 
-	// 随机密码交给钥匙串，启动时自动解锁；删除用户可能记住的旧主密码
-	if err := keystore.Set(keystore.Account, master); err != nil {
-		return fmt.Errorf("写入钥匙串失败: %w", err)
+	// 先写磁盘，成功后才更新钥匙串
+	if err := m.saveConfig(cfg); err != nil {
+		// 回滚内存字段
+		m.mu.Lock()
+		m.kdfMeta = oldKdfMeta
+		m.wrappedDEK = oldWrappedDEK
+		m.recoveryMeta = oldRecoveryMeta
+		m.masterSet = oldMasterSet
+		m.kdfSalt = oldKdfSalt
+		m.mu.Unlock()
+		return err
 	}
-	return m.saveConfig(cfg)
+	// 随机密码交给钥匙串，启动时自动解锁
+	if err := keystore.Set(keystore.Account, master); err != nil {
+		return fmt.Errorf("配置已保存，但钥匙串写入失败: %w（下次启动需手动输入）", err)
+	}
+	return nil
 }
 
 // RecoverWithCode 用恢复码重置主密码：解出 DEK，再用新密码重新包裹。
@@ -512,21 +600,35 @@ func (m *Manager) RecoverWithCode(recoveryCode, newPassword string, remember boo
 		Salt: base64.StdEncoding.EncodeToString(newRecSalt), WrappedDEK: *newRecWrapped,
 	}
 	cfg := m.config
+	// 快照内存字段（用于 saveConfig 失败时回滚）
+	oldKdfMeta := m.kdfMeta
+	oldWrappedDEK := m.wrappedDEK
+	oldRecoveryMeta := m.recoveryMeta
+	oldMasterSet := m.masterSet
+	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
 
+	// 先写磁盘，成功后才更新钥匙串
+	if err := m.saveConfig(cfg); err != nil {
+		// 回滚内存字段
+		m.mu.Lock()
+		m.kdfMeta = oldKdfMeta
+		m.wrappedDEK = oldWrappedDEK
+		m.recoveryMeta = oldRecoveryMeta
+		m.masterSet = oldMasterSet
+		m.kdfSalt = oldKdfSalt
+		m.mu.Unlock()
+		return "", err
+	}
 	if remember {
 		_ = keystore.Set(keystore.Account, newPassword)
 	} else {
 		_ = keystore.Delete(keystore.Account)
 	}
-	if err := m.saveConfig(cfg); err != nil {
-		return "", err
-	}
-	// 不记住密码：立即锁定，需用新密码解锁
+	// 不记住密码：立即锁定 UI 会话（不清 DEK）。
 	if !remember {
 		m.mu.Lock()
-		m.dek = nil
-		m.config = &Config{Providers: map[string]*ProviderConfig{}}
+		m.uiLocked = true
 		m.mu.Unlock()
 	}
 	return recCode, nil

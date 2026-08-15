@@ -394,6 +394,7 @@ func StreamOpenAIToResponses(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 	flusher, canFlush := w.(http.Flusher)
 	start := time.Now()
 	var firstByteMs int64
+	var writeErr error
 
 	flush := func() {
 		if canFlush {
@@ -401,8 +402,14 @@ func StreamOpenAIToResponses(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 		}
 	}
 	writeEvent := func(event string, data interface{}) {
+		if writeErr != nil {
+			return
+		}
 		jsonData, _ := json.Marshal(data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+		_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+		if err != nil && writeErr == nil {
+			writeErr = err
+		}
 		if firstByteMs == 0 {
 			firstByteMs = time.Since(start).Milliseconds()
 		}
@@ -472,6 +479,9 @@ func StreamOpenAIToResponses(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 	}
 
 	for scanner.Scan() {
+		if writeErr != nil {
+			break // 客户端已断开
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue

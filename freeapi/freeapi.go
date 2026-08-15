@@ -107,6 +107,7 @@ type Manager struct {
 	wrappedDEK     *sealed
 	recoveryMeta   *recoveryBlob
 	masterSet      bool // 用户是否主动设置了主密码（false=自动加密，随机密码存钥匙串）
+	uiLocked       bool // UI 层锁定：前端显示解锁界面，不影响代理调用
 }
 
 // NewManager 创建并加载配置（文件不存在时用空配置）。

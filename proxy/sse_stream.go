@@ -51,10 +51,17 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 	flusher, canFlush := w.(http.Flusher)
 	start := time.Now()
 	var firstByteMs int64
+	var writeErr error // 客户端断开时记录写入错误，用于早退
 
 	writeEvent := func(event string, data interface{}) {
+		if writeErr != nil {
+			return
+		}
 		jsonData, _ := json.Marshal(data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+		_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, string(jsonData))
+		if err != nil && writeErr == nil {
+			writeErr = err
+		}
 		if firstByteMs == 0 {
 			firstByteMs = time.Since(start).Milliseconds()
 		}
@@ -86,6 +93,9 @@ func StreamOpenAIToAnthropic(w io.Writer, r io.Reader, model string) (*OpenAIUsa
 	var firstParseErr error
 	var firstChoicesCount int = -1
 	for scanner.Scan() {
+		if writeErr != nil {
+			break // 客户端已断开，停止读上游
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
@@ -397,6 +407,7 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 	start := time.Now()
 	var firstByteMs int64
 	var capturedUsage *OpenAIUsage
+	var writeErr error
 	sawDone := false
 
 	scanner := bufio.NewScanner(r)
@@ -407,6 +418,9 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 	buffering := true
 
 	for scanner.Scan() {
+		if writeErr != nil {
+			break // 客户端已断开
+		}
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
@@ -419,7 +433,9 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 			fmt.Fprintln(&buf, line)
 			// 确认有 data: 行后，刷新缓冲到 w 并切换到直写模式
 			if firstByteMs > 0 {
-				w.Write(buf.Bytes())
+				if _, err := w.Write(buf.Bytes()); err != nil && writeErr == nil {
+					writeErr = err
+				}
 				buf.Reset()
 				buffering = false
 				if canFlush {
@@ -427,8 +443,9 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 				}
 			}
 		} else {
-			// 原样透传每一行（保留 SSE 格式，空行也会写出 \n）
-			fmt.Fprintln(w, line)
+			if _, err := fmt.Fprintln(w, line); err != nil && writeErr == nil {
+				writeErr = err
+			}
 			if canFlush {
 				flusher.Flush()
 			}
@@ -451,7 +468,8 @@ func StreamOpenAIPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, err
 		return capturedUsage, firstByteMs, fmt.Errorf("读取 SSE 流失败: %w", err)
 	}
 	// 上游流截断时补发 [DONE]，避免客户端连接异常关闭
-	if firstByteMs > 0 && !sawDone {
+	// 客户端已断开时不补发
+	if firstByteMs > 0 && !sawDone && writeErr == nil {
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		if canFlush {
 			flusher.Flush()
@@ -471,6 +489,7 @@ func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, 
 	flusher, canFlush := w.(http.Flusher)
 	start := time.Now()
 	var firstByteMs int64
+	var writeErr error
 	usage := &OpenAIUsage{}
 
 	scanner := bufio.NewScanner(r)
@@ -482,6 +501,9 @@ func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, 
 	buffering := true
 
 	for scanner.Scan() {
+		if writeErr != nil {
+			break // 客户端已断开
+		}
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
@@ -494,7 +516,9 @@ func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, 
 			fmt.Fprintln(&buf, line)
 			// 确认有 data: 行后，刷新缓冲到 w 并切换到直写模式
 			if firstByteMs > 0 {
-				w.Write(buf.Bytes())
+				if _, err := w.Write(buf.Bytes()); err != nil && writeErr == nil {
+					writeErr = err
+				}
 				buf.Reset()
 				buffering = false
 				if canFlush {
@@ -502,7 +526,9 @@ func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, 
 				}
 			}
 		} else {
-			fmt.Fprintln(w, line)
+			if _, err := fmt.Fprintln(w, line); err != nil && writeErr == nil {
+				writeErr = err
+			}
 			if canFlush {
 				flusher.Flush()
 			}
@@ -548,7 +574,7 @@ func StreamAnthropicPassthrough(w io.Writer, r io.Reader) (*OpenAIUsage, int64, 
 	if err := scanner.Err(); err != nil {
 		return usage, firstByteMs, fmt.Errorf("读取 SSE 流失败: %w", err)
 	}
-	if firstByteMs > 0 && !sawStop {
+	if firstByteMs > 0 && !sawStop && writeErr == nil {
 		// 此时 buffering 一定为 false（有 data: 行才可能 firstByteMs > 0）
 		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 		if canFlush {

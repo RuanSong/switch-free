@@ -19,10 +19,6 @@ import (
 	"switchfree/version"
 )
 
-// IdleLockSeconds 无操作多少秒后自动锁定（需要主密码解锁）。默认 300 秒（5 分钟），
-// 打包时可用 -ldflags "-X switchfree/service.IdleLockSeconds=600" 覆盖。设为 0 关闭自动锁定。
-var IdleLockSeconds = 300
-
 // FreeAPIService 免费 API 供应商管理服务（暴露给前端）
 type FreeAPIService struct {
 	mgr     *freeapi.Manager
@@ -515,11 +511,12 @@ func (s *FreeAPIService) GetLockStatus() freeapi.LocksetInfo {
 	return s.mgr.GetLocksetInfo()
 }
 
-// Unlock 用主密码解锁
+// Unlock 用主密码解锁（UI 锁定或启动锁定均适用）
 func (s *FreeAPIService) Unlock(password string) error {
 	if err := s.mgr.Unlock(password); err != nil {
 		return err
 	}
+	// 始终重建上游：DEK 首次从磁盘加载时上游需要绑定 apiKey；UI 解锁时无副作用。
 	go s.refresh()
 	return nil
 }
@@ -553,11 +550,19 @@ func (s *FreeAPIService) ClearRememberedPassword() error {
 	return s.mgr.ClearRememberedPassword()
 }
 
-// Lock 立即锁定（清除内存 DEK），下次需要主密码解锁
+// Lock 锁定 UI（不影响代理调用，不重建上游）
 func (s *FreeAPIService) Lock() {
 	s.mgr.Lock()
-	// 重建上游：用空 key 重绑定，使锁定后无法再用旧密钥发起调用；模型列表仍保留。
-	s.refresh()
+}
+
+// TryAutoUnlock 尝试用钥匙串记住的密码自动解锁（不暴露密码明文给前端）。
+// 成功返回 true；钥匙串无密码或密码过期返回 false（过期条目会被清除）。
+func (s *FreeAPIService) TryAutoUnlock() bool {
+	if err := s.mgr.TryAutoUnlock(); err != nil {
+		return false
+	}
+	go s.refresh()
+	return true
 }
 
 // ClearMasterPassword 清除用户主密码，回到自动加密模式（随机密码存钥匙串，启动自动解锁）。
@@ -568,11 +573,6 @@ func (s *FreeAPIService) ClearMasterPassword() error {
 	}
 	s.refresh()
 	return nil
-}
-
-// GetIdleLockSeconds 返回无操作自动锁定秒数（构建时可注入）
-func (s *FreeAPIService) GetIdleLockSeconds() int {
-	return IdleLockSeconds
 }
 
 // ResetVault 销毁本地加密配置（忘记密码兜底，数据会丢失）

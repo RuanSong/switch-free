@@ -91,6 +91,8 @@ type Config struct {
 type ProviderSettings struct {
 	// AutoBenchmarkOnEdit 进入供应商编辑时自动拉取模型并批量测评
 	AutoBenchmarkOnEdit bool `json:"autoBenchmarkOnEdit"`
+	// IdleAutoLock 闲置时自动锁定供应商界面（默认开启）
+	IdleAutoLock bool `json:"idleAutoLock"`
 }
 
 // DefaultConfigPath 默认配置文件路径
@@ -123,6 +125,7 @@ func Defaults() *Config {
 		ActivePreset:    "",
 		Provider: ProviderSettings{
 			AutoBenchmarkOnEdit: DefaultAutoBenchmarkOnEdit == "true",
+			IdleAutoLock:        true,
 		},
 		AutoUpdate: UpdateConfig{
 			Enabled:  true,
@@ -314,6 +317,7 @@ func (c *Config) Clone() *Config {
 		APIKey:          c.APIKey,
 		AutoUpdate:      c.AutoUpdate,
 		ActivePreset:    c.ActivePreset,
+		Provider:        c.Provider,
 		path:            c.path,
 	}
 	// 方案列表必须深拷贝，否则前端改动会串到 Manager 持有的配置上
@@ -348,6 +352,7 @@ func (c *Config) Update(newCfg *Config) error {
 	c.AutoUpdate = newCfg.AutoUpdate
 	c.Presets = newCfg.Presets
 	c.ActivePreset = newCfg.ActivePreset
+	c.Provider = newCfg.Provider
 	c.mu.Unlock()
 
 	return c.Save()
