@@ -418,8 +418,10 @@ func isResponseContentEmpty(oai *OpenAIResponse) bool {
 
 // setSSEHeaders 设置 SSE 流式响应头（含防中间件截断标记）
 func setSSEHeaders(w http.ResponseWriter) {
-	setSSEHeaders(w)
-	w.Header().Set("X-Accel-Buffering", "no") // 防 nginx 等中间件缓冲导致 SSE 截断
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 }
 
 // writeAnthropicError 写 Anthropic 格式错误响应
@@ -435,6 +437,23 @@ func writeAnthropicError(w http.ResponseWriter, status int, errType, message str
 	})
 }
 
+// writeAnthropicSSEError 在已发送 SSE 头（200）的流上，通过 SSE error 事件发送错误
+func writeAnthropicSSEError(w http.ResponseWriter, errType, message string) {
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", func() string {
+		b, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    errType,
+				"message": message,
+			},
+		})
+		return string(b)
+	}())
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // writeOpenAIError 写 OpenAI 格式错误响应
 func writeOpenAIError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -444,6 +463,21 @@ func writeOpenAIError(w http.ResponseWriter, status int, message string) {
 			"message": message,
 		},
 	})
+}
+
+// writeOpenAISSEError 在已发送 SSE 头（200）的流上，通过 SSE error 事件发送 OpenAI 格式错误
+func writeOpenAISSEError(w http.ResponseWriter, message string) {
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", func() string {
+		b, _ := json.Marshal(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": message,
+			},
+		})
+		return string(b)
+	}())
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // fillStreamLog 填充流式日志的 usage/费用字段（从转换器捕获的 usage）
@@ -477,7 +511,7 @@ func (s *Server) streamAnthropicPassthrough(w http.ResponseWriter, sr *upstream.
 	duration := time.Since(start).Milliseconds()
 
 	if firstByteMs == 0 {
-		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
+		writeAnthropicSSEError(w, "upstream_error", "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/messages", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
 		entry.Source = source
@@ -502,15 +536,13 @@ func (s *Server) streamAnthropicResponse(w http.ResponseWriter, sr *upstream.Str
 	usage, firstByteMs, realModel, streamErr := StreamOpenAIToAnthropic(w, sr.Body, requestedModel)
 	duration := time.Since(start).Milliseconds()
 
-	// 没发任何事件 -> 上游空流或连接中断（常见于客户端切换时 ctx 取消），
-	// 返回 502 错误，避免 200 + 空 body 让客户端报 "empty or malformed response"
 	if firstByteMs == 0 {
 		errMsg := fmt.Sprintf("empty stream (status=%d, dur=%dms)", sr.StatusCode, duration)
 		if streamErr != nil {
 			errMsg += ": " + streamErr.Error()
 		}
 		fmt.Printf("[switch-dev] 流式空转: up=%s model=%s %s\n", upName, requestedModel, errMsg)
-		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "上游返回空流或连接中断")
+		writeAnthropicSSEError(w, "upstream_error", "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, errMsg, "POST", "/v1/messages", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
 		entry.Source = source
@@ -543,7 +575,7 @@ func (s *Server) streamOpenAIResponse(w http.ResponseWriter, sr *upstream.Stream
 
 	// 没发任何事件 -> 上游空流或连接中断，返回 502（避免 200 + 空 body）
 	if firstByteMs == 0 {
-		writeOpenAIError(w, http.StatusBadGateway, "上游返回空流或连接中断")
+		writeOpenAISSEError(w, "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/chat/completions", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
 		entry.Source = source

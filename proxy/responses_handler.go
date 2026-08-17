@@ -176,7 +176,7 @@ func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.Str
 	duration := time.Since(start).Milliseconds()
 
 	if firstByteMs == 0 {
-		writeResponsesError(w, http.StatusBadGateway, "上游返回空流或连接中断")
+		writeResponsesSSEError(w, "上游返回空流或连接中断")
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/responses", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
 		entry.Source = source
@@ -358,4 +358,20 @@ func writeResponsesError(w http.ResponseWriter, status int, message string) {
 			"type":    "server_error",
 		},
 	})
+}
+
+// writeResponsesSSEError 在已发送 SSE 头（200）的流上，通过 SSE error 事件发送 Responses 格式错误
+func writeResponsesSSEError(w http.ResponseWriter, message string) {
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", func() string {
+		b, _ := json.Marshal(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": message,
+				"type":    "server_error",
+			},
+		})
+		return string(b)
+	}())
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

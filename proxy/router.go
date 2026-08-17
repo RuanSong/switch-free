@@ -266,6 +266,8 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 }
 
 // callUpstreamStream 流式上游分发（Anthropic/OpenAI 入口共用）
+// 注意：返回的 StreamResponse.Body 关闭时才会 cancel context，
+// 避免函数返回后 context 过早取消导致流读取失败。
 func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*upstream.StreamResponse, string, string, error) {
 	var requestedModel string
 	switch b := body.(type) {
@@ -282,8 +284,14 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 		chain = directChain(requestedModel)
 	}
 	ctx, cancel := context.WithTimeout(ctx, chainTimeout)
-	defer cancel()
-	return s.executeChainStream(ctx, body, chain, requestedModel)
+	sr, upName, usedModel, err := s.executeChainStream(ctx, body, chain, requestedModel)
+	if err != nil || sr == nil {
+		cancel()
+		return sr, upName, usedModel, err
+	}
+	// 流式：把 cancel 绑到 Body.Close，确保流读完/关掉时才 cancel context
+	sr.Body = &cancelReadCloser{rc: sr.Body, cancel: cancel}
+	return sr, upName, usedModel, nil
 }
 
 // pickUpstream 按 upstream 名获取适配器
@@ -459,6 +467,19 @@ var _counter int64
 
 func nowMillis() int64                   { return atomic.AddInt64(&_counter, 1) }
 func (s *Server) incRequests() int64     { return atomic.AddInt64(&s.requests, 1) }
+
+// cancelReadCloser 包装 io.ReadCloser，在 Close 时同时调用 cancel 释放 context
+type cancelReadCloser struct {
+	rc     io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelReadCloser) Read(p []byte) (int, error) { return c.rc.Read(p) }
+func (c *cancelReadCloser) Close() error {
+	err := c.rc.Close()
+	c.cancel()
+	return err
+}
 func timestampNow() string               { return time.Now().Format("15:04:05") }
 
 // ====== 以下来自旧 router.go（被 handlers.go 引用） ======
