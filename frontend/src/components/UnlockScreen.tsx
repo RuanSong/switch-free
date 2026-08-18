@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FreeAPIService } from "../../bindings/switchfree/service";
+import { ProviderAPIService } from "../../bindings/switchdev/service";
 
 interface Props {
   onUnlocked: () => void;
@@ -25,7 +25,7 @@ export default function UnlockScreen({ onUnlocked }: Props) {
   const doReset = async () => {
     setResetting(true);
     try {
-      await FreeAPIService.ResetVault();
+      await ProviderAPIService.ResetVault();
       onUnlocked(); // 重置后视为"解锁"，进入空列表
     } catch (e) {
       setError(String(e));
@@ -39,7 +39,7 @@ export default function UnlockScreen({ onUnlocked }: Props) {
     setBusy(true);
     setError("");
     try {
-      await FreeAPIService.Unlock(password);
+      await ProviderAPIService.Unlock(password);
       onUnlocked();
     } catch (e) {
       setError(String(e));
@@ -61,8 +61,8 @@ export default function UnlockScreen({ onUnlocked }: Props) {
     setRecoverMsg("");
     try {
       // 恢复成功后返回新恢复码，这里用新密码直接解锁（新恢复码会在进入后由安全设置查看）
-      await FreeAPIService.RecoverWithCode(recCode.trim(), newPass, false);
-      await FreeAPIService.Unlock(newPass);
+      await ProviderAPIService.RecoverWithCode(recCode.trim(), newPass, false);
+      await ProviderAPIService.Unlock(newPass);
       onUnlocked();
     } catch (e) {
       setRecoverMsg(String(e));

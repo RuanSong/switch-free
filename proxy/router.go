@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"switchfree/upstream"
+	"switchdev/upstream"
 )
 
 // ModelRef 配置中的模型引用（类型别名，避免循环引用 config 包）
@@ -45,21 +46,22 @@ func directChain(requestedModel string) []ModelRef {
 
 // ConfigResolver 配置解析接口（Server 持有，避免直接依赖 config 包）
 type ConfigResolver interface {
-	Resolve(requestedModel string) []ModelRef
+	Resolve(requestedModel string, userAgent string) []ModelRef
 	GetMode() string
 	GetAPIKey() string
+	GetAuthEnabled() bool
 }
 
 // callUpstreamAnthropic Anthropic 入口的上游分发（基于配置链遍历）
 // 返回 (响应, 上游名, 实际用到的模型, 错误)
-func (s *Server) callUpstreamAnthropic(ctx context.Context, body *AnthropicRequest) (*upstream.Response, string, string, error) {
+func (s *Server) callUpstreamAnthropic(ctx context.Context, body *AnthropicRequest, userAgent string) (*upstream.Response, string, string, error) {
 	requestedModel := body.Model
 	if requestedModel == "" {
 		requestedModel = "auto"
 	}
-	chain := s.ConfigResolver.Resolve(requestedModel)
+	chain := s.ConfigResolver.Resolve(requestedModel, userAgent)
 	if isDirect(ctx) {
-		chain = directChain(requestedModel) // 直连模式：跳过降级链，只打指定模型
+		chain = directChain(requestedModel)
 	}
 	ctx, cancel := context.WithTimeout(ctx, chainTimeout)
 	defer cancel()
@@ -67,12 +69,12 @@ func (s *Server) callUpstreamAnthropic(ctx context.Context, body *AnthropicReque
 }
 
 // callUpstreamOpenAI OpenAI 直通入口的上游分发
-func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]interface{}) (*upstream.Response, string, string, error) {
+func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]interface{}, userAgent string) (*upstream.Response, string, string, error) {
 	requestedModel, _ := rawBody["model"].(string)
 	if requestedModel == "" {
 		requestedModel = "auto"
 	}
-	chain := s.ConfigResolver.Resolve(requestedModel)
+	chain := s.ConfigResolver.Resolve(requestedModel, userAgent)
 	if isDirect(ctx) {
 		chain = directChain(requestedModel)
 	}
@@ -82,8 +84,8 @@ func (s *Server) callUpstreamOpenAI(ctx context.Context, rawBody map[string]inte
 }
 
 // executeChain 遍历配置链，尝试每个模型引用，任意成功即返回
-// 权重降级（仅针对 free 模型）：healthy 的 free 模型按配置顺序优先，
-// unhealthy 的 free 模型排到链尾最后尝试；内置 4 上游严格按配置顺序。
+// 权重降级（仅针对 provider 模型）：healthy 的 provider 模型按配置顺序优先，
+// unhealthy 的 provider 模型排到链尾最后尝试；内置 4 上游严格按配置顺序。
 // 返回 (响应, 上游名, 实际用到的模型, 错误)
 func (s *Server) executeChain(ctx context.Context, body interface{}, chain []ModelRef, requestedModel string) (*upstream.Response, string, string, error) {
 	var lastErr error
@@ -93,10 +95,10 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 	ordered := make([]ModelRef, 0, len(chain))
 	degraded := make([]ModelRef, 0, len(chain))
 	for _, ref := range chain {
-		// 只对 free 模型做健康分组；内置 4 上游严格按配置顺序
-		if IsFreeModel(ref.Model) {
-			pid, mid := ParseFreeModel(ref.Model)
-			if pid != "" && !IsFreeModelHealthy(pid, mid) {
+		// 只对 provider 模型做健康分组；内置 4 上游严格按配置顺序
+		if IsProviderModel(ref.Model) {
+			pid, mid := ParseProviderModel(ref.Model)
+			if pid != "" && !IsProviderModelHealthy(pid, mid) {
 				degraded = append(degraded, ref)
 				continue
 			}
@@ -171,18 +173,19 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 // executeChainStream 流式版 executeChain：只走支持 StreamCaller 的上游
 // 返回 nil, "", "", nil 表示无流式上游可用（调用方回退伪流式）
 // 返回 nil, up, "", err 表示有流式上游但全部失败
-// 权重降级：仅对 free 模型分组（healthy 优先，unhealthy 排链尾）
+// 权重降级：仅对 provider 模型分组（healthy 优先，unhealthy 排链尾）
 func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain []ModelRef, requestedModel string) (*upstream.StreamResponse, string, string, error) {
 	var lastErr error
 	var lastUpstream string
 	triedStream := false
+	streamUnsupported := false // 上游明确不支持/拒绝流式（如虚拟 406 灰度），应让调用方回退非流式
 
 	ordered := make([]ModelRef, 0, len(chain))
 	degraded := make([]ModelRef, 0, len(chain))
 	for _, ref := range chain {
-		if IsFreeModel(ref.Model) {
-			pid, mid := ParseFreeModel(ref.Model)
-			if pid != "" && !IsFreeModelHealthy(pid, mid) {
+		if IsProviderModel(ref.Model) {
+			pid, mid := ParseProviderModel(ref.Model)
+			if pid != "" && !IsProviderModelHealthy(pid, mid) {
 				degraded = append(degraded, ref)
 				continue
 			}
@@ -231,6 +234,14 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 			if len(snippet) > 120 {
 				snippet = snippet[:120]
 			}
+			// 虚拟 406：上游明确拒绝流式（如 JoyCode COLOR_FORWARD_EXCEPTION/AI_GRAY 灰度），
+			// 不应继续找下一个流式上游，而是让 handler 回退到非流式 Call + 伪流式。
+			if sr.StatusCode == 406 {
+				fmt.Printf("[switch-dev] %s/%s 流式被上游拒绝（406），回退非流式: %s\n", ref.Upstream, ref.Model, snippet)
+				streamUnsupported = true
+				lastUpstream = ref.Upstream
+				break
+			}
 			fmt.Printf("[switch-dev] %s/%s 流式上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, sr.StatusCode, snippet)
 			lastErr = fmt.Errorf("upstream error: %s", snippet)
 			lastUpstream = ref.Upstream
@@ -259,8 +270,8 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 		return sr, ref.Upstream, ref.Model, nil
 	}
 
-	if !triedStream {
-		return nil, "", "", nil // 无流式上游可用，回退伪流式
+	if !triedStream || streamUnsupported {
+		return nil, "", "", nil // 无流式上游可用，或上游明确拒绝流式（灰度），回退伪流式
 	}
 	return nil, lastUpstream, "", lastErr // 有流式上游但全失败
 }
@@ -268,7 +279,7 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 // callUpstreamStream 流式上游分发（Anthropic/OpenAI 入口共用）
 // 注意：返回的 StreamResponse.Body 关闭时才会 cancel context，
 // 避免函数返回后 context 过早取消导致流读取失败。
-func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*upstream.StreamResponse, string, string, error) {
+func (s *Server) callUpstreamStream(ctx context.Context, body interface{}, userAgent string) (*upstream.StreamResponse, string, string, error) {
 	var requestedModel string
 	switch b := body.(type) {
 	case *AnthropicRequest:
@@ -279,7 +290,7 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 	if requestedModel == "" {
 		requestedModel = "auto"
 	}
-	chain := s.ConfigResolver.Resolve(requestedModel)
+	chain := s.ConfigResolver.Resolve(requestedModel, userAgent)
 	if isDirect(ctx) {
 		chain = directChain(requestedModel)
 	}
@@ -295,7 +306,7 @@ func (s *Server) callUpstreamStream(ctx context.Context, body interface{}) (*ups
 }
 
 // pickUpstream 按 upstream 名获取适配器
-// 内置 4 上游走 switch；free API 供应商（provider id）走 FreeAPIs map
+// 内置 4 上游走 switch；provider API 供应商（provider id）走 ProviderAPIs map
 func (s *Server) pickUpstream(name string) upstream.Upstream {
 	switch name {
 	case "joycode":
@@ -307,8 +318,8 @@ func (s *Server) pickUpstream(name string) upstream.Upstream {
 	case "workbuddy":
 		return s.WorkBuddy
 	}
-	// free API 供应商（多供应商平级）
-	if free := s.GetFreeAPI(name); free != nil {
+	// provider API 供应商（多供应商平级）
+	if free := s.GetProviderAPI(name); free != nil {
 		return free
 	}
 	return nil
@@ -361,8 +372,8 @@ func (s *Server) buildAnthropicOutboundBody(body *AnthropicRequest, ref ModelRef
 	if s.upstreamProtocol(ref) == "anthropic" {
 		cp := *body
 		cp.Model = ref.Model
-		if IsFreeModel(ref.Model) {
-			cp.Model = stripFreePrefix(ref.Model)
+		if IsProviderModel(ref.Model) {
+			cp.Model = stripProviderPrefix(ref.Model)
 		}
 		if !stream {
 			cp.Stream = nil // 去掉 stream:true，让上游返回 JSON 而非 SSE
@@ -386,9 +397,9 @@ func (s *Server) buildOpenAIOutboundBody(body map[string]interface{}, ref ModelR
 func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef, stream bool) ([]byte, error) {
 	cp := *body
 	cp.Model = ref.Model
-	// free API 模型：还原为原始 model id（去掉 free/<provider>/ 前缀）
-	if IsFreeModel(ref.Model) {
-		cp.Model = stripFreePrefix(ref.Model)
+	// provider API 模型：还原为原始 model id（去掉 provider/<provider>/ 前缀）
+	if IsProviderModel(ref.Model) {
+		cp.Model = stripProviderPrefix(ref.Model)
 	}
 	var oaiBody *OpenAIRequest
 	switch ref.Upstream {
@@ -411,8 +422,8 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef, 
 	// free 供应商：AnthropicToOpenAI 内部会把未知 model 经 ResolveModel 兜底成
 	// AutoModel(glm-5.1)，这里强制改回剥离前缀后的真实上游 model id，
 	// 否则会把 glm-5.1 发到该供应商的 baseURL 导致 model_invalid。
-	if IsFreeModel(ref.Model) {
-		oaiBody.Model = stripFreePrefix(ref.Model)
+	if IsProviderModel(ref.Model) {
+		oaiBody.Model = stripProviderPrefix(ref.Model)
 	}
 	return json.Marshal(oaiBody)
 }
@@ -431,9 +442,9 @@ func (s *Server) buildOpenAIPassthroughBody(body map[string]interface{}, ref Mod
 		}
 	} else if ref.Upstream == "workbuddy" {
 		model = stripWbPrefix(ref.Model)
-	} else if IsFreeModel(ref.Model) {
-		// free API 模型：还原为原始 model id
-		model = stripFreePrefix(ref.Model)
+	} else if IsProviderModel(ref.Model) {
+		// provider API 模型：还原为原始 model id
+		model = stripProviderPrefix(ref.Model)
 	}
 	cp["model"] = model
 	cp["stream"] = false
@@ -444,7 +455,7 @@ func (s *Server) buildOpenAIPassthroughBody(body map[string]interface{}, ref Mod
 func (s *Server) recordFallbackLog(requestedModel string, ref ModelRef, reason, detail string) {
 	entry := &LogEntry{
 		Model:     requestedModel,
-		Upstream:  ref.Upstream + "/" + ref.Model,
+		Upstream:  ref.Upstream,
 		Status:    "fallback",
 		ErrorMsg:  fmt.Sprintf("[%s] %s", reason, detail),
 	}
@@ -455,7 +466,7 @@ func (s *Server) recordFallbackLog(requestedModel string, ref ModelRef, reason, 
 func (s *Server) recordSkipLog(requestedModel string, ref ModelRef, reason string) {
 	entry := &LogEntry{
 		Model:     requestedModel,
-		Upstream:  ref.Upstream + "/" + ref.Model,
+		Upstream:  ref.Upstream,
 		Status:    "fallback",
 		ErrorMsg:  fmt.Sprintf("[%s] 跳过（凭据无效）", reason),
 	}
@@ -507,9 +518,23 @@ func isUpstreamErrorResponse(resp *upstream.Response) bool {
 	return hasError || hasCode || hasErrorCode
 }
 
-// upstreamErrSnippet 取上游错误响应的前 120 字符
+// sensitiveFieldRe 匹配错误响应中可能回显的敏感字段（apiKey/token/secret/password/authorization 等），
+// 引号内的字符串值统一替换为 "***"。大小写不敏感。
+var sensitiveFieldRe = regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|passwd|authorization|x-api-key|client[_-]?secret)"?\s*[:=]\s*")([^"]*)(")`)
+
+// bearerTokenRe 匹配 "Bearer <token>" 形式（HTTP 头或错误信息里回显的）
+var bearerTokenRe = regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._\-]+`)
+
+// redactSensitive 把文本中的敏感字段值与 Bearer token 掩码，避免密钥片段进日志。
+func redactSensitive(s string) string {
+	s = sensitiveFieldRe.ReplaceAllString(s, "${1}***${3}")
+	s = bearerTokenRe.ReplaceAllString(s, "${1}***")
+	return s
+}
+
+// upstreamErrSnippet 取上游错误响应（先脱敏）的前 120 字符，用于降级日志
 func upstreamErrSnippet(resp *upstream.Response) string {
-	trimmed := strings.TrimSpace(string(resp.Body))
+	trimmed := strings.TrimSpace(redactSensitive(string(resp.Body)))
 	if len(trimmed) > 120 {
 		return trimmed[:120]
 	}

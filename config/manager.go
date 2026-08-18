@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"switchfree/proxy"
+	"switchdev/proxy"
 )
 
 // Manager 配置管理器，线程安全，支持热重载
@@ -37,10 +37,10 @@ func (m *Manager) Get() *Config {
 }
 
 // Resolve 解析请求模型（线程安全，直接用当前配置的 Resolve）
-func (m *Manager) Resolve(requestedModel string) []proxy.ModelRef {
+func (m *Manager) Resolve(requestedModel string, userAgent string) []proxy.ModelRef {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.config.Resolve(requestedModel)
+	return m.config.Resolve(requestedModel, userAgent)
 }
 
 // GetMode 获取当前模式
@@ -55,6 +55,13 @@ func (m *Manager) GetAPIKey() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.config.GetAPIKey()
+}
+
+// GetAuthEnabled 获取鉴权开关
+func (m *Manager) GetAuthEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.GetAuthEnabled()
 }
 
 // SaveConfig 保存并热加载新配置
@@ -145,11 +152,14 @@ func (m *Manager) SavePreset(name string) error {
 
 	cfg := m.Get()
 	snap := Preset{
-		Name:            name,
-		Mode:            cfg.Mode,
-		AutoChain:       copyChain(cfg.AutoChain),
-		ManualFallbacks: copyFallbacks(cfg.ManualFallbacks),
-		GlobalFallback:  cfg.GlobalFallback,
+		Name:             name,
+		Mode:             cfg.Mode,
+		AutoChain:        copyChain(cfg.AutoChain),
+		ManualFallbacks:  copyFallbacks(cfg.ManualFallbacks),
+		GlobalFallback:   cfg.GlobalFallback,
+		UARoutingEnabled: cfg.UARoutingEnabled,
+		UARules:          copyUARules(cfg.UARules),
+		UAGlobalFallback: cfg.UAGlobalFallback,
 	}
 
 	if idx := findPreset(cfg.Presets, name); idx >= 0 {
@@ -175,6 +185,9 @@ func (m *Manager) ApplyPreset(name string) error {
 	cfg.AutoChain = copyChain(p.AutoChain)
 	cfg.ManualFallbacks = copyFallbacks(p.ManualFallbacks)
 	cfg.GlobalFallback = p.GlobalFallback
+	cfg.UARoutingEnabled = p.UARoutingEnabled
+	cfg.UARules = copyUARules(p.UARules)
+	cfg.UAGlobalFallback = p.UAGlobalFallback
 	cfg.ActivePreset = name
 
 	return m.SaveConfig(cfg)

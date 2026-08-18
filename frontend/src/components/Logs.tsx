@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import { LogService } from "../../bindings/switchfree/service";
-import type { LogStats } from "../../bindings/switchfree/service/models";
-import type { LogEntry } from "../../bindings/switchfree/proxy/models";
+import { LogService } from "../../bindings/switchdev/service";
+import type { LogStats } from "../../bindings/switchdev/service/models";
+import type { LogEntry } from "../../bindings/switchdev/proxy/models";
 import UsageTrendChart from "./UsageTrendChart";
 
 interface Props {

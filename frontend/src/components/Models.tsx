@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { ModelService } from "../../bindings/switchfree/service";
-import type { ModelDetail, AllCredStatus } from "../../bindings/switchfree/service/models";
-import type { Config } from "../../bindings/switchfree/config/models";
+import { ModelService } from "../../bindings/switchdev/service";
+import type { ModelDetail, AllCredStatus } from "../../bindings/switchdev/service/models";
+import type { Config } from "../../bindings/switchdev/config/models";
 
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
@@ -18,7 +18,7 @@ const UPSTREAM_COLOR: Record<string, string> = {
 // 供应商 source 形如 "名称 (http://...)"，取括号前的名称
 function upstreamDisplayName(upstream: string, creds: AllCredStatus | null): string {
   if (UPSTREAM_LABEL[upstream]) return UPSTREAM_LABEL[upstream];
-  const src = creds?.freeAPIs?.[upstream]?.source ?? "";
+  const src = creds?.providerAPIs?.[upstream]?.source ?? "";
   const name = src.split(" (")[0].trim();
   return name || upstream;
 }

@@ -3,13 +3,17 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
-	"switchfree/paths"
+	"switchdev/paths"
 )
 
 // Price 单个模型的费率（每百万 token 的成本，美元）
@@ -209,6 +213,106 @@ func AgentLabel(upstream string) string {
 	default:
 		return upstream
 	}
+}
+
+// ReplaceAll 用给定费率全量替换本地费率并保存
+func (m *Manager) ReplaceAll(prices []*Price) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prices = make(map[string]*Price, len(prices))
+	for _, p := range prices {
+		m.prices[p.ModelID] = p
+	}
+	return m.saveLocked()
+}
+
+// ParseRatesGoFile 从 rates_default.go 源码解析 DefaultRates 切片
+func ParseRatesGoFile(src []byte) ([]*Price, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.AllErrors)
+	if err != nil {
+		return nil, fmt.Errorf("解析 Go 源码失败: %w", err)
+	}
+
+	var result []*Price
+	ast.Inspect(f, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range spec.Names {
+			if name.Name != "DefaultRates" || i >= len(spec.Values) {
+				continue
+			}
+			cl, ok := spec.Values[i].(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			for _, elt := range cl.Elts {
+				p := parsePriceLit(elt)
+				if p != nil {
+					result = append(result, p)
+				}
+			}
+		}
+		return true
+	})
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("未在源码中找到 DefaultRates")
+	}
+	return result, nil
+}
+
+// parsePriceLit 解析单个 Price 复合字面量
+func parsePriceLit(expr ast.Expr) *Price {
+	cl, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return nil
+	}
+	p := &Price{}
+	for _, e := range cl.Elts {
+		kv, ok := e.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "ModelID":
+			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				p.ModelID, _ = strconv.Unquote(bl.Value)
+			}
+		case "DisplayName":
+			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				p.DisplayName, _ = strconv.Unquote(bl.Value)
+			}
+		case "InputPerMillion":
+			p.InputPerMillion = parseFloatLit(kv.Value)
+		case "OutputPerMillion":
+			p.OutputPerMillion = parseFloatLit(kv.Value)
+		case "CacheRead":
+			p.CacheRead = parseFloatLit(kv.Value)
+		case "CacheCreation":
+			p.CacheCreation = parseFloatLit(kv.Value)
+		}
+	}
+	return p
+}
+
+// parseFloatLit 从 ast 字面量解析 float64
+func parseFloatLit(expr ast.Expr) float64 {
+	bl, ok := expr.(*ast.BasicLit)
+	if !ok {
+		return 0
+	}
+	v, err := strconv.ParseFloat(bl.Value, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // parseFloat 解析字符串为浮点数，失败返回 0

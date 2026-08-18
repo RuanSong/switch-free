@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // OpenCodeUpstream OpenCode Zen 适配器
@@ -238,18 +238,41 @@ func (u *OpenCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *
 			ReqID:      reqID,
 		}, nil
 	}
-	if !strings.Contains(peekStr, "data:") || !strings.Contains(peekStr, "choices") {
+	if !strings.Contains(peekStr, "data:") {
 		httpResp.Body.Close()
 		snippet := peekStr
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
 		fmt.Printf("[switch-dev] opencode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		errJSON, _ := json.Marshal(map[string]string{"error": "non-sse: " + snippet})
 		return &StreamResponse{
 			StatusCode: 502,
-			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			Body:       io.NopCloser(bytes.NewReader(errJSON)),
 			ReqID:      reqID,
 		}, nil
+	}
+	if strings.Contains(peekStr, "event: error") {
+		hasData := false
+		for _, line := range strings.Split(peekStr, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if data != "" && data != "null" && data != "[DONE]" {
+					hasData = true
+					break
+				}
+			}
+		}
+		if !hasData {
+			httpResp.Body.Close()
+			fmt.Printf("[switch-dev] opencode 流式上游 SSE error 事件（空 data），降级\n")
+			return &StreamResponse{
+				StatusCode: 502,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream SSE error"}`))),
+				ReqID:      reqID,
+			}, nil
+		}
 	}
 	return &StreamResponse{
 		StatusCode: 200,

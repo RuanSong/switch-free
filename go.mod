@@ -1,4 +1,4 @@
-module switchfree
+module switchdev
 
 go 1.25.0
 

@@ -3,29 +3,17 @@ package service
 import (
 	"fmt"
 	"time"
+
+	"switchdev/db"
 )
 
 // TrendPoint 趋势图一个数据点
-type TrendPoint struct {
-	Label          string `json:"label"`          // 展示标签（"00:00"、"08-01"、"07-01"）
-	Tokens         int64  `json:"tokens"`         // 总 token（input+output，兼容旧字段）
-	InputTokens    int64  `json:"inputTokens"`    // 输入 token
-	OutputTokens   int64  `json:"outputTokens"`   // 输出 token
-	Reqs           int64  `json:"reqs"`           // 请求数
-	CacheHitTokens int64  `json:"cacheHitTokens"` // 命中缓存的输入 token
-	CacheHitReqs   int64  `json:"cacheHitReqs"`   // 命中缓存的请求数
-}
+type TrendPoint = db.TrendPoint
 
 // UsageTrend 使用趋势结果
-type UsageTrend struct {
-	StartDate string       `json:"startDate"`
-	EndDate   string       `json:"endDate"`
-	Granularity string     `json:"granularity"` // "hour" | "day"
-	Points    []TrendPoint `json:"points"`
-}
+type UsageTrend = db.UsageTrend
 
-// ComputeUsageTrend 按粒度统计使用趋势
-// granularity: "hour"（按天看时，每小时一个点）| "day"（按周/月看时，每天一个点）
+// ComputeUsageTrend 按粒度统计使用趋势（从文件读取，兼容旧数据）
 func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTrend {
 	if startDate == "" || endDate == "" {
 		endDate = time.Now().Format("2006-01-02")
@@ -37,10 +25,8 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 
 	logs := getLogsByRange(startDate, endDate, 0)
 
-	// 生成桶
 	var buckets []TrendPoint
 	if granularity == "hour" {
-		// startDate 到 endDate 的每一天 0-23 小时
 		d, _ := time.Parse("2006-01-02", startDate)
 		end, _ := time.Parse("2006-01-02", endDate)
 		if end.IsZero() {
@@ -55,7 +41,6 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 			d = d.AddDate(0, 0, 1)
 		}
 	} else {
-		// 每天一个点
 		d, _ := time.Parse("2006-01-02", startDate)
 		end, _ := time.Parse("2006-01-02", endDate)
 		if end.IsZero() {
@@ -67,8 +52,6 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 		}
 	}
 
-	// 日志填入桶
-	// 需要把日志的 dateTime 解析出小时/日期
 	bucketIndex := map[string]int{}
 	for i, b := range buckets {
 		bucketIndex[b.Label] = i
@@ -83,13 +66,12 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 		out := int64(log.OutputTokens)
 
 		if granularity == "hour" {
-			// dateTime 格式 "2026-08-08 13:14:52"
 			if len(log.DateTime) >= 14 {
-				key = log.DateTime[5:10] + " " + log.DateTime[11:13] + ":00" // "08-08 13:00"
+				key = log.DateTime[5:10] + " " + log.DateTime[11:13] + ":00"
 			}
 		} else {
 			if len(log.DateTime) >= 10 {
-				key = log.DateTime[5:10] // "08-08"
+				key = log.DateTime[5:10]
 			}
 		}
 
@@ -113,11 +95,18 @@ func ComputeUsageTrend(startDate, endDate string, granularity string) *UsageTren
 	}
 }
 
-// GetUsageTrend 暴露给前端的趋势方法
+// GetUsageTrend 暴露给前端的趋势方法（优先从 db 查，回退到文件扫描）
 func (s *LogService) GetUsageTrend(startDate, endDate string, granularity string) *UsageTrend {
+	if s.core.DB() != nil {
+		trend, err := s.core.DB().ComputeUsageTrend(startDate, endDate, granularity)
+		if err == nil && trend != nil {
+			return trend
+		}
+	}
 	return ComputeUsageTrend(startDate, endDate, granularity)
 }
 
 func pad2(n int) string {
 	return fmt.Sprintf("%02d", n)
 }
+

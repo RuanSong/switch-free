@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"switchfree/pricing"
-	"switchfree/upstream"
+	"switchdev/pricing"
+	"switchdev/upstream"
 )
 
 // EventLogger 事件日志接口（由 service 层实现，用于记录日志 + 推送 Wails 事件）
@@ -30,11 +30,11 @@ type Server struct {
 	WorkBuddy *upstream.WorkBuddyUpstream
 
 	// 免费 API 上游（动态注册，多供应商平级；key = provider id）
-	freeUpstreamsMu sync.RWMutex
-	FreeAPIs        map[string]upstream.Upstream
+	providerAPIsMu sync.RWMutex
+	ProviderAPIs   map[string]upstream.Upstream
 
 	Logger         EventLogger
-	ConfigResolver ConfigResolver // ★ 配置解析器（由 main 注入）
+	ConfigResolver ConfigResolver   // ★ 配置解析器（由 main 注入）
 	Pricing        *pricing.Manager // ★ 费率管理器（由 main 注入）
 	httpSrv        *http.Server
 	Host           string
@@ -46,43 +46,43 @@ type Server struct {
 // NewServer 创建代理服务
 func NewServer(jy *upstream.JoyCodeUpstream, de *upstream.DevEcoUpstream, oc *upstream.OpenCodeUpstream, wb *upstream.WorkBuddyUpstream, host string, port int) *Server {
 	return &Server{
-		JoyCode:    jy,
-		DevEco:     de,
-		OpenCode:   oc,
-		WorkBuddy:  wb,
-		FreeAPIs:   map[string]upstream.Upstream{},
-		Host:       host,
-		Port:       port,
+		JoyCode:      jy,
+		DevEco:       de,
+		OpenCode:     oc,
+		WorkBuddy:    wb,
+		ProviderAPIs: map[string]upstream.Upstream{},
+		Host:         host,
+		Port:         port,
 	}
 }
 
-// RegisterFreeAPI 注册免费 API 上游（provider id -> upstream）
-func (s *Server) RegisterFreeAPI(id string, up upstream.Upstream) {
-	s.freeUpstreamsMu.Lock()
-	defer s.freeUpstreamsMu.Unlock()
-	s.FreeAPIs[id] = up
+// RegisterProviderAPI 注册免费 API 上游（provider id -> upstream）
+func (s *Server) RegisterProviderAPI(id string, up upstream.Upstream) {
+	s.providerAPIsMu.Lock()
+	defer s.providerAPIsMu.Unlock()
+	s.ProviderAPIs[id] = up
 }
 
-// RemoveFreeAPI 注销免费 API 上游
-func (s *Server) RemoveFreeAPI(id string) {
-	s.freeUpstreamsMu.Lock()
-	defer s.freeUpstreamsMu.Unlock()
-	delete(s.FreeAPIs, id)
+// RemoveProviderAPI 注销免费 API 上游
+func (s *Server) RemoveProviderAPI(id string) {
+	s.providerAPIsMu.Lock()
+	defer s.providerAPIsMu.Unlock()
+	delete(s.ProviderAPIs, id)
 }
 
-// GetFreeAPI 按 provider id 取免费 API 上游
-func (s *Server) GetFreeAPI(id string) upstream.Upstream {
-	s.freeUpstreamsMu.RLock()
-	defer s.freeUpstreamsMu.RUnlock()
-	return s.FreeAPIs[id]
+// GetProviderAPI 按 provider id 取免费 API 上游
+func (s *Server) GetProviderAPI(id string) upstream.Upstream {
+	s.providerAPIsMu.RLock()
+	defer s.providerAPIsMu.RUnlock()
+	return s.ProviderAPIs[id]
 }
 
-// GetFreeAPIs 返回所有免费 API 上游（key = provider id）
-func (s *Server) GetFreeAPIs() map[string]upstream.Upstream {
-	s.freeUpstreamsMu.RLock()
-	defer s.freeUpstreamsMu.RUnlock()
-	out := make(map[string]upstream.Upstream, len(s.FreeAPIs))
-	for k, v := range s.FreeAPIs {
+// GetProviderAPIs 返回所有免费 API 上游（key = provider id）
+func (s *Server) GetProviderAPIs() map[string]upstream.Upstream {
+	s.providerAPIsMu.RLock()
+	defer s.providerAPIsMu.RUnlock()
+	out := make(map[string]upstream.Upstream, len(s.ProviderAPIs))
+	for k, v := range s.ProviderAPIs {
 		out[k] = v
 	}
 	return out
@@ -99,7 +99,7 @@ func (s *Server) Start() error {
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.Host, s.Port),
 		Handler:           mux,
-		ReadTimeout:       30 * time.Second,  // 读取请求体（含长上下文）的上限
+		ReadTimeout:       30 * time.Second, // 读取请求体（含长上下文）的上限
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      300 * time.Second, // 流式推理可能很慢，5 分钟
 		IdleTimeout:       120 * time.Second,
@@ -184,9 +184,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 鉴权：除健康检查外，校验客户端 apiKey
+	// 鉴权：除健康检查外，校验客户端 apiKey（用户关闭鉴权时放行）
 	if r.URL.Path != "/" && r.URL.Path != "/health" {
-		if !s.checkAPIKey(r) {
+		if s.ConfigResolver.GetAuthEnabled() && !s.checkAPIKey(r) {
 			s.writeAuthError(w, r)
 			return
 		}
@@ -254,7 +254,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{
 		"ok":                 jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid,
-		"service": "switch-dev",
+		"service":            "switch-dev",
 		"autoResolvesTo":     AutoModel,
 		"joycodeCredValid":   jcStatus.Valid,
 		"joycodeUserId":      jcStatus.UserID,
@@ -266,21 +266,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 免费 API 凭据状态（动态）
-	freeCreds := map[string]interface{}{}
-	anyFreeValid := false
-	for pid, up := range s.GetFreeAPIs() {
+	providerCreds := map[string]interface{}{}
+	anyProviderValid := false
+	for pid, up := range s.GetProviderAPIs() {
 		cs := up.CredStatus()
-		freeCreds[pid] = map[string]interface{}{
+		providerCreds[pid] = map[string]interface{}{
 			"valid":   cs.Valid,
 			"preview": cs.KeyPreview,
 		}
 		if cs.Valid {
-			anyFreeValid = true
+			anyProviderValid = true
 		}
 	}
-	resp["freeAPIs"] = freeCreds
-	if len(freeCreds) > 0 {
-		resp["ok"] = jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid || anyFreeValid
+	resp["providerAPIs"] = providerCreds
+	if len(providerCreds) > 0 {
+		resp["ok"] = jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid || anyProviderValid
 	}
 
 	json.NewEncoder(w).Encode(resp)
@@ -295,7 +295,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	// auto 虚拟模型
 	data = append(data, ModelInfo{
 		ID: "auto", Object: "model", Created: 1700000000, OwnedBy: "multi",
-		Label: "Auto（DevEco GLM-5.1，失败降级 JoyCode）",
+		Label:  "Auto（DevEco GLM-5.1，失败降级 JoyCode）",
 		Stream: true, Upstream: "deveco",
 	})
 
@@ -334,8 +334,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 免费 API 模型（动态注册的 verified 模型）
-	for _, m := range FreeModels {
+	// 供应商模型（动态注册的 verified 模型）
+	for _, m := range ProviderModels {
 		data = append(data, ModelInfo{
 			ID: m.InternalID, Object: "model", Created: 1700000000,
 			OwnedBy: m.ProviderID,

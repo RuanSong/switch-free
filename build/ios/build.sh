@@ -3,7 +3,7 @@ set -e
 
 # Build configuration
 APP_NAME="switch-free"
-BUNDLE_ID="com.switchfree.app"
+BUNDLE_ID="com.switchdev.app"
 VERSION="0.1.0"
 BUILD_NUMBER="0.1.0"
 BUILD_DIR="build/ios"

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // TestJoyCodeStreamProbe 探测 JoyCode 流式 SSE 格式（不接入主流程，仅抓包用）

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FreeAPIService } from "../../bindings/switchfree/service";
-import { ImportItem, ImportStrategy, type ProviderConfig, type ShareProvider } from "../../bindings/switchfree/freeapi/models";
+import { ProviderAPIService } from "../../bindings/switchdev/service";
+import { ImportItem, ImportStrategy, type ProviderConfig, type ShareProvider } from "../../bindings/switchdev/providerapi/models";
 
-// 分享/导入供应商对话框（.sds：一次性强密码加密）
-// 导出：勾选供应商 -> 自动生成一次性密码 -> 保存 .sds
+// 分享/导入供应商对话框（.sds：口令加密，支持自定义密码或 6 位随机码）
+// 导出：勾选供应商 -> 设密码（可留空自动生成）-> 保存 .sds
 // 导入：选 .sds -> 输入密码解密 -> 预览/解决 id 冲突 -> 导入
 
 type Mode = "menu" | "export" | "import";
@@ -77,7 +77,7 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
 
   const genPassword = async (): Promise<string> => {
     try {
-      const p = await FreeAPIService.GenerateSharePassword();
+      const p = await ProviderAPIService.GenerateSharePassword();
       setPassword(p);
       setCopied(false);
       return p;
@@ -134,14 +134,19 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
     if (exportIds.length === 0) return flash("请至少选择一个供应商");
     setSaving(true);
     try {
-      // 需要密码时确保有一次性密码；不需要则传空，后端走内置密钥混淆
+      // 需要密码时：用用户输入的自定义密码；留空则自动生成 6 位随机码
       let pwd = "";
       if (needPassword) {
-        pwd = password || (await genPassword());
-        if (!pwd) throw new Error("生成密码失败");
+        const trimmed = password.trim();
+        if (trimmed) {
+          pwd = trimmed;
+        } else {
+          pwd = await genPassword();
+          if (!pwd) throw new Error("生成密码失败");
+        }
       }
-      const b64 = await FreeAPIService.ExportShare(exportIds, pwd, includeKey);
-      const savedPath = await FreeAPIService.SaveShareFile(b64);
+      const b64 = await ProviderAPIService.ExportShare(exportIds, pwd, includeKey);
+      const savedPath = await ProviderAPIService.SaveShareFile(b64);
       if (savedPath) {
         setSaved(true);
         if (needPassword) {
@@ -165,7 +170,7 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
     try {
       const b64 = await readFileAsB64(file);
       fileB64Ref.current = b64;
-      const preview = await FreeAPIService.InspectShare(b64);
+      const preview = await ProviderAPIService.InspectShare(b64);
       if (!preview) throw new Error("无法读取文件头");
       if (!preview.needPasswd) {
         // 内置密钥混淆模式或未加密：无需密码，直接解密
@@ -185,7 +190,7 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
   };
 
   const decryptAndBuild = async (b64: string, pwd: string) => {
-    const sps = await FreeAPIService.DecryptShare(b64, pwd);
+    const sps = await ProviderAPIService.DecryptShare(b64, pwd);
     const existing = new Set(Object.keys(providers));
     const rows: ImportRow[] = sps.map((sp) => ({
       sp,
@@ -229,7 +234,7 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
           newId: r.newId,
         })
       );
-      await FreeAPIService.ImportShare(items);
+      await ProviderAPIService.ImportShare(items);
       setMsg("✅ 导入完成");
       onImported();
       setTimeout(onClose, 800);
@@ -337,11 +342,14 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
                   type="checkbox"
                   checked={usePassword}
                   disabled={includeKey}
-                  onChange={(e) => setUsePassword(e.target.checked)}
+                  onChange={(e) => {
+                    setUsePassword(e.target.checked);
+                    if (!e.target.checked) setPassword("");
+                  }}
                   className="w-4 h-4 mt-0.5 accent-[var(--color-primary)] disabled:cursor-not-allowed"
                 />
                 <span>
-                  <span className="text-[var(--color-text)]">用一次性密码保护</span>
+                  <span className="text-[var(--color-text)]">用密码保护</span>
                   <span className="block text-[10px] text-[var(--color-text-dim)] mt-0.5">
                     {includeKey
                       ? "含 API 密钥，已强制开启。"
@@ -351,10 +359,38 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
               </label>
             </div>
 
+            {needPassword && !saved && (
+              <div>
+                <label className="text-xs text-[var(--color-text-dim)] block mb-1.5">
+                  分享密码（留空则保存时自动生成 6 位随机码）
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setCopied(false);
+                    }}
+                    placeholder="可自定义，或点右侧随机生成"
+                    autoComplete="off"
+                    className="flex-1 px-2 py-1.5 text-sm rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono"
+                  />
+                  <button
+                    onClick={genPassword}
+                    className="px-3 py-1.5 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] whitespace-nowrap"
+                    title="随机生成 6 位字母+数字密码（去易混字符）"
+                  >
+                    🎲 随机
+                  </button>
+                </div>
+              </div>
+            )}
+
             {saved && needPassword ? (
               <div>
                 <label className="text-xs text-[var(--color-success)] block mb-1.5">
-                  一次性分享密码（只显示这一次，请复制后发给对方）
+                  本次分享密码（请通过另一渠道发给对方）
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -376,15 +412,17 @@ export default function ShareDialog({ providers, onClose, onImported, initialIds
             ) : (
               <p className="text-[11px] leading-relaxed rounded-md px-3 py-2 min-h-[2.75rem] flex items-center bg-[var(--color-surface-2)] text-[var(--color-text-dim)]">
                 {needPassword
-                  ? "🔒 点击「保存 .sds 文件」后生成一次性密码并显示在此处，请通过另一个渠道发给对方。"
+                  ? "🔒 可自定义密码，或留空在保存时自动生成 6 位随机码；请通过另一个渠道发给对方。"
                   : "🔓 文件将加密保存（不含 API 密钥），对方导入无需密码。"}
               </p>
             )}
 
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={backToMenu} className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]">
-                返回
-              </button>
+              {!initialIds?.length && (
+                <button onClick={backToMenu} className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]">
+                  返回
+                </button>
+              )}
               <button
                 onClick={doExport}
                 disabled={saving || exportIds.length === 0}

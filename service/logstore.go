@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"switchfree/paths"
-	"switchfree/proxy"
+	"switchdev/paths"
+	"switchdev/proxy"
 )
 
 // 日志文件保留天数

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // WorkBuddyUpstream 腾讯 CodeBuddy(WorkBuddy) 适配器
@@ -99,7 +99,17 @@ func (u *WorkBuddyUpstream) doCall(ctx context.Context, body []byte, cred *creds
 		return nil, fmt.Errorf("解析请求 body 失败: %w", err)
 	}
 	m["stream"] = true
-	m["stream_options"] = map[string]bool{"include_usage": true} // 让上游在最后一个 chunk 返回 usage
+	delete(m, "stream_options")      // 网关不识别，11140
+	delete(m, "tenant")             // JoyCode 业务字段，WorkBuddy 不认
+	delete(m, "orgFullName")
+	delete(m, "userId")
+	delete(m, "client")
+	delete(m, "clientVersion")
+	delete(m, "language")
+	// max_tokens 为 0 时部分网关拒；兜底 1024
+	if mt, ok := m["max_tokens"].(float64); !ok || mt <= 0 {
+		m["max_tokens"] = 1024
+	}
 	bodyBytes, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("重新编码请求 body 失败: %w", err)
@@ -115,6 +125,10 @@ func (u *WorkBuddyUpstream) doCall(ctx context.Context, body []byte, cred *creds
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cred.AccessToken))
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Private-Data", "false")
+	if cred.UID != "" {
+		req.Header.Set("X-User-Id", cred.UID)
+	}
 	// 不设 Accept-Encoding，让 Go http.Client 自动透明解压 gzip
 
 	httpResp, err := u.client.Do(req)

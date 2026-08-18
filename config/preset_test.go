@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"switchfree/proxy"
+	"switchdev/proxy"
 )
 
 // newTestManager 建一个写临时目录的 Manager，避免污染用户真实配置

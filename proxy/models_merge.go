@@ -3,7 +3,7 @@ package proxy
 import (
 	"strings"
 
-	"switchfree/upstream"
+	"switchdev/upstream"
 )
 
 // MergeModels 合并接口实时模型 + 本地映射元数据 + auto 虚拟模型

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FreeAPIService } from "../../bindings/switchfree/service";
+import { ProviderAPIService } from "../../bindings/switchdev/service";
 
 interface Props {
   onClose: () => void;
@@ -25,7 +25,7 @@ export default function SecuritySettings({ onClose, onChanged }: Props) {
 
   const refresh = async () => {
     try {
-      const info = await FreeAPIService.GetLockStatus();
+      const info = await ProviderAPIService.GetLockStatus();
       setMasterSet(!!info?.masterSet);
       setHasRecovery(!!info?.hasRecovery);
       setRemembered(!!info?.remembered);
@@ -52,7 +52,7 @@ export default function SecuritySettings({ onClose, onChanged }: Props) {
     setBusy(true);
     setMsg("");
     try {
-      const code = await FreeAPIService.SetMasterPassword(newPass, remember);
+      const code = await ProviderAPIService.SetMasterPassword(newPass, remember);
       setRecoveryCode(code);
       setRemembered(remember);
       setMode("recovery");
@@ -71,7 +71,7 @@ export default function SecuritySettings({ onClose, onChanged }: Props) {
   const clearRemember = async () => {
     setBusy(true);
     try {
-      await FreeAPIService.ClearRememberedPassword();
+      await ProviderAPIService.ClearRememberedPassword();
       setRemembered(false);
       setMsg("✅ 已清除本机记住的密码，下次启动需手动输入");
       onChanged();
@@ -86,7 +86,7 @@ export default function SecuritySettings({ onClose, onChanged }: Props) {
     setBusy(true);
     setMsg("");
     try {
-      await FreeAPIService.ClearMasterPassword();
+      await ProviderAPIService.ClearMasterPassword();
       setMasterSet(false);
       setHasRecovery(false);
       setRemembered(true);
@@ -131,7 +131,7 @@ export default function SecuritySettings({ onClose, onChanged }: Props) {
                 // 如果设置的是"不记住密码"，后端已立即锁定，
                 // 关闭弹窗让主界面显示解锁页；否则回到状态页。
                 try {
-                  const info = await FreeAPIService.GetLockStatus();
+                  const info = await ProviderAPIService.GetLockStatus();
                   if (info?.isLocked) {
                     onChanged();
                     onClose();

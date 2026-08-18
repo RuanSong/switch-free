@@ -176,7 +176,7 @@
 			buildSettings = {
 				INFOPLIST_FILE = main/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.switchfree.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.switchdev.app";
 				PRODUCT_NAME = "Switch Dev";
 				CODE_SIGNING_ALLOWED = NO;
 				SDKROOT = iphonesimulator;
@@ -188,7 +188,7 @@
 			buildSettings = {
 				INFOPLIST_FILE = main/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.switchfree.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.switchdev.app";
 				PRODUCT_NAME = "Switch Dev";
 				CODE_SIGNING_ALLOWED = NO;
 				SDKROOT = iphonesimulator;

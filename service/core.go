@@ -2,14 +2,17 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"switchfree/creds"
-	"switchfree/proxy"
-	"switchfree/upstream"
+	"switchdev/creds"
+	"switchdev/db"
+	"switchdev/proxy"
+	"switchdev/upstream"
 )
 
 // Core 共享核心：持有代理服务、三上游、日志存储，并实现 proxy.EventLogger
@@ -20,6 +23,7 @@ type Core struct {
 	deveco    *upstream.DevEcoUpstream
 	opencode  *upstream.OpenCodeUpstream
 	workbuddy *upstream.WorkBuddyUpstream
+	db        *db.DB
 
 	// 凭据管理器（用于刷新操作）
 	joycodeMgr   *creds.JoyCodeCredManager
@@ -45,6 +49,12 @@ func NewCore() *Core {
 		logMaxLen: 500,
 	}
 }
+
+// SetDB 注入数据库实例
+func (c *Core) SetDB(d *db.DB) { c.db = d }
+
+// DB 返回数据库实例（可能为 nil，表示未初始化）
+func (c *Core) DB() *db.DB { return c.db }
 
 // Setup 初始化所有组件（在 main 中调用）
 func (c *Core) Setup(
@@ -106,8 +116,14 @@ func (c *Core) RecordLog(entry *proxy.LogEntry) {
 	// 实时推送到前端
 	c.EmitEvent("log:new", entry)
 
-	// 异步持久化到磁盘（按天 JSONL）
-	go appendLogToDisk(entry)
+	// 异步持久化到 SQLite
+	if c.db != nil {
+		go func(e *proxy.LogEntry) {
+			if err := c.db.InsertLog(e); err != nil {
+				fmt.Fprintf(os.Stderr, "[db] 写入日志失败: %v\n", err)
+			}
+		}(entry)
+	}
 }
 
 // EmitEvent 推送事件到前端
@@ -171,7 +187,7 @@ type AllCredStatus struct {
 	DevEco   *creds.CredStatusInfo          `json:"deveco"`
 	OpenCode *creds.CredStatusInfo          `json:"opencode"`
 	WorkBuddy *creds.CredStatusInfo         `json:"workbuddy"`
-	FreeAPIs map[string]*creds.CredStatusInfo `json:"freeAPIs,omitempty"` // 免费 API 供应商（动态）
+	ProviderAPIs map[string]*creds.CredStatusInfo `json:"providerAPIs,omitempty"` // 免费 API 供应商（动态）
 }
 
 // GetCredStatus 获取全部凭据状态
@@ -187,49 +203,50 @@ func (c *Core) GetCredStatus() *AllCredStatus {
 		WorkBuddy: c.workbuddy.CredStatus(),
 	}
 	if server != nil {
-		freeAPIs := server.GetFreeAPIs()
-		if len(freeAPIs) > 0 {
-			status.FreeAPIs = map[string]*creds.CredStatusInfo{}
-			for pid, up := range freeAPIs {
-				status.FreeAPIs[pid] = up.CredStatus()
+		providerAPIs := server.GetProviderAPIs()
+		if len(providerAPIs) > 0 {
+			status.ProviderAPIs = map[string]*creds.CredStatusInfo{}
+			for pid, up := range providerAPIs {
+				status.ProviderAPIs[pid] = up.CredStatus()
 			}
 		}
 	}
 	return status
 }
 
-// FreeUpstreams 返回免费 API 上游集合（key = provider id）
-func (c *Core) FreeUpstreams() map[string]upstream.Upstream {
+// ProviderAPIUpstreams 返回免费 API 上游集合（key = provider id）
+func (c *Core) ProviderAPIUpstreams() map[string]upstream.Upstream {
 	c.mu.RLock()
 	server := c.server
 	c.mu.RUnlock()
 	if server == nil {
 		return nil
 	}
-	return server.GetFreeAPIs()
+	return server.GetProviderAPIs()
 }
 
 // RefreshCreds 强制刷新某上游凭据
 func (c *Core) RefreshCreds(name string) error {
+	var err error
 	switch name {
 	case "joycode":
 		c.joycode.InvalidateCreds()
-		_, err := c.joycodeMgr.EnsureCreds()
-		return err
+		_, err = c.joycodeMgr.EnsureCreds()
 	case "deveco":
 		c.deveco.InvalidateCreds()
-		_, err := c.devecoMgr.EnsureCreds()
-		return err
+		_, err = c.devecoMgr.EnsureCreds()
 	case "opencode":
 		c.opencode.InvalidateCreds()
-		_, err := c.opencodeMgr.EnsureCreds()
-		return err
+		_, err = c.opencodeMgr.EnsureCreds()
 	case "workbuddy":
 		c.workbuddy.InvalidateCreds()
-		_, err := c.workbuddyMgr.EnsureCreds()
-		return err
+		_, err = c.workbuddyMgr.EnsureCreds()
+	default:
+		return nil
 	}
-	return nil
+	// 刷新后推送状态，让前端凭据卡片即时反映（文件被删/登录失效等）
+	c.EmitEvent("cred:change", c.GetCredStatus())
+	return err
 }
 
 // RefreshAllCreds 刷新全部凭据
@@ -238,8 +255,6 @@ func (c *Core) RefreshAllCreds() {
 	c.RefreshCreds("deveco")
 	c.RefreshCreds("opencode")
 	c.RefreshCreds("workbuddy")
-	// 推送状态更新
-	c.EmitEvent("cred:change", c.GetCredStatus())
 }
 
 // WatchInstalledAgents 后台周期探测各 agent 安装状态。
@@ -285,9 +300,9 @@ func (c *Core) emitCredChange() {
 	c.EmitEvent("cred:change", c.GetCredStatus())
 }
 
-// EmitFreeHealth 免费模型健康状态变化回调（实现 freeapi.HealthReporter）
-func (c *Core) EmitFreeHealth(health map[string]map[string]bool) {
-	c.EmitEvent("freeapi:health", health)
+// EmitProviderHealth 免费模型健康状态变化回调（实现 providerapi.HealthReporter）
+func (c *Core) EmitProviderHealth(health map[string]map[string]bool) {
+	c.EmitEvent("providerapi:health", health)
 	// 同时刷新凭据状态（模型健康变化影响可用性展示）
 	c.EmitEvent("cred:change", c.GetCredStatus())
 }

@@ -9,7 +9,7 @@ import (
 //go:embed config.yml
 var configYAML embed.FS
 
-// Version 应用当前版本（可被 ldflags 覆盖：-X switchfree/version.Version=x.y.z）
+// Version 应用当前版本（可被 ldflags 覆盖：-X switchdev/version.Version=x.y.z）
 var Version = ""
 
 func init() {

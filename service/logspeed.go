@@ -3,29 +3,18 @@ package service
 import (
 	"sort"
 	"time"
+
+	"switchdev/db"
+	"switchdev/proxy"
 )
 
 // SpeedStats 今日输出速率统计（性能评估）
-type SpeedStats struct {
-	OverallTPS    float64      `json:"overallTps"`    // 加权平均 tok/s = 总输出 / 总耗时
-	TotalReqs     int64        `json:"totalReqs"`     // 参与统计的成功请求数
-	TotalOutput   int64        `json:"totalOutput"`   // 总输出 token
-	TotalDuration float64      `json:"totalDuration"` // 总耗时（秒）
-	ByModel       []ModelSpeed `json:"byModel"`       // 按 tps 降序
-}
+type SpeedStats = db.SpeedStats
 
 // ModelSpeed 单个模型的输出速率
-type ModelSpeed struct {
-	Model    string  `json:"model"`
-	TPS      float64 `json:"tps"`      // 加权平均 tok/s
-	Reqs     int64   `json:"reqs"`
-	Output   int64   `json:"output"`
-	Duration float64 `json:"duration"` // 秒
-}
+type ModelSpeed = db.ModelSpeed
 
-// ComputeTodaySpeed 统计今日模型输出速率
-// 口径：仅 success 且 OutputTokens>0 且 Duration>=50ms 的请求；
-// 整体与分模型均用加权平均（总输出/总耗时），避免短请求被异常放大
+// ComputeTodaySpeed 统计今日模型输出速率（从文件读取，兼容旧数据）
 func ComputeTodaySpeed() *SpeedStats {
 	today := time.Now().Format("2006-01-02")
 	logs := getLogsByRange(today, today, 0)
@@ -48,6 +37,7 @@ func ComputeTodaySpeed() *SpeedStats {
 		if key == "" {
 			key = log.Model
 		}
+		key = proxy.ActualUpstreamModel(key)
 		if key == "" || key == "auto" {
 			key = "未知"
 		}
@@ -77,7 +67,13 @@ func ComputeTodaySpeed() *SpeedStats {
 	return stats
 }
 
-// GetTodaySpeed 暴露给前端：今日输出速率统计
+// GetTodaySpeed 暴露给前端：今日输出速率统计（优先从 db 查）
 func (s *LogService) GetTodaySpeed() *SpeedStats {
+	if s.core.DB() != nil {
+		speed, err := s.core.DB().ComputeTodaySpeed()
+		if err == nil && speed != nil {
+			return speed
+		}
+	}
 	return ComputeTodaySpeed()
 }

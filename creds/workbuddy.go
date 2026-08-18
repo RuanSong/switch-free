@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"switchfree/paths"
+	"switchdev/paths"
 )
 
 // WorkBuddy 配置

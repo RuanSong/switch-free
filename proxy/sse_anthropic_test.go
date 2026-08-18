@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"switchfree/upstream"
+	"switchdev/upstream"
 )
 
 func TestSSEChunkHasContentAnthropic(t *testing.T) {

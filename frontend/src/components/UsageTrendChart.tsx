@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { LogService } from "../../bindings/switchfree/service";
-import type { UsageTrend as TrendData } from "../../bindings/switchfree/service/models";
+import { LogService } from "../../bindings/switchdev/service";
+import type { UsageTrend as TrendData } from "../../bindings/switchdev/service/models";
 
 interface Props {
   startDate: string;

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"switchfree/paths"
+	"switchdev/paths"
 )
 
 // DevEco 配置

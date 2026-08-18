@@ -1,7 +1,12 @@
 package service
 
 import (
-	"switchfree/pricing"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"switchdev/pricing"
 )
 
 // PricingService 费率管理服务（暴露给前端）
@@ -66,4 +71,30 @@ func (s *PricingService) DeletePrice(modelID string) error {
 // Count 费率条数
 func (s *PricingService) Count() int {
 	return s.mgr.Count()
+}
+
+// SyncFromGitHub 从 GitHub 拉取最新 rates_default.go 并覆盖本地费率
+func (s *PricingService) SyncFromGitHub() (int, error) {
+	url := "https://raw.githubusercontent.com/rosanruan/switch-dev/main/pricing/rates_default.go"
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("拉取失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("拉取失败: HTTP %d", resp.StatusCode)
+	}
+	src, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("读取响应失败: %w", err)
+	}
+	prices, err := pricing.ParseRatesGoFile(src)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.mgr.ReplaceAll(prices); err != nil {
+		return 0, err
+	}
+	return len(prices), nil
 }

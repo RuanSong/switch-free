@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"log"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -10,21 +11,29 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
-	"switchfree/config"
-	"switchfree/creds"
-	"switchfree/freeapi"
-	"switchfree/pricing"
-	"switchfree/proxy"
-	"switchfree/service"
-	"switchfree/updater"
-	"switchfree/upstream"
-	"switchfree/version"
+	"switchdev/config"
+	"switchdev/creds"
+	"switchdev/db"
+	"switchdev/logfile"
+	"switchdev/paths"
+	"switchdev/pricing"
+	"switchdev/providerapi"
+	"switchdev/proxy"
+	"switchdev/service"
+	"switchdev/updater"
+	"switchdev/upstream"
+	"switchdev/version"
 )
 
 // 免费 API 目录（内置，运行时从 GitHub 拉取最新覆盖）
 //
-//go:embed data/free_apis_catalog.json
-var embedFreeCatalog []byte
+//go:embed data/provider_apis_catalog.json
+var embedProviderCatalog []byte
+
+// 注册送 token 供应商列表（内置，运行时从 GitHub 拉取最新覆盖）
+//
+//go:embed data/bonus_providers.json
+var embedBonusProviders []byte
 
 // Wails 用 embed 包把前端文件嵌入二进制
 //
@@ -68,6 +77,14 @@ func main() {
 		log.Printf("⚠️ 配置加载失败: %v，使用默认配置", err)
 	}
 
+	// 3.5 文件日志：把控制台日志同时落地到 <AppConfigDir>/logs/YYYY-MM-DD.log，
+	// 后台压缩旧日志。受 Config.LogFile.Enabled 控制，默认开启。
+	logMgr := logfile.New(filepath.Join(paths.AppConfigDir(), "logs"))
+	if err := logMgr.Start(cfgMgr.Get().LogFile.Enabled); err != nil {
+		log.Printf("⚠️ 文件日志初始化失败: %v", err)
+	}
+	defer logMgr.Stop()
+
 	// 4. 代理服务（端口从配置读取）
 	serverPort := cfgMgr.Get().Port
 	if serverPort == 0 {
@@ -89,25 +106,36 @@ func main() {
 	core := service.NewCore()
 	core.Setup(jyMgr, deMgr, ocMgr, wbMgr, jyUp, deUp, ocUp, wbUp, server)
 
+	// 5.3 本地数据库（SQLite）
+	dbPath := filepath.Join(paths.AppConfigDir(), "switch-dev.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		log.Printf("⚠️ 数据库打开失败，将回退到文件日志: %v", err)
+	} else {
+		core.SetDB(database)
+		defer database.Close()
+	}
+
 	// 5.5 免费 API（独立文件 + 目录 + 健康监控）
-	freeAPIMgr, err := freeapi.NewManager("")
+	providerAPIMgr, err := providerapi.NewManager("")
 	if err != nil {
 		log.Printf("⚠️ 免费 API 配置加载失败: %v", err)
 	}
-	freeapi.SetEmbedCatalog(embedFreeCatalog)
-	freeCatalogLoader := &freeapi.CatalogLoader{}
-	_ = freeCatalogLoader.LoadCatalog() // 预加载（embed/GitHub/缓存）
-	freeMonitor := freeapi.NewMonitor(freeAPIMgr, core)
+	providerapi.SetEmbedCatalog(embedProviderCatalog)
+	providerapi.SetEmbedBonusProviders(embedBonusProviders)
+	providerCatalogLoader := &providerapi.CatalogLoader{}
+	_ = providerCatalogLoader.LoadCatalog() // 预加载（embed/GitHub/缓存）
+	providerMonitor := providerapi.NewMonitor(providerAPIMgr, core)
 	// 注入健康查询回调（供 proxy 权重降级用）
-	proxy.FreeModelHealth = func(providerID, modelID string) bool {
-		return freeMonitor.IsHealthy(providerID, modelID)
+	proxy.ProviderModelHealth = func(providerID, modelID string) bool {
+		return providerMonitor.IsHealthy(providerID, modelID)
 	}
 	// 注册免费 API 刷新回调：provider 增删/模型变化时重建上游 + 模型列表
-	registerFreeAPIRefresh(server, freeAPIMgr, freeMonitor, core)
+	registerProviderAPIRefresh(server, providerAPIMgr, providerMonitor, core)
 
 	// 6. Wails 服务（暴露给前端）
-	freeAPISvc := service.NewFreeAPIService(freeAPIMgr, freeCatalogLoader, freeMonitor, core)
-	service.SetFreeRefreshCallback(rebuildFreeAPIs)
+	providerAPISvc := service.NewProviderAPIService(providerAPIMgr, providerCatalogLoader, providerMonitor, core)
+	service.SetProviderAPIRefreshCallback(rebuildProviderAPIs)
 	proxySvc := service.NewProxyService(core)
 	credsSvc := service.NewCredsService(core)
 	modelSvc := service.NewModelService(core)
@@ -131,7 +159,7 @@ func main() {
 			application.NewService(pricingSvc),
 			application.NewService(updaterSvc),
 			application.NewService(benchmarkSvc),
-			application.NewService(freeAPISvc),
+			application.NewService(providerAPISvc),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -190,7 +218,7 @@ func main() {
 	})
 
 	// 8. 系统托盘
-	setupSystray(app, server, cfgMgr, cfgSvc)
+	setupSystray(app, server, cfgMgr, cfgSvc, logMgr)
 
 	// 9. 启动代理 + 凭据校验（非致命：失败仅警告，等待客户端登录后自动恢复）
 	go startProxyAndCreds(server, jyUp, deUp, ocUp, wbUp, core)
@@ -201,10 +229,10 @@ func main() {
 	// 10.5 后台周期探测 agent 安装状态（新安装工具时自动校验凭据并推送，无需重启）
 	go core.WatchInstalledAgents(app.Context(), 5*time.Second)
 
-	// 10.6 免费 API 模型健康监控（每 5 分钟探测；只监控 free 模型）
-	go freeMonitor.Start(app.Context())
+	// 10.6 供应商模型健康监控（每 5 分钟探测；只监控 provider 模型）
+	go providerMonitor.Start(app.Context())
 	// 首次刷新注册免费上游 + 模型（启动时构建）
-	registerFreeAPIRefresh(server, freeAPIMgr, freeMonitor, core)
+	registerProviderAPIRefresh(server, providerAPIMgr, providerMonitor, core)
 
 	// 10.5 启动 3s 后后台检查更新（有新版本发事件给前端弹窗）
 	go startUpdateCheck(updaterSvc)
@@ -247,7 +275,7 @@ func startUpdateCheck(updaterSvc *service.UpdaterService) {
 // setupSystray 配置系统托盘（跨平台）
 // - 单击/双击托盘图标：显示/聚焦主窗口
 // - 右键菜单：版本号、服务状态+启停、方案切换、检查更新、打开面板、退出
-func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service.ConfigService) *application.SystemTray {
+func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service.ConfigService, logMgr *logfile.Manager) *application.SystemTray {
 	tray := app.SystemTray.New()
 	systemTray = tray // 存全局引用，供动态刷新用
 	// macOS 用模板图（透明背景 + 黑色主体），系统按菜单栏明暗自动反色；
@@ -281,6 +309,8 @@ func setupSystray(app *application.App, server *proxy.Server, cfgMgr *config.Man
 
 	// 配置变化时重建菜单（方案增删改、激活态变化等）
 	cfgMgr.SetOnChange(func() {
+		// 同步文件日志开关
+		logMgr.SetEnabled(cfgMgr.Get().LogFile.Enabled)
 		// SaveConfig 在哪个 goroutine 触发就在哪个 goroutine 调用；
 		// SetMenu 内部用 InvokeSync 切主线程，所以这里可以直接调
 		rebuild()
@@ -326,7 +356,7 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 	if running {
 		statusLabel = "运行中"
 	}
-	menu.Add("Switch Dev v"+version.GetVersion()+" · 服务："+statusLabel).SetEnabled(false)
+	menu.Add("Switch Dev v" + version.GetVersion() + " · 服务：" + statusLabel).SetEnabled(false)
 
 	menu.AddSeparator()
 
@@ -344,7 +374,7 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 		label string
 	}{
 		{"dashboard", "📊 仪表盘"},
-		{"freeapi", "🆓 供应商"},
+		{"providerapi", "🆓 供应商"},
 		{"credentials", "🔑 凭据"},
 		{"models", "🤖 模型"},
 		{"stats", "📈 统计"},
@@ -367,13 +397,19 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 	if len(cfg.Presets) > 0 {
 		// 有方案：显示子菜单（radio 形式，激活的打勾）
 		presetMenu := menu.AddSubmenu("方案")
+		// "未命名的方案"：与已保存方案同级，当前无激活方案时选中禁用，否则可点击切回
+		if cfg.ActivePreset == "" {
+			presetMenu.AddRadio("未命名的方案", true).SetEnabled(false)
+		} else {
+			presetMenu.AddRadio("未命名的方案", false).OnClick(func(*application.Context) {
+				_ = cfgSvc.ClearActivePreset()
+			})
+		}
+		presetMenu.AddSeparator()
 		for _, p := range cfg.Presets {
 			name := p.Name
 			checked := cfg.ActivePreset == name
 			presetMenu.AddRadio(name, checked).OnClick(func(*application.Context) {
-				// 通过 ConfigService 应用：除改后端配置 + 重建托盘菜单外，
-				// 还会向前端发 config:change，使前端面板与托盘保持一致，
-				// 避免前端用旧配置自动保存覆盖托盘的切换。
 				_ = cfgSvc.ApplyPreset(name)
 			})
 		}
@@ -409,40 +445,45 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 	return menu
 }
 
-// rebuildFreeAPIs 重建免费上游 + 模型列表（provider 增删/模型变化时调用，包级供 FreeAPIService 用）
-var rebuildFreeAPIs func()
+// rebuildProviderAPIs 重建免费上游 + 模型列表（provider 增删/模型变化时调用，包级供 ProviderAPIService 用）
+var rebuildProviderAPIs func()
 
-// registerFreeAPIRefresh 初始化免费 API 上游注册：
-// 遍历 credentials.json 里 verified 的 provider，为每个创建 FreeAPIUpstream 注册到 server，
-// 并填充 proxy.FreeModels 供模型列表/降级链使用。
-func registerFreeAPIRefresh(server *proxy.Server, mgr *freeapi.Manager, monitor *freeapi.Monitor, core *service.Core) {
+// registerProviderAPIRefresh 初始化免费 API 上游注册：
+// 遍历 credentials.json 里 verified 的 provider，为每个创建 ProviderAPIUpstream 注册到 server，
+// 并填充 proxy.ProviderModels 供模型列表/降级链使用。
+func registerProviderAPIRefresh(server *proxy.Server, mgr *providerapi.Manager, monitor *providerapi.Monitor, core *service.Core) {
 	rebuild := func() {
 		// 清空旧的免费上游
-		for pid := range server.GetFreeAPIs() {
-			server.RemoveFreeAPI(pid)
+		for pid := range server.GetProviderAPIs() {
+			server.RemoveProviderAPI(pid)
 		}
 		// 重建模型列表 + 上游
-		var freeModels []proxy.FreeModel
+		var providerModels []proxy.ProviderModel
 		for pid, p := range mgr.GetProviders() {
+			// 把 provider 显示名同步到 db upstreams 表（不限 Verified：
+			// 历史日志即便 provider 未验证，统计页也要显示友好名称）
+			if core != nil && core.DB() != nil {
+				_, _ = core.DB().UpsertUpstream(pid, "provider", p.Name, pid)
+			}
 			if !p.Verified {
 				continue
 			}
 			// 为 provider 创建上游（闭包捕获 baseURL/apiKey/protocol，保证 rebuild 时读到最新）
 			baseURL, apiKey, proto := p.BaseURL, p.APIKey, p.EffectiveProtocol()
-			up := upstream.NewFreeAPIUpstream(pid,
+			up := upstream.NewProviderAPIUpstream(pid,
 				func() string { return baseURL },
 				func() string { return apiKey },
 				func() string { return proto },
 			)
 			up.SetDisplayName(p.Name)
-			server.RegisterFreeAPI(pid, up)
+			server.RegisterProviderAPI(pid, up)
 
 			// 收集 verified 模型
 			for _, mo := range p.Models {
 				if !mo.Verified {
 					continue
 				}
-				freeModels = append(freeModels, proxy.FreeModel{
+				providerModels = append(providerModels, proxy.ProviderModel{
 					InternalID: p.InternalID(mo.ID),
 					ProviderID: pid,
 					ModelID:    mo.ID,
@@ -451,15 +492,15 @@ func registerFreeAPIRefresh(server *proxy.Server, mgr *freeapi.Manager, monitor 
 				})
 			}
 		}
-		proxy.SetFreeModels(freeModels)
+		proxy.SetProviderModels(providerModels)
 
 		// 推送状态刷新（前端凭据页/模型页）
 		if core != nil {
 			core.EmitEvent("cred:change", core.GetCredStatus())
-			core.EmitEvent("freeapi:change", mgr.GetProviders())
+			core.EmitEvent("providerapi:change", mgr.GetProviders())
 		}
 	}
-	rebuildFreeAPIs = rebuild
+	rebuildProviderAPIs = rebuild
 
 	// 首次构建
 	rebuild()
@@ -475,7 +516,7 @@ func startProxyAndCreds(server *proxy.Server, jy *upstream.JoyCodeUpstream, de *
 		log.Printf("⚠️ DevEco 凭据不可用: %v（auto 模式将降级到 JoyCode）", err)
 	}
 	if err := oc.EnsureCreds(nil); err != nil {
-		log.Printf("⚠️ OpenCode 凭据不可用: %v（仅显式选 *-free 模型时使用）", err)
+		log.Printf("⚠️ OpenCode 凭据不可用: %v（仅显式选 *-provider 模型时使用）", err)
 	}
 	if err := wb.EnsureCreds(nil); err != nil {
 		log.Printf("⚠️ WorkBuddy 凭据不可用: %v（仅显式选 wb/* 模型时使用）", err)

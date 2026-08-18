@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"switchfree/config"
+	"switchdev/config"
 )
 
 // githubRelease GitHub Releases API 响应结构（只取需要的字段）

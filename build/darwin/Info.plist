@@ -10,7 +10,7 @@
         <key>CFBundleExecutable</key>
             <string>switch-dev</string>
         <key>CFBundleIdentifier</key>
-            <string>com.switchfree.app</string>
+            <string>com.switchdev.app</string>
         <key>CFBundleVersion</key>
             <string>0.0.2</string>
         <key>CFBundleGetInfoString</key>

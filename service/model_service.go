@@ -1,6 +1,6 @@
 package service
 
-import "switchfree/proxy"
+import "switchdev/proxy"
 
 // ModelService 模型管理服务（暴露给前端）
 type ModelService struct {
@@ -67,8 +67,8 @@ func (s *ModelService) GetModels() []*ModelDetail {
 		})
 	}
 
-	// 免费 API 模型（动态注册的 verified 模型）
-	for _, m := range proxy.FreeModels {
+	// 供应商模型（动态注册的 verified 模型）
+	for _, m := range proxy.ProviderModels {
 		result = append(result, &ModelDetail{
 			ID: m.InternalID, Label: m.Label, Upstream: m.ProviderID,
 			Stream: true, Context: m.Context, Free: true,
@@ -80,10 +80,10 @@ func (s *ModelService) GetModels() []*ModelDetail {
 
 // AutoStrategy auto 模式策略说明
 type AutoStrategy struct {
-	Primary       string `json:"primary"`       // 主力上游模型
-	Fallback      string `json:"fallback"`      // 降级模型
-	PrimaryUpstream   string `json:"primaryUpstream"`
-	FallbackUpstream  string `json:"fallbackUpstream"`
+	Primary          string `json:"primary"`  // 主力上游模型
+	Fallback         string `json:"fallback"` // 降级模型
+	PrimaryUpstream  string `json:"primaryUpstream"`
+	FallbackUpstream string `json:"fallbackUpstream"`
 }
 
 // GetAutoStrategy 获取 auto 模式策略

@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
-import { LogService } from "../../bindings/switchfree/service";
-import type { UsageStats as UsageStatsData } from "../../bindings/switchfree/service/models";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { LogService } from "../../bindings/switchdev/service";
+import type { UsageStats as UsageStatsData } from "../../bindings/switchdev/service/models";
 
 type Range = "today" | "week" | "month" | "custom";
 
@@ -69,9 +69,9 @@ export default function UsageStats() {
         <RangeBtn label="自定义" active={range === "custom"} onClick={() => setRange("custom")} />
         {range === "custom" && (
           <div className="flex items-center gap-2">
-            <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]" />
+            <DatePicker value={customStart} onChange={setCustomStart} max={customEnd || undefined} placeholder="开始日期" />
             <span className="text-[var(--color-text-dim)]">至</span>
-            <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]" />
+            <DatePicker value={customEnd} onChange={setCustomEnd} min={customStart || undefined} max={fmtDate(new Date())} placeholder="结束日期" />
           </div>
         )}
         <span className="text-xs text-[var(--color-text-dim)] ml-2">
@@ -191,4 +191,212 @@ function fmtTokens(n: number): string {
     out = s.slice(Math.max(0, i - 3), i) + out;
   }
   return out;
+}
+
+// ====== DatePicker：自定义日历（与深色主题一致，替代原生 input[type=date]）======
+
+const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+const MONTHS = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+
+function parseDate(s: string): Date | null {
+  if (!s) return null;
+  const [y, m, d] = s.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+function sameDay(a: Date | null, b: Date | null): boolean {
+  return !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function DatePicker({
+  value,
+  onChange,
+  min,
+  max,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  min?: string;
+  max?: string;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = parseDate(value);
+  const today = new Date();
+  // 日历视图月份：有选中值则定位到该月，否则当前月
+  const [view, setView] = useState(() => {
+    const d = selected ?? today;
+    return { y: d.getFullYear(), m: d.getMonth() };
+  });
+
+  // 打开时把视图定位到选中日期所在月（或当月）
+  useEffect(() => {
+    if (open) {
+      const d = selected ?? new Date();
+      setView({ y: d.getFullYear(), m: d.getMonth() });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // 点击外部关闭
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const minD = parseDate(min ?? "");
+  const maxD = parseDate(max ?? "");
+
+  // 构造当月日历网格（周一开头，含上下月补齐）
+  const first = new Date(view.y, view.m, 1);
+  const startOffset = (first.getDay() + 6) % 7; // 周一=0
+  const daysInMonth = new Date(view.y, view.m + 1, 0).getDate();
+  const cells: { date: Date; inMonth: boolean }[] = [];
+  for (let i = 0; i < startOffset; i++) {
+    cells.push({ date: new Date(view.y, view.m, i - startOffset + 1), inMonth: false });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ date: new Date(view.y, view.m, d), inMonth: true });
+  }
+  while (cells.length % 7 !== 0 || cells.length < 42) {
+    const last = cells[cells.length - 1].date;
+    cells.push({ date: new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1), inMonth: false });
+    if (cells.length >= 42) break;
+  }
+
+  const isDisabled = (d: Date) => {
+    if (minD && d < stripTime(minD)) return true;
+    if (maxD && d > stripTime(maxD)) return true;
+    return false;
+  };
+
+  const moveMonth = (delta: number) => {
+    setView((v) => {
+      const nm = v.m + delta;
+      return { y: v.y + Math.floor(nm / 12), m: ((nm % 12) + 12) % 12 };
+    });
+  };
+
+  const displayText = value || placeholder || "选择日期";
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`px-2 py-1 text-xs rounded-md border text-left flex items-center gap-1.5 transition-colors ${
+          value
+            ? "bg-[var(--color-surface-2)] border-[var(--color-border)] text-[var(--color-text)]"
+            : "bg-[var(--color-surface-2)] border-[var(--color-border)] text-[var(--color-text-dim)]"
+        } hover:border-[var(--color-primary)]`}
+      >
+        <span className="font-mono">{displayText}</span>
+        <span className="text-[var(--color-text-dim)] text-[9px]">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-60 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-2xl p-2.5 select-none">
+          {/* 头部：上一月 / 年月 / 下一月 */}
+          <div className="flex items-center justify-between mb-2">
+            <button
+              type="button"
+              onClick={() => moveMonth(-1)}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+            >
+              ‹
+            </button>
+            <div className="flex items-center gap-1 text-xs font-medium text-[var(--color-text)]">
+              <span>{view.y}</span>
+              <span className="text-[var(--color-text-dim)]">·</span>
+              <span>{MONTHS[view.m]}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => moveMonth(1)}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+            >
+              ›
+            </button>
+          </div>
+
+          {/* 星期表头 */}
+          <div className="grid grid-cols-7 gap-0.5 mb-1">
+            {WEEKDAYS.map((w) => (
+              <div key={w} className="text-center text-[10px] text-[var(--color-text-dim)] py-0.5">
+                {w}
+              </div>
+            ))}
+          </div>
+
+          {/* 日期网格 */}
+          <div className="grid grid-cols-7 gap-0.5">
+            {cells.map((c, i) => {
+              const disabled = isDisabled(c.date);
+              const selected_d = sameDay(c.date, selected);
+              const isToday = sameDay(c.date, today);
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => {
+                    onChange(fmtDate(c.date));
+                    setOpen(false);
+                  }}
+                  className={`h-7 text-[11px] rounded-md flex items-center justify-center transition-colors ${
+                    !c.inMonth
+                      ? "text-[var(--color-text-dim)]/30"
+                      : selected_d
+                      ? "bg-[var(--color-primary)] text-white font-medium"
+                      : isToday
+                      ? "text-[var(--color-primary)] hover:bg-[var(--color-surface-2)] ring-1 ring-inset ring-[var(--color-primary)]/40"
+                      : "text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
+                  } ${disabled ? "opacity-25 cursor-not-allowed" : "cursor-pointer"}`}
+                >
+                  {c.date.getDate()}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 底部：今天 + 清除 */}
+          <div className="flex items-center justify-between mt-2 pt-2 border-t border-[var(--color-border)]">
+            <button
+              type="button"
+              onClick={() => {
+                onChange(fmtDate(new Date()));
+                setOpen(false);
+              }}
+              className="text-[11px] text-[var(--color-primary)] hover:underline"
+            >
+              今天
+            </button>
+            {value && (
+              <button
+                type="button"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+                className="text-[11px] text-[var(--color-text-dim)] hover:text-[var(--color-danger)]"
+              >
+                清除
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function stripTime(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }

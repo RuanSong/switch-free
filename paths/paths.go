@@ -6,17 +6,17 @@ import (
 	"runtime"
 )
 
-// AppConfigDir switch-free 自身的配置/数据目录（配置、日志、费率等）
-//   darwin/linux: ~/.config/switch-free（向后兼容已有用户数据）
-//   windows: %APPDATA%\switch-free
+// AppConfigDir switch-dev 自身的配置/数据目录（配置、日志、费率等）
+//   darwin/linux: ~/.config/switch-dev
+//   windows: %APPDATA%\switch-dev
 func AppConfigDir() string {
 	if runtime.GOOS == "windows" {
 		if dir := os.Getenv("APPDATA"); dir != "" {
-			return filepath.Join(dir, "switch-free")
+			return filepath.Join(dir, "switch-dev")
 		}
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "switch-free")
+	return filepath.Join(home, ".config", "switch-dev")
 }
 
 // AppSupportDir GUI/VSCode 系工具（JoyCode、WorkBuddy）的数据根目录
@@ -215,23 +215,14 @@ func windowsConfigDirs() []string {
 	return dirs
 }
 
-// FreeAPIConfigPath 返回供应商凭据配置文件路径（credentials.json）。
-// 首次调用时若发现旧文件名 free_apis.json，会自动重命名迁移。
-func FreeAPIConfigPath() string {
-	dir := AppConfigDir()
-	newPath := filepath.Join(dir, "credentials.json")
-	oldPath := filepath.Join(dir, "free_apis.json")
-	if _, err := os.Stat(newPath); os.IsNotExist(err) {
-		if _, err := os.Stat(oldPath); err == nil {
-			_ = os.Rename(oldPath, newPath)
-		}
-	}
-	return newPath
+// ProviderAPIConfigPath 返回供应商凭据配置文件路径（credentials.json）。
+func ProviderAPIConfigPath() string {
+	return filepath.Join(AppConfigDir(), "credentials.json")
 }
 
-// FreeCatalogCachePath 免费 API 目录本地缓存路径（GitHub 拉取成功后写入）
-func FreeCatalogCachePath() string {
-	return filepath.Join(AppConfigDir(), "free_catalog_cache.json")
+// ProviderCatalogCachePath 供应商目录本地缓存路径（GitHub 拉取成功后写入）
+func ProviderCatalogCachePath() string {
+	return filepath.Join(AppConfigDir(), "provider_catalog_cache.json")
 }
 
 // NpmGlobalBinDir 返回 npm 全局 bin 目录：

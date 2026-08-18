@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"switchfree/proxy"
+	"switchdev/db"
+	"switchdev/proxy"
 )
 
 // BenchmarkTarget 测评目标（上游 + 模型）
@@ -70,19 +71,32 @@ func benchmarkLabel(up string) string {
 
 // RunBenchmark 并发测评多个 target，每完成一个 emit "benchmark:progress"，返回全部结果。
 // 可被 StopBenchmark 中断：取消后在途 HTTP 请求立即终止，未完成项标记为已停止。
-func (s *BenchmarkService) RunBenchmark(targets []BenchmarkTarget, prompt string, maxTokens int) []BenchmarkResult {
+// apiMode: "anthropic" | "openai-chat" | "openai-responses"
+func (s *BenchmarkService) RunBenchmark(targets []BenchmarkTarget, prompt string, maxTokens int, apiMode string) []BenchmarkResult {
 	if prompt == "" {
 		prompt = "请详细介绍 Go 语言的 goroutine 和 channel 并发模型，包括基本概念、使用示例和注意事项。"
 	}
 	if maxTokens <= 0 {
 		maxTokens = 1024
 	}
+	if apiMode == "" {
+		apiMode = "anthropic"
+	}
 
 	port := 8787
 	if srv := s.core.Server(); srv != nil && srv.Port > 0 {
 		port = srv.Port
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/v1/messages", port)
+
+	var url string
+	switch apiMode {
+	case "openai-chat":
+		url = fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port)
+	case "openai-responses":
+		url = fmt.Sprintf("http://127.0.0.1:%d/v1/responses", port)
+	default:
+		url = fmt.Sprintf("http://127.0.0.1:%d/v1/messages", port)
+	}
 
 	// 建立本次批量测评的可取消 context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,9 +131,13 @@ func (s *BenchmarkService) RunBenchmark(targets []BenchmarkTarget, prompt string
 				delete(s.itemCancels, ik)
 				s.mu.Unlock()
 			}()
-			res := s.benchOne(itemCtx, url, target, prompt, maxTokens)
+			res := s.benchOne(itemCtx, url, target, prompt, maxTokens, apiMode)
 			results[idx] = res
 			s.core.EmitEvent("benchmark:progress", res)
+			// 写 models 表测评结果
+			if s.core.DB() != nil {
+				_ = s.core.DB().UpsertModelBench(target.Upstream, target.Model, dbBenchResult(res))
+			}
 		}(i, t)
 	}
 	wg.Wait()
@@ -149,9 +167,10 @@ func (s *BenchmarkService) StopBenchmarkItem(upstream, model string) {
 	}
 }
 
-// benchOne 测单个 target：走本代理 /v1/messages 流式，实时推送 content chunk 给前端。
+// benchOne 测单个 target：走本代理流式，实时推送 content chunk 给前端。
 // ctx 被取消时（停止批量测评）立即中断 HTTP 并把结果标记为已停止。
-func (s *BenchmarkService) benchOne(ctx context.Context, url string, target BenchmarkTarget, prompt string, maxTokens int) BenchmarkResult {
+// apiMode: "anthropic" | "openai-chat" | "openai-responses"
+func (s *BenchmarkService) benchOne(ctx context.Context, url string, target BenchmarkTarget, prompt string, maxTokens int, apiMode string) BenchmarkResult {
 	res := BenchmarkResult{
 		Upstream:      target.Upstream,
 		UpstreamLabel: benchmarkLabel(target.Upstream),
@@ -159,13 +178,32 @@ func (s *BenchmarkService) benchOne(ctx context.Context, url string, target Benc
 		StartedAt:     time.Now().UnixMilli(),
 	}
 
-	reqBody := map[string]interface{}{
-		"model": target.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"max_tokens": maxTokens,
-		"stream":     true,
+	var reqBody map[string]interface{}
+	switch apiMode {
+	case "openai-chat":
+		reqBody = map[string]interface{}{
+			"model": target.Model,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+			"max_tokens": maxTokens,
+			"stream":     true,
+		}
+	case "openai-responses":
+		reqBody = map[string]interface{}{
+			"model":  target.Model,
+			"input":  prompt,
+			"stream": true,
+		}
+	default: // anthropic
+		reqBody = map[string]interface{}{
+			"model": target.Model,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+			"max_tokens": maxTokens,
+			"stream":     true,
+		}
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
@@ -209,7 +247,7 @@ func (s *BenchmarkService) benchOne(ctx context.Context, url string, target Benc
 		return res
 	}
 
-	// 读 SSE 流，解析 Anthropic content_block_delta，累积 content 并实时推送 chunk 事件
+	// 读 SSE 流，按 apiMode 解析不同事件格式，累积 content 并实时推送 chunk 事件
 	var contentBuilder strings.Builder
 	var outputTokens int
 	scanner := bufio.NewScanner(httpResp.Body)
@@ -223,29 +261,88 @@ func (s *BenchmarkService) benchOne(ctx context.Context, url string, target Benc
 		if data == "[DONE]" {
 			break
 		}
-		var ev struct {
-			Type  string `json:"type"`
-			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"delta"`
-			Usage struct {
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
-		}
+		var ev map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			continue
 		}
-		if ev.Type == "content_block_delta" && ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-			contentBuilder.WriteString(ev.Delta.Text)
-			s.core.EmitEvent("benchmark:chunk", map[string]interface{}{
-				"upstream": target.Upstream,
-				"model":    target.Model,
-				"delta":    ev.Delta.Text,
-			})
-		}
-		if ev.Type == "message_delta" && ev.Usage.OutputTokens > 0 {
-			outputTokens = ev.Usage.OutputTokens
+
+		switch apiMode {
+		case "openai-chat":
+			// OpenAI Chat Completions SSE: choices[0].delta.content
+			if choices, ok := ev["choices"].([]interface{}); ok && len(choices) > 0 {
+				if choice, ok := choices[0].(map[string]interface{}); ok {
+					if delta, ok := choice["delta"].(map[string]interface{}); ok {
+						if content, ok := delta["content"].(string); ok && content != "" {
+							contentBuilder.WriteString(content)
+							s.core.EmitEvent("benchmark:chunk", map[string]interface{}{
+								"upstream": target.Upstream,
+								"model":    target.Model,
+								"delta":    content,
+							})
+						}
+					}
+					// usage 在最后一个 chunk 的 choices[0] 中（部分上游）
+					if usage, ok := choice["usage"].(map[string]interface{}); ok {
+						if v, ok := usage["completion_tokens"].(float64); ok && int(v) > 0 {
+							outputTokens = int(v)
+						}
+					}
+				}
+			}
+			// 顶层 usage（stream_options 包含 usage 时）
+			if usage, ok := ev["usage"].(map[string]interface{}); ok {
+				if v, ok := usage["completion_tokens"].(float64); ok && int(v) > 0 {
+					outputTokens = int(v)
+				}
+			}
+
+		case "openai-responses":
+			// OpenAI Responses SSE: type == "response.output_text.delta", delta = text
+			evType, _ := ev["type"].(string)
+			switch evType {
+			case "response.output_text.delta":
+				if delta, ok := ev["delta"].(string); ok && delta != "" {
+					contentBuilder.WriteString(delta)
+					s.core.EmitEvent("benchmark:chunk", map[string]interface{}{
+						"upstream": target.Upstream,
+						"model":    target.Model,
+						"delta":    delta,
+					})
+				}
+			case "response.completed":
+				if resp, ok := ev["response"].(map[string]interface{}); ok {
+					if usage, ok := resp["usage"].(map[string]interface{}); ok {
+						if v, ok := usage["output_tokens"].(float64); ok && int(v) > 0 {
+							outputTokens = int(v)
+						}
+					}
+				}
+			}
+
+		default: // anthropic
+			// Anthropic SSE: type == "content_block_delta", delta.type == "text_delta", delta.text
+			evType, _ := ev["type"].(string)
+			switch evType {
+			case "content_block_delta":
+				if delta, ok := ev["delta"].(map[string]interface{}); ok {
+					if dType, _ := delta["type"].(string); dType == "text_delta" {
+						if text, ok := delta["text"].(string); ok && text != "" {
+							contentBuilder.WriteString(text)
+							s.core.EmitEvent("benchmark:chunk", map[string]interface{}{
+								"upstream": target.Upstream,
+								"model":    target.Model,
+								"delta":    text,
+							})
+						}
+					}
+				}
+			case "message_delta":
+				if usage, ok := ev["usage"].(map[string]interface{}); ok {
+					if v, ok := usage["output_tokens"].(float64); ok && int(v) > 0 {
+						outputTokens = int(v)
+					}
+				}
+			}
 		}
 	}
 
@@ -267,4 +364,42 @@ func (s *BenchmarkService) benchOne(ctx context.Context, url string, target Benc
 	}
 	res.Content = contentBuilder.String()
 	return res
+}
+// GetBenchResults 从 DB 读回历史测评结果（前端重进页面时恢复展示）。
+// outputTokens 由 TPS×duration 反推；Content 不持久化，留空。
+func (s *BenchmarkService) GetBenchResults() []BenchmarkResult {
+	if s.core.DB() == nil {
+		return nil
+	}
+	recs, err := s.core.DB().QueryBenchResults()
+	if err != nil {
+		return nil
+	}
+	out := make([]BenchmarkResult, 0, len(recs))
+	for _, r := range recs {
+		res := BenchmarkResult{
+			Upstream:      r.Upstream,
+			UpstreamLabel: benchmarkLabel(r.Upstream),
+			Model:         r.Model,
+			Success:       r.Success,
+			DurationMs:    r.Duration,
+			TPS:           r.TPS,
+			ErrorMsg:      r.Error,
+		}
+		if r.Duration > 0 {
+			res.OutputTokens = int(r.TPS * float64(r.Duration) / 1000.0)
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
+// dbBenchResult 将 BenchmarkResult 转换为 db.BenchResult
+func dbBenchResult(res BenchmarkResult) (db.BenchResult) {
+	return db.BenchResult{
+		TPS:      res.TPS,
+		Duration: res.DurationMs,
+		Error:    res.ErrorMsg,
+		Success:  res.Success,
+	}
 }

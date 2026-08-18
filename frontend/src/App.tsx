@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
-import { ProxyService, ConfigService } from "../bindings/switchfree/service";
+import { System } from "@wailsio/runtime";
+import { ProxyService, ConfigService, ProviderAPIService } from "../bindings/switchdev/service";
 import type {
   AllCredStatus,
   LogStats,
-} from "../bindings/switchfree/service/models";
-import type { ProxyStatus, LogEntry } from "../bindings/switchfree/proxy/models";
-import type { Config } from "../bindings/switchfree/config/models";
+} from "../bindings/switchdev/service/models";
+import type { ProxyStatus, LogEntry } from "../bindings/switchdev/proxy/models";
+import type { Config } from "../bindings/switchdev/config/models";
 import { useWailsEvent } from "./hooks/useWailsEvent";
 import Dashboard from "./components/Dashboard";
 import Credentials from "./components/Credentials";
@@ -14,10 +15,12 @@ import Logs from "./components/Logs";
 import Settings from "./components/Settings";
 import UsageStats from "./components/UsageStats";
 import Benchmark from "./components/Benchmark";
-import FreeAPI from "./components/FreeAPI";
+import ProviderAPI from "./components/ProviderAPI";
 import ErrorBoundary from "./components/ErrorBoundary";
 
-type Tab = "dashboard" | "freeapi" | "credentials" | "models" | "stats" | "logs" | "settings" | "benchmark";
+type Tab = "dashboard" | "providerapi" | "credentials" | "models" | "stats" | "logs" | "settings" | "benchmark";
+
+const IS_MAC = System.IsMac();
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -60,7 +63,7 @@ export default function App() {
 
   // 托盘菜单"功能"子菜单切换主界面 tab（"保存方案..."入口也走 settings）
   useWailsEvent("navigate:tab", (data) => {
-    const validTabs: Tab[] = ["dashboard", "freeapi", "credentials", "models", "stats", "logs", "benchmark", "settings"];
+    const validTabs: Tab[] = ["dashboard", "providerapi", "credentials", "models", "stats", "logs", "benchmark", "settings"];
     const key = data as Tab;
     if (validTabs.includes(key)) {
       setTab(key);
@@ -89,7 +92,7 @@ export default function App() {
 
   const navItems: { key: Tab; label: string; icon: string }[] = [
     { key: "dashboard", label: "仪表盘", icon: "📊" },
-    { key: "freeapi", label: "供应商", icon: "🌐" },
+    { key: "providerapi", label: "供应商", icon: "🌐" },
     { key: "credentials", label: "凭据", icon: "🔑" },
     { key: "models", label: "模型", icon: "🤖" },
     { key: "stats", label: "统计", icon: "📈" },
@@ -100,15 +103,20 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
-      {/* macOS 隐藏标题栏的不可见拖动区（高 50px）+ 红绿灯按钮区，顶部栏避开 */}
-      <div className="h-[50px] flex-shrink-0 bg-[var(--color-surface)]" />
+      {/* macOS 隐藏标题栏：留 50px 不可见拖动区给红绿灯按钮；Windows/Linux 有原生标题栏，不留 */}
+      {IS_MAC && <div className="h-[50px] flex-shrink-0 bg-[var(--color-surface)]" />}
 
       {/* 顶部栏：应用名（大字号）+ 横排导航 tab */}
       <header className="h-[56px] flex-shrink-0 flex items-center gap-6 px-6 bg-[var(--color-surface)] border-b border-[var(--color-border)]">
-        <div className="leading-tight flex items-baseline gap-2">
+        <button
+          type="button"
+          onClick={() => ProviderAPIService.OpenURL("https://github.com/rosanruan/switch-dev")}
+          title="在 GitHub 上查看项目"
+          className="leading-tight flex items-baseline gap-2 bg-transparent border-0 p-0"
+        >
           <span className="text-xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
           <span className="text-base font-semibold text-[var(--color-text-dim)] tracking-widest">DEV</span>
-        </div>
+        </button>
         <nav className="flex items-center gap-1 ml-6">
           {navItems.map((item) => (
             <button
@@ -141,8 +149,8 @@ export default function App() {
               config={config}
               onGoCredentials={() => setTab("credentials")}
             />
-          ) : tab === "freeapi" ? (
-            <FreeAPI />
+          ) : tab === "providerapi" ? (
+            <ProviderAPI />
           ) : tab === "credentials" ? (
             <Credentials creds={creds} />
           ) : tab === "models" ? (

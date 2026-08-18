@@ -25,7 +25,7 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.switchfree.app"
+                Id="com.switchdev.app"
                 Description="Multi-upstream AI model proxy with visual management"
                 DisplayName="Switch Dev"
                 ExecutableName="switch-dev"

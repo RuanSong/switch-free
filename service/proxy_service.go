@@ -1,7 +1,7 @@
 package service
 
 import (
-	"switchfree/proxy"
+	"switchdev/proxy"
 )
 
 // ProxyService 代理控制服务（暴露给前端）

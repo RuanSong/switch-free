@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { CredsService } from "../../bindings/switchfree/service";
-import type { AllCredStatus } from "../../bindings/switchfree/service/models";
-import type { CredStatusInfo } from "../../bindings/switchfree/creds/models";
+import { CredsService } from "../../bindings/switchdev/service";
+import type { AllCredStatus } from "../../bindings/switchdev/service/models";
+import type { CredStatusInfo } from "../../bindings/switchdev/creds/models";
 import CopyButton from "./CopyButton";
 
 interface Props {
@@ -25,7 +25,7 @@ export default function Credentials({ creds }: Props) {
     const st = creds?.[u as keyof AllCredStatus] ?? null;
     return !!st?.installed || !!st?.valid;
   });
-  const freeIds = Object.keys(creds?.freeAPIs ?? {});
+  const freeIds = Object.keys(creds?.providerAPIs ?? {});
   const hasAny = visibleBuiltins.length > 0 || freeIds.length > 0;
 
   return (
@@ -41,7 +41,7 @@ export default function Credentials({ creds }: Props) {
           ))}
           {/* 供应商配置（动态，多个平级） */}
           {freeIds.map((id) => (
-            <CredCard key={id} upstream={id} status={(creds?.freeAPIs?.[id] as CredStatusInfo | null) ?? null} isFreeApi />
+            <CredCard key={id} upstream={id} status={(creds?.providerAPIs?.[id] as CredStatusInfo | null) ?? null} isProviderApi />
           ))}
         </div>
       ) : (
@@ -82,13 +82,13 @@ function NoUpstream() {
   );
 }
 
-function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: CredStatusInfo | null; isFreeApi?: boolean }) {
+function CredCard({ upstream, status, isProviderApi }: { upstream: string; status: CredStatusInfo | null; isProviderApi?: boolean }) {
   const [busy, setBusy] = useState(false);
   const valid = status?.valid ?? false;
   const installed = status?.installed ?? false;
   const isGui = status?.agentType === "gui";
   // 免费 API 供应商用 source（= 供应商显示名）作为名字；内置上游用 nameFromUpstream
-  const name = isFreeApi
+  const name = isProviderApi
     ? (status?.source || upstream)
     : status ? nameFromUpstream(upstream) : upstream;
   const icon = AGENT_ICON[upstream] ?? { initial: name[0]?.toUpperCase() ?? "?", color: "bg-[var(--color-surface-2)] text-[var(--color-text-dim)]" };
@@ -106,7 +106,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
 
   // 状态徽章：三态（免费 API 用「已配置/未配置」简化）
   let badge;
-  if (isFreeApi) {
+  if (isProviderApi) {
     badge = valid ? (
       <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-success)]/20 text-[var(--color-success)]">
         ✓ 已配置
@@ -147,7 +147,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
               {icon.initial}
             </span>
             <span className="font-semibold text-lg">{name}</span>
-            {isFreeApi ? (
+            {isProviderApi ? (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-primary)]/15 text-[var(--color-primary)]">
                 供应商
               </span>
@@ -160,7 +160,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
           </div>
         </div>
         <div className="flex gap-2">
-          {!isFreeApi && installed && (
+          {!isProviderApi && installed && (
             <button
               onClick={refresh}
               disabled={busy}
@@ -169,7 +169,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
               {busy ? "..." : "刷新"}
             </button>
           )}
-          {!isFreeApi && status?.loginUrl && (installed || isGui) && (
+          {!isProviderApi && status?.loginUrl && (installed || isGui) && (
             <button
               onClick={() => CredsService.OpenLoginURL(upstream)}
               className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
@@ -181,7 +181,7 @@ function CredCard({ upstream, status, isFreeApi }: { upstream: string; status: C
       </div>
 
       {/* 三态操作区 */}
-      {isFreeApi ? (
+      {isProviderApi ? (
         valid ? (
           // 免费 API 正常：显示凭据详情
           <Details status={status} />

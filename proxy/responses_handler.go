@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"switchfree/creds"
-	"switchfree/upstream"
+	"switchdev/creds"
+	"switchdev/upstream"
 )
 
 // handleResponses OpenAI /v1/responses 入口（Codex 使用）
@@ -51,18 +51,19 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	reqBodyStr := string(raw)
 	source := sourceFromUA(r.Header.Get("User-Agent"))
+	userAgent := r.Header.Get("User-Agent")
 
 	if stream {
-		s.forwardResponsesStream(w, r, chatBody, requestedModel, source, reqBodyStr)
+		s.forwardResponsesStream(w, r, chatBody, requestedModel, source, userAgent, reqBodyStr)
 		return
 	}
 
 	start := time.Now()
-	resp, upName, usedModel, err := s.callUpstreamOpenAI(r.Context(), chatBody)
+	resp, upName, usedModel, err := s.callUpstreamOpenAI(r.Context(), chatBody, userAgent)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		s.recordResponsesError(w, requestedModel, upName, duration, err, false, source, reqBodyStr)
+		s.recordResponsesError(w, requestedModel, upName, duration, err, false, source, userAgent, reqBodyStr)
 		return
 	}
 
@@ -81,6 +82,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			}
 			e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "unparsable upstream", "POST", "/v1/responses", false, reqBodyStr, trimmed)
 			e.Source = source
+			e.UserAgent = userAgent
 			s.recordLog(e)
 			writeResponsesError(w, http.StatusBadGateway, "unparsable upstream: "+snippet)
 			return
@@ -88,6 +90,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		errMsg, errCode := extractUpstreamError([]byte(trimmed))
 		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "["+errCode+"] "+errMsg, "POST", "/v1/responses", false, reqBodyStr, trimmed)
 		e.Source = source
+		e.UserAgent = userAgent
 		s.recordLog(e)
 		writeResponsesError(w, http.StatusBadGateway, "["+errCode+"] "+errMsg)
 		return
@@ -102,6 +105,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if isResponseContentEmpty(&parsed) {
 		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "empty content in upstream response", "POST", "/v1/responses", false, reqBodyStr, trimmed)
 		e.Source = source
+		e.UserAgent = userAgent
 		s.recordLog(e)
 		writeResponsesError(w, http.StatusBadGateway, "上游返回空内容")
 		return
@@ -110,6 +114,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	entry := s.makeLogEntry(requestedModel, upName, "success", resp.StatusCode, duration, "", "POST", "/v1/responses", false, reqBodyStr, trimmed)
 	entry.UsedModel = usedModel
 	entry.Source = source
+	entry.UserAgent = userAgent
 	s.logRequest(entry, resp.Body, requestedModel)
 
 	out := openAIToResponses(&parsed, resp.ReqID)
@@ -118,25 +123,25 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 // forwardResponsesStream 流式：真流式优先（StreamCaller），否则伪流式
-func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, chatBody map[string]interface{}, requestedModel, source, reqBodyStr string) {
+func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, chatBody map[string]interface{}, requestedModel, source, userAgent, reqBodyStr string) {
 	// 真流式
-	sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), chatBody)
+	sr, upName, usedModel, err := s.callUpstreamStream(r.Context(), chatBody, userAgent)
 	if sr != nil {
-		s.streamResponsesResponse(w, sr, requestedModel, upName, usedModel, source, reqBodyStr)
+		s.streamResponsesResponse(w, sr, requestedModel, upName, usedModel, source, userAgent, reqBodyStr)
 		return
 	}
 	if err != nil {
-		s.recordResponsesError(w, requestedModel, upName, 0, err, true, source, reqBodyStr)
+		s.recordResponsesError(w, requestedModel, upName, 0, err, true, source, userAgent, reqBodyStr)
 		return
 	}
 
 	// 伪流式：非流式 Call 拿到完整响应，再拆成 Responses SSE
 	start := time.Now()
-	resp, upName, usedModel, err := s.callUpstreamOpenAI(r.Context(), chatBody)
+	resp, upName, usedModel, err := s.callUpstreamOpenAI(r.Context(), chatBody, userAgent)
 	duration := time.Since(start).Milliseconds()
 
 	if err != nil {
-		s.recordResponsesError(w, requestedModel, upName, duration, err, true, source, reqBodyStr)
+		s.recordResponsesError(w, requestedModel, upName, duration, err, true, source, userAgent, reqBodyStr)
 		return
 	}
 
@@ -145,6 +150,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "parse failed", "POST", "/v1/responses", true, reqBodyStr, trimmed)
 		e.Source = source
+		e.UserAgent = userAgent
 		s.recordLog(e)
 		writeResponsesError(w, http.StatusBadGateway, "parse success response failed")
 		return
@@ -152,6 +158,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 	if isResponseContentEmpty(&parsed) {
 		e := s.makeLogEntry(requestedModel, upName, "error", resp.StatusCode, duration, "empty content", "POST", "/v1/responses", true, reqBodyStr, trimmed)
 		e.Source = source
+		e.UserAgent = userAgent
 		s.recordLog(e)
 		writeResponsesError(w, http.StatusBadGateway, "上游返回空内容")
 		return
@@ -160,6 +167,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 	entry := s.makeLogEntry(requestedModel, upName, "success", resp.StatusCode, duration, "", "POST", "/v1/responses", true, reqBodyStr, trimmed)
 	entry.UsedModel = usedModel
 	entry.Source = source
+	entry.UserAgent = userAgent
 	s.logRequest(entry, resp.Body, requestedModel)
 
 	setSSEHeaders(w)
@@ -167,7 +175,7 @@ func (s *Server) forwardResponsesStream(w http.ResponseWriter, r *http.Request, 
 }
 
 // streamResponsesResponse 真流式转发：上游 OpenAI SSE -> Responses SSE
-func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, reqBodyStr string) {
+func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.StreamResponse, requestedModel, upName, usedModel, source, userAgent, reqBodyStr string) {
 	defer sr.Body.Close()
 	start := time.Now()
 	setSSEHeaders(w)
@@ -180,6 +188,7 @@ func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.Str
 		entry := s.makeLogEntry(requestedModel, upName, "error", http.StatusBadGateway, duration, "empty stream", "POST", "/v1/responses", true, reqBodyStr, "")
 		entry.UsedModel = usedModel
 		entry.Source = source
+		entry.UserAgent = userAgent
 		if realModel != "" {
 			entry.RealModel = realModel
 		}
@@ -190,6 +199,7 @@ func (s *Server) streamResponsesResponse(w http.ResponseWriter, sr *upstream.Str
 	entry := s.makeLogEntry(requestedModel, upName, "success", sr.StatusCode, duration, "", "POST", "/v1/responses", true, reqBodyStr, "")
 	entry.UsedModel = usedModel
 	entry.Source = source
+	entry.UserAgent = userAgent
 	if realModel != "" {
 		entry.RealModel = realModel
 	}
@@ -333,17 +343,19 @@ func buildPseudoOutput(choice *OpenAIChoice, respID string) []interface{} {
 }
 
 // recordResponsesError 统一记录/返回错误
-func (s *Server) recordResponsesError(w http.ResponseWriter, requestedModel, upName string, duration int64, err error, stream bool, source, reqBodyStr string) {
+func (s *Server) recordResponsesError(w http.ResponseWriter, requestedModel, upName string, duration int64, err error, stream bool, source, userAgent, reqBodyStr string) {
 	var credErr *creds.CredentialsError
 	if errors.As(err, &credErr) {
 		e := s.makeLogEntry(requestedModel, upName, "auth_error", 0, duration, credErr.Error(), "POST", "/v1/responses", stream, reqBodyStr, "")
 		e.Source = source
+		e.UserAgent = userAgent
 		s.recordLog(e)
 		writeResponsesError(w, http.StatusBadGateway, credErr.Error())
 		return
 	}
 	e := s.makeLogEntry(requestedModel, upName, "error", 0, duration, err.Error(), "POST", "/v1/responses", stream, reqBodyStr, "")
 	e.Source = source
+	e.UserAgent = userAgent
 	s.recordLog(e)
 	writeResponsesError(w, http.StatusBadGateway, err.Error())
 }

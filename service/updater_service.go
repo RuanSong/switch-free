@@ -5,7 +5,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"switchfree/updater"
+	"switchdev/updater"
 )
 
 // UpdaterService 自动升级服务（暴露给前端）

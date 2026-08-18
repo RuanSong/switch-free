@@ -180,4 +180,7 @@ type LogEntry struct {
 	CostText     string  `json:"costText,omitempty"`     // 费率说明（如 "$1.40/M 入 / $4.40/M 出"）
 	RealModel    string  `json:"realModel,omitempty"`    // 响应里真实使用的模型
 	FirstByteMs  int64   `json:"firstByteMs,omitempty"`  // 首字节用时（ms，伪流式下 ≈ 总用时）
+
+	// 不序列化到前端/JSONL，仅供 db 层记录 source
+	UserAgent string `json:"-"`
 }

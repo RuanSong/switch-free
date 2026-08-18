@@ -3,7 +3,7 @@ package service
 import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // CredsService 凭据管理服务（暴露给前端）

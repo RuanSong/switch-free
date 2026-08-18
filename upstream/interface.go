@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // Upstream 上游适配器统一接口

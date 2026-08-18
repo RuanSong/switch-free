@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"switchfree/paths"
+	"switchdev/paths"
 )
 
 // AgentType agent 工具类型，决定前端引导方式

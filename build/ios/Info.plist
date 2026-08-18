@@ -5,7 +5,7 @@
     <key>CFBundleExecutable</key>
     <string>switch-dev</string>
     <key>CFBundleIdentifier</key>
-    <string>com.switchfree.app</string>
+    <string>com.switchdev.app</string>
     <key>CFBundleName</key>
     <string>Switch Dev</string>
     <key>CFBundleDisplayName</key>

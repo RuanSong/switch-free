@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { UpdaterService } from "../../bindings/switchfree/service";
-import type { UpdateInfo } from "../../bindings/switchfree/updater/models";
+import { UpdaterService } from "../../bindings/switchdev/service";
+import type { UpdateInfo } from "../../bindings/switchdev/updater/models";
 import { useWailsEvent } from "../hooks/useWailsEvent";
 
 export default function UpdatePanel() {

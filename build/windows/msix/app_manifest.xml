@@ -8,7 +8,7 @@
   IgnorableNamespaces="uap3">
   
   <Identity 
-    Name="com.switchfree.app"
+    Name="com.switchdev.app"
     Publisher="CN=Local"
     Version="0.1.0.0" 
     ProcessorArchitecture="x64" />
@@ -29,7 +29,7 @@
   </Resources>
   
   <Applications>
-    <Application Id="com.switchfree.app" Executable="token-proxy" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="com.switchdev.app" Executable="token-proxy" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Token Proxy"
         Description="Multi-upstream AI model proxy with visual management"

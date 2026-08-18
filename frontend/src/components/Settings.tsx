@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { UpdaterService, ConfigService } from "../../bindings/switchfree/service";
-import type { Config, AgentModels, Preset } from "../../bindings/switchfree/config/models";
-import type { ModelRef } from "../../bindings/switchfree/proxy/models";
-import type { UpstreamModels } from "../../bindings/switchfree/service/models";
-import type { AllCredStatus } from "../../bindings/switchfree/service/models";
+import { UpdaterService, ConfigService, ProviderAPIService } from "../../bindings/switchdev/service";
+import type { Config, AgentModels, Preset, UARule, UAModelMap } from "../../bindings/switchdev/config/models";
+import type { ModelRef } from "../../bindings/switchdev/proxy/models";
+import type { UpstreamModels } from "../../bindings/switchdev/service/models";
+import type { AllCredStatus } from "../../bindings/switchdev/service/models";
 import CopyButton from "./CopyButton";
 import PricingEditor from "./PricingEditor";
 import UpdatePanel from "./UpdatePanel";
@@ -30,13 +30,21 @@ function modeFingerprint(x: {
   autoChain: AgentModels[] | null;
   manualFallbacks: { [k: string]: ModelRef[] | undefined } | null;
   globalFallback: ModelRef | null;
+  uaRoutingEnabled?: boolean;
+  uaRules?: UARule[] | null;
+  uaGlobalFallback?: ModelRef | null;
 }): string {
   const chain = (x.autoChain ?? []).map((ag) => [ag.upstream, ag.models ?? []]);
   const fb = Object.keys(x.manualFallbacks ?? {})
     .sort()
     .map((k) => [k, (x.manualFallbacks?.[k] ?? []).map((r) => [r.upstream, r.model])]);
   const gf = [x.globalFallback?.upstream ?? "", x.globalFallback?.model ?? ""];
-  return JSON.stringify([x.mode, chain, fb, gf]);
+  const ugf = [x.uaGlobalFallback?.upstream ?? "", x.uaGlobalFallback?.model ?? ""];
+  const uaRules = (x.uaRules ?? []).map((r) => [
+    r.id, r.name, r.pattern, r.enabled,
+    (r.mappings ?? []).map((m) => [m.requestedModel, m.target.upstream, m.target.model]),
+  ]);
+  return JSON.stringify([x.mode, chain, fb, gf, !!x.uaRoutingEnabled, uaRules, ugf]);
 }
 
 // matchesPreset 当前配置是否与某方案内容完全一致
@@ -48,6 +56,8 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   // config 由 App 提供（已在启动时拉好），不再异步等待，避免"加载中"
   const [cfg, setCfg] = useState<Config | null>(config);
   const [available, setAvailable] = useState<UpstreamModels[]>([]);
+  // 所有已配置供应商的 id->显示名（含未验证的，用于运行模式选择器显示供应商名而非 custom-xxx）
+  const [providerNames, setProviderNames] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string; undo?: () => void } | null>(null);
   // 手动降级链添加器的 state（必须在早返回之前，遵守 Hooks 规则）
   const [newManualKey, setNewManualKey] = useState("");
@@ -59,6 +69,12 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const [showKey, setShowKey] = useState(false);
   // 设置页 tab：运行模式 / 通用 / 费率 / 更新 / 关于
   const [tab, setTab] = useState<SettingsTab>("mode");
+  // UA 路由：历史请求来源列表（辅助配置）
+  const [uaSources, setUaSources] = useState<{ name: string; userAgent: string; count: number }[]>([]);
+  // UA 路由：每个规则的历史模型缓存
+  const [uaHistory, setUaHistory] = useState<Record<string, { model: string; count: number }[]>>({});
+  // 每个规则新增 mapping 的临时输入
+  const [uaDraft, setUaDraft] = useState<Record<string, { requestedModel: string; upstream: string; model: string }>>({});
   // 方案操作进行中（禁用下拉/按钮，避免并发写配置）
   const [presetBusy, setPresetBusy] = useState(false);
   // 标记是否已完成首次配置同步（跳过自动保存）
@@ -101,6 +117,22 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     // config 用 props 的（App 已提前拉），只拉模型列表（后端有缓存，快）
     const a = await ConfigService.GetAvailableModels();
     setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null));
+    loadProviderNames();
+    loadUaSources();
+  };
+
+  // 拉取所有已配置供应商的 id->显示名（含未验证的 custom-xxx，供运行模式选择器显示友好名）
+  const loadProviderNames = async () => {
+    try {
+      const ps = await ProviderAPIService.GetProviders();
+      const map: Record<string, string> = {};
+      (ps ? Object.entries(ps) : []).forEach(([id, p]) => {
+        if (p && p.name) map[id] = p.name;
+      });
+      setProviderNames(map);
+    } catch {
+      // 忽略：拿不到就回退显示 id
+    }
   };
 
   useEffect(() => {
@@ -108,6 +140,10 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     // config prop 变化时同步（App 刷新后）
     if (config) {
       setCfg(config);
+      // 自动加载已有规则（如内置 Claude Code/Codex）的历史模型
+      (config.uaRules ?? []).forEach((r) => {
+        if (r.name) loadRuleHistory(r.id, r.name);
+      });
       // 延迟标记已挂载，避免首次同步触发自动保存
       requestAnimationFrame(() => { mountedRef.current = true; });
     } else {
@@ -141,6 +177,9 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
           autoChain: cfg.autoChain,
           manualFallbacks: cfg.manualFallbacks,
           globalFallback: cfg.globalFallback,
+          uaRoutingEnabled: cfg.uaRoutingEnabled,
+          uaRules: cfg.uaRules,
+          uaGlobalFallback: cfg.uaGlobalFallback,
           activePreset: active,
         });
         // 本地同步激活标记，避免 UI 还显示旧方案名
@@ -154,7 +193,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       }
     }, 600);
     return () => clearTimeout(t);
-  }, [cfg?.mode, cfg?.autoChain, cfg?.manualFallbacks, cfg?.globalFallback]);
+  }, [cfg?.mode, cfg?.autoChain, cfg?.manualFallbacks, cfg?.globalFallback, cfg?.uaRoutingEnabled, cfg?.uaRules, cfg?.uaGlobalFallback]);
 
   // ====== 运行模式方案（快照语义）======
   // 后端写盘后重新拉配置同步到本地，并置 skipNextSaveRef 防止自动保存重复写一遍
@@ -260,15 +299,16 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     deveco: creds?.deveco?.valid ?? false,
     workbuddy: creds?.workbuddy?.valid ?? false,
     ...Object.fromEntries(
-      Object.entries(creds?.freeAPIs ?? {}).map(([id, st]) => [id, st?.valid ?? false])
+      Object.entries(creds?.providerAPIs ?? {}).map(([id, st]) => [id, st?.valid ?? false])
     ),
   };
 
-  // upstream 显示名：内置用固定 label，免费 API 用其供应商名（source）
+  // upstream 显示名：内置用固定 label，免费 API 供应商优先用凭据 source（已验证），
+  // 再回退到已配置供应商的名字（含未验证的 custom-xxx），最后才显示 id
   const labelOf = (up: string): string => {
     if (UPSTREAM_LABEL[up]) return UPSTREAM_LABEL[up];
-    const src = creds?.freeAPIs?.[up]?.source;
-    return src || up;
+    const src = creds?.providerAPIs?.[up]?.source;
+    return src || providerNames[up] || up;
   };
 
   if (!cfg) return <div className="p-6 text-[var(--color-text-dim)]">加载配置中...</div>;
@@ -313,6 +353,34 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       await ConfigService.SaveConfig(next);
       setCfg(next);
       flash("ok", enabled ? "已开启闲置自动锁定" : "已关闭闲置自动锁定");
+    } catch (e) {
+      flash("err", `保存失败: ${e}`);
+    }
+  };
+
+  // 切换"控制台日志落地文件"
+  const toggleLogFile = async (enabled: boolean) => {
+    try {
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      const next = { ...cur, logFile: { ...(cur.logFile ?? {}), enabled } };
+      await ConfigService.SaveConfig(next);
+      setCfg(next);
+      flash("ok", enabled ? "已开启日志文件" : "已关闭日志文件");
+    } catch (e) {
+      flash("err", `保存失败: ${e}`);
+    }
+  };
+
+  // 切换"接入 apiKey 鉴权"：关闭后网关不校验 key，仪表盘也不显示
+  const toggleAuthEnabled = async (enabled: boolean) => {
+    try {
+      const cur = await ConfigService.GetConfig();
+      if (!cur) throw new Error("获取配置失败");
+      const next = { ...cur, authEnabled: enabled };
+      await ConfigService.SaveConfig(next);
+      setCfg(next);
+      flash("ok", enabled ? "已开启接入鉴权" : "已关闭接入鉴权，网关请求无需 apiKey");
     } catch (e) {
       flash("err", `保存失败: ${e}`);
     }
@@ -420,6 +488,81 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     flashUndo(`已移除 ${key} 的降级项${removed ? ` ${removed.model}` : ""}`, prev);
   };
 
+  // ====== UA 路由操作 ======
+
+  const loadUaSources = async () => {
+    try {
+      const srcs = await ConfigService.GetUASources();
+      setUaSources((srcs ?? []).filter((s) => s && s.userAgent));
+    } catch {
+      // 静默失败：历史数据是辅助功能
+    }
+  };
+
+  const loadRuleHistory = async (ruleId: string, sourceName: string) => {
+    if (!sourceName) return;
+    try {
+      const models = await ConfigService.GetModelsByUASource(sourceName);
+      setUaHistory((prev) => ({ ...prev, [ruleId]: (models ?? []).map((m) => ({ model: m.model, count: m.count })) }));
+    } catch {
+      // 静默
+    }
+  };
+
+  const updateUaRule = (ruleId: string, patch: Partial<UARule>) => {
+    const rules = (cfg.uaRules ?? []).map((r) => (r.id === ruleId ? { ...r, ...patch } : r));
+    setCfg({ ...cfg, uaRules: rules });
+  };
+
+  // 选择 UA 来源时：更新 name（用于历史查询），pattern 仅在为空时填入 UA 字符串
+  const selectUaSource = (ruleId: string, source: { name: string; userAgent: string }) => {
+    const rule = (cfg.uaRules ?? []).find((r) => r.id === ruleId);
+    const patch: Partial<UARule> = { name: source.name };
+    if (!rule?.pattern) {
+      patch.pattern = source.userAgent;
+    }
+    updateUaRule(ruleId, patch);
+    loadRuleHistory(ruleId, source.name);
+  };
+
+  const addUaMapping = (ruleId: string) => {
+    const draft = uaDraft[ruleId];
+    if (!draft || !draft.requestedModel || !draft.upstream || !draft.model) return;
+    const rules = (cfg.uaRules ?? []).map((r) => {
+      if (r.id !== ruleId) return r;
+      const mapping: UAModelMap = {
+        requestedModel: draft.requestedModel,
+        target: { upstream: draft.upstream, model: draft.model } as ModelRef,
+      };
+      return { ...r, mappings: [...(r.mappings ?? []), mapping] };
+    });
+    setCfg({ ...cfg, uaRules: rules });
+    setUaDraft({ ...uaDraft, [ruleId]: { requestedModel: "", upstream: draft.upstream, model: "" } });
+  };
+
+  const removeUaMapping = (ruleId: string, idx: number) => {
+    const rules = (cfg.uaRules ?? []).map((r) => {
+      if (r.id !== ruleId) return r;
+      return { ...r, mappings: (r.mappings ?? []).filter((_, i) => i !== idx) };
+    });
+    setCfg({ ...cfg, uaRules: rules });
+  };
+
+  const addUaRule = () => {
+    const rule: UARule = {
+      id: "ua-" + crypto.randomUUID().slice(0, 8),
+      name: "",
+      pattern: "",
+      enabled: true,
+      mappings: [],
+    };
+    setCfg({ ...cfg, uaRules: [...(cfg.uaRules ?? []), rule] });
+  };
+
+  const removeUaRule = (ruleId: string) => {
+    setCfg({ ...cfg, uaRules: (cfg.uaRules ?? []).filter((r) => r.id !== ruleId) });
+  };
+
   return (
     <div className="p-6 space-y-6">
       {msg && (
@@ -487,35 +630,51 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
 
         {/* 接入 apiKey */}
         <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
-          <h2 className="font-semibold mb-1">接入 apiKey</h2>
-          <p className="text-xs text-[var(--color-text-dim)] mb-3">
-            客户端调用代理需在 <code className="font-mono">x-api-key</code> 或{" "}
-            <code className="font-mono">Authorization: Bearer</code> 头携带此 key，严格校验。重新生成后立即生效。
-          </p>
-          <div className="flex items-center gap-3 flex-wrap">
-            <input
-              type="text"
-              value={showKey ? (cfg.apiKey ?? "") : maskKey(cfg.apiKey ?? "")}
-              readOnly
-              className="flex-1 min-w-[280px] px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono cursor-default"
-            />
-            <button
-              onClick={() => setShowKey((v) => !v)}
-              className="px-2.5 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
-              title={showKey ? "隐藏" : "显示"}
-            >
-              {showKey ? "🙈" : "👁"}
-            </button>
-            <CopyButton text={cfg.apiKey ?? ""} />
-            <button
-              onClick={regenKey}
-              disabled={savingKey}
-              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-danger)]/80 hover:bg-[var(--color-danger)] disabled:opacity-50"
-              title="重新生成随机 key（原 key 立即失效）"
-            >
-              {savingKey ? "生成中..." : "🔄 重新生成"}
-            </button>
+          <div className="flex items-start justify-between gap-4 mb-1">
+            <div>
+              <h2 className="font-semibold">接入 apiKey</h2>
+              <p className="text-xs text-[var(--color-text-dim)] mt-1">
+                开启后客户端调用代理需在 <code className="font-mono">x-api-key</code> 或{" "}
+                <code className="font-mono">Authorization: Bearer</code> 头携带此 key，严格校验。关闭后网关不鉴权，任何请求均可访问。
+              </p>
+            </div>
+            <label className="inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+              <input
+                type="checkbox"
+                checked={cfg.authEnabled !== false}
+                onChange={(e) => toggleAuthEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-10 h-5 bg-[var(--color-surface-2)] rounded-full peer-checked:bg-[var(--color-primary)] relative transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5" />
+            </label>
           </div>
+
+          {cfg.authEnabled !== false && (
+            <div className="flex items-center gap-3 flex-wrap mt-3 pt-3 border-t border-[var(--color-border)]">
+              <input
+                type="text"
+                value={showKey ? (cfg.apiKey ?? "") : maskKey(cfg.apiKey ?? "")}
+                readOnly
+                className="flex-1 min-w-[280px] px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono cursor-default"
+              />
+              <button
+                onClick={() => setShowKey((v) => !v)}
+                className="px-2.5 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+                title={showKey ? "隐藏" : "显示"}
+              >
+                {showKey ? "🙈" : "👁"}
+              </button>
+              <CopyButton text={cfg.apiKey ?? ""} />
+              <button
+                onClick={regenKey}
+                disabled={savingKey}
+                className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-danger)]/80 hover:bg-[var(--color-danger)] disabled:opacity-50"
+                title="重新生成随机 key（原 key 立即失效）"
+              >
+                {savingKey ? "生成中..." : "🔄 重新生成"}
+              </button>
+            </div>
+          )}
         </section>
 
         {/* 供应商配置 */}
@@ -546,6 +705,23 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
             无操作 5 分钟后自动锁定供应商界面，需要输入主密码解锁。锁定期间代理调用不受影响。仅在供应商界面已开启主密码后生效。
           </p>
         </section>
+
+        {/* 日志文件 */}
+        <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <h2 className="font-semibold mb-1">日志文件</h2>
+          <p className="text-xs text-[var(--color-text-dim)] mb-3">
+            把控制台日志同时写入文件（存于配置目录 logs/ 下，按天切分），便于排查问题。旧日志自动压缩：7 天前压缩为 .gz，90 天前删除。
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={cfg?.logFile?.enabled !== false}
+              onChange={(e) => toggleLogFile(e.target.checked)}
+              className="w-4 h-4 accent-[var(--color-primary)]"
+            />
+            <span className="text-sm">启用日志文件（默认开启）</span>
+          </label>
+        </section>
       </div>
       )}
 
@@ -565,6 +741,10 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               onSave={savePreset}
               onDelete={deletePreset}
               onRename={renamePreset}
+              onClearActive={async () => {
+                await ConfigService.ClearActivePreset();
+                await syncAfterPreset();
+              }}
             />
             <button
               onClick={refreshModels}
@@ -601,17 +781,30 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               <div className="text-xs text-[var(--color-text-dim)]">客户端指定具体模型时，严格走该模型 + 其降级链</div>
             </div>
           </label>
+          <label className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border ${cfg.mode === "ua" ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10" : "border-[var(--color-border)]"}`}>
+            <input
+              type="radio"
+              checked={cfg.mode === "ua"}
+              onChange={() => setCfg({ ...cfg, mode: "ua" })}
+              className="accent-[var(--color-primary)]"
+            />
+            <div>
+              <div className="text-sm font-medium">ua 模式</div>
+              <div className="text-xs text-[var(--color-text-dim)]">完全由 User-Agent 规则路由，未命中走 UA 兜底</div>
+            </div>
+          </label>
         </div>
         <p className="text-xs text-[var(--color-text-dim)] mt-3">
           {cfg.mode === "auto"
             ? "auto 模式：客户端发 auto/不指定时，按下方优先级链依次尝试，末尾追加全局兜底。"
-            : "手动模式：客户端指定具体模型时严格走该模型，失败按该模型的降级链走，末尾追加全局兜底。"}
+            : cfg.mode === "manual"
+            ? "手动模式：客户端指定具体模型时严格走该模型，失败按该模型的降级链走，末尾追加全局兜底。"
+            : "ua 模式：根据 User-Agent 规则将请求路由到指定上游模型，未命中或失败时走 UA 兜底。"}
         </p>
       </section>
 
       {/* auto 优先级链（仅 auto 模式显示） */}
-      {cfg.mode === "auto" && (
-      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+      {cfg.mode === "auto" && (      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
         <div className="flex items-center gap-2 mb-1">
           <h2 className="font-semibold">auto 模式优先级链</h2>
           <div className="flex gap-1.5 ml-auto">
@@ -665,11 +858,12 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         )}
 
         {/* 添加新项 */}
-        <AutoChainAdder available={available} credValid={credValid} onAdd={addAutoItem} />
+        <AutoChainAdder available={available} credValid={credValid} onAdd={addAutoItem} upstreamLabel={labelOf} />
       </section>
       )}
 
-      {/* 全局兜底 */}
+      {/* 全局兜底（auto/manual 模式） */}
+      {cfg.mode !== "ua" && (
       <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
         <h2 className="font-semibold mb-1">全局兜底</h2>
         <p className="text-xs text-[var(--color-text-dim)] mb-3">
@@ -680,8 +874,10 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
           credValid={credValid}
           value={cfg.globalFallback}
           onChange={(ref) => setCfg({ ...cfg, globalFallback: ref })}
+          upstreamLabel={labelOf}
         />
       </section>
+      )}
 
       {/* 手动模式降级链（仅手动模式显示） */}
       {cfg.mode === "manual" && (
@@ -766,6 +962,150 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       </section>
       )}
 
+      {/* UA 模式兜底（仅 ua 模式显示） */}
+      {cfg.mode === "ua" && (
+      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+        <h2 className="font-semibold mb-1">UA 模式兜底</h2>
+        <p className="text-xs text-[var(--color-text-dim)] mb-3">
+          UA 规则未命中或目标模型失败时的最终保底模型。
+        </p>
+        <ModelPicker
+          available={available}
+          credValid={credValid}
+          value={cfg.uaGlobalFallback ?? ({} as ModelRef)}
+          onChange={(ref) => setCfg({ ...cfg, uaGlobalFallback: ref })}
+          upstreamLabel={labelOf}
+        />
+      </section>
+      )}
+
+      {/* User-Agent 路由 */}
+      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="font-semibold">User-Agent 路由</h2>
+          {cfg.mode === "ua" ? (
+            <span className="text-xs text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2 py-0.5 rounded">ua 模式始终启用</span>
+          ) : (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!cfg.uaRoutingEnabled}
+                onChange={(e) => setCfg({ ...cfg, uaRoutingEnabled: e.target.checked })}
+                className="w-4 h-4 accent-[var(--color-primary)]"
+              />
+              <span className="text-sm">{cfg.uaRoutingEnabled ? "已启用" : "已关闭"}</span>
+            </label>
+          )}
+        </div>
+        <p className="text-xs text-[var(--color-text-dim)] mb-3">
+          {cfg.mode === "ua"
+            ? "ua 模式：根据 User-Agent + 请求模型路由到目标上游，未命中走 UA 兜底。"
+            : "auto/manual 叠加层：根据 User-Agent 将特定模型名路由到指定上游，匹配成功时优先走目标模型，失败后仍按当前模式降级。"}
+        </p>
+
+        <div className="space-y-3">
+          {(cfg.uaRules ?? []).map((rule) => {
+            const draft = uaDraft[rule.id] ?? { requestedModel: "", upstream: "joycode", model: "" };
+            const validUpstreams = available.filter((u) => u.upstream !== "opencode" && credValid[u.upstream]);
+            const historyModels = uaHistory[rule.id] ?? [];
+            const usedPatterns = (cfg.uaRules ?? []).filter((r) => r.id !== rule.id).map((r) => r.pattern);
+            return (
+              <div key={rule.id} className="bg-[var(--color-bg)] rounded-lg p-3 border border-[var(--color-border)]">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                  <input
+                    type="checkbox"
+                    checked={rule.enabled}
+                    onChange={(e) => updateUaRule(rule.id, { enabled: e.target.checked })}
+                    className="w-4 h-4 accent-[var(--color-primary)] shrink-0"
+                  />
+                  <UASelect
+                    sources={uaSources}
+                    value={rule.pattern}
+                    usedValues={usedPatterns}
+                    onChange={(source) => {
+                      if (source) {
+                        selectUaSource(rule.id, source);
+                      } else {
+                        updateUaRule(rule.id, { name: "", pattern: "" });
+                      }
+                    }}
+                    onCustomInput={(val) => updateUaRule(rule.id, { name: val, pattern: val })}
+                  />
+                  <ConfirmPopover
+                    title="删除该规则？"
+                    onConfirm={() => removeUaRule(rule.id)}
+                    triggerClassName="w-6 h-6 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)] text-xs shrink-0"
+                  >
+                    ✕
+                  </ConfirmPopover>
+                </div>
+
+                {/* 映射列表 */}
+                {(rule.mappings ?? []).length > 0 && (
+                  <div className="space-y-1 ml-6 mb-2">
+                    {(rule.mappings ?? []).map((m, idx) => (
+                      <div key={idx} className="flex items-center gap-2 text-xs">
+                        <code className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)] font-mono">{m.requestedModel}</code>
+                        <span className="text-[var(--color-text-dim)]">→</span>
+                        <span className="px-1.5 py-0.5 rounded bg-[var(--color-surface-2)]">{labelOf(m.target.upstream)}</span>
+                        <code className="font-mono">{m.target.model}</code>
+                        <button
+                          onClick={() => removeUaMapping(rule.id, idx)}
+                          className="ml-auto w-5 h-5 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)]"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 添加映射 */}
+                <div className="flex items-center gap-2 flex-wrap ml-6 pt-2 border-t border-[var(--color-border)]">
+                  <RequestedModelSelect
+                    historyModels={historyModels}
+                    usedModels={(rule.mappings ?? []).map((m) => m.requestedModel)}
+                    value={draft.requestedModel}
+                    onChange={(val) => setUaDraft({ ...uaDraft, [rule.id]: { ...draft, requestedModel: val } })}
+                  />
+                  <span className="text-xs text-[var(--color-text-dim)]">→</span>
+                  <select
+                    value={draft.upstream}
+                    onChange={(e) => setUaDraft({ ...uaDraft, [rule.id]: { ...draft, upstream: e.target.value, model: "" } })}
+                    className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
+                  >
+                    {validUpstreams.map((u) => (
+                      <option key={u.upstream} value={u.upstream}>{labelOf(u.upstream)}</option>
+                    ))}
+                  </select>
+                  <ModelSelect
+                    options={validUpstreams.find((u) => u.upstream === draft.upstream)?.models ?? []}
+                    value={draft.model}
+                    onChange={(id) => setUaDraft({ ...uaDraft, [rule.id]: { ...draft, model: id } })}
+                    placeholder="目标模型..."
+                    className="w-48"
+                  />
+                  <button
+                    onClick={() => addUaMapping(rule.id)}
+                    disabled={!draft.requestedModel || !draft.model}
+                    className="px-2 py-1 text-xs rounded-md bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+                  >
+                    + 添加
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <button
+          onClick={addUaRule}
+          className="mt-3 w-full py-2 text-xs rounded-lg border border-dashed border-[var(--color-border)] text-[var(--color-text-dim)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+        >
+          + 新增 UA 规则
+        </button>
+      </section>
+
         {/* 配置 JSON 预览 */}
         <details className="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)]">
           <summary className="cursor-pointer text-sm text-[var(--color-text-dim)]">查看运行模式配置 JSON</summary>
@@ -799,11 +1139,11 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   );
 }
 
-// maskKey 隐藏 apiKey：显示前 10 位，其余用 *** 代替
+// maskKey 隐藏 apiKey：显示前 10 位，其余用等长 * 代替
 function maskKey(key: string): string {
   if (!key) return "";
   if (key.length <= 10) return key;
-  return key.slice(0, 10) + "***";
+  return key.slice(0, 10) + "*".repeat(key.length - 10);
 }
 
 // ====== TabBtn：设置页顶部 tab ======
@@ -827,10 +1167,12 @@ function AutoChainAdder({
   available,
   credValid,
   onAdd,
+  upstreamLabel,
 }: {
   available: UpstreamModels[];
   credValid: Record<string, boolean>;
   onAdd: (upstream: string, model: string) => void;
+  upstreamLabel: (up: string) => string;
 }) {
   const validAvailable = available.filter((u) => u.upstream !== "opencode" && credValid[u.upstream]);
   const [upstream, setUpstream] = useState(validAvailable[0]?.upstream ?? "");
@@ -860,7 +1202,7 @@ function AutoChainAdder({
         )}
         {validAvailable.map((u) => (
           <option key={u.upstream} value={u.upstream}>
-            {UPSTREAM_LABEL[u.upstream] ?? u.upstream}
+            {upstreamLabel(u.upstream)}
           </option>
         ))}
       </select>
@@ -893,18 +1235,24 @@ function ModelPicker({
   credValid,
   value,
   onChange,
+  upstreamLabel,
 }: {
   available: UpstreamModels[];
   credValid: Record<string, boolean>;
   value: ModelRef;
   onChange: (ref: ModelRef) => void;
+  upstreamLabel: (up: string) => string;
 }) {
   const validAvailable = available.filter((u) => u.upstream !== "opencode" && credValid[u.upstream]);
-  const models = validAvailable.find((u) => u.upstream === value.upstream)?.models ?? [];
+  // 未选择 upstream/model 时（首次进入、available 还在加载），纯显示层回退到第一个可用项，
+  // 避免下拉框空白；不写入 state，用户真正选择时才触发 onChange/保存
+  const displayUpstream = value.upstream || validAvailable[0]?.upstream || "";
+  const models = validAvailable.find((u) => u.upstream === displayUpstream)?.models ?? [];
+  const displayModel = value.model || models[0]?.id || "";
   return (
     <div className="flex items-center gap-2">
       <select
-        value={value.upstream}
+        value={displayUpstream}
         onChange={(e) => {
           const first = validAvailable.find((u) => u.upstream === e.target.value)?.models[0];
           onChange({ upstream: e.target.value, model: first?.id ?? "" } as ModelRef);
@@ -915,13 +1263,13 @@ function ModelPicker({
           <option value="">无可用凭据</option>
         )}
         {validAvailable.map((u) => (
-          <option key={u.upstream} value={u.upstream}>{UPSTREAM_LABEL[u.upstream] ?? u.upstream}</option>
+          <option key={u.upstream} value={u.upstream}>{upstreamLabel(u.upstream)}</option>
         ))}
       </select>
       <ModelSelect
         options={models}
-        value={value.model}
-        onChange={(id) => onChange({ upstream: value.upstream, model: id } as ModelRef)}
+        value={displayModel}
+        onChange={(id) => onChange({ upstream: displayUpstream, model: id } as ModelRef)}
         placeholder="选择模型..."
         className="flex-1"
       />
@@ -940,19 +1288,24 @@ function AboutSection() {
   return (
     <section className="bg-[var(--color-surface)] rounded-xl p-8 border border-[var(--color-border)]">
       <div className="flex flex-col items-center text-center">
-        {/* Logo */}
-        <img
-          src="/switch-dev-64.png"
-          alt="Switch Dev"
-          className="w-16 h-16 mb-4"
-          draggable={false}
-        />
-
-        {/* 应用名 */}
-        <div className="mb-2">
-          <span className="text-2xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
-          <span className="text-lg font-semibold text-[var(--color-text-dim)] tracking-widest ml-1.5">DEV</span>
-        </div>
+        {/* Logo + 应用名（点击跳转 GitHub） */}
+        <button
+          type="button"
+          onClick={() => ProviderAPIService.OpenURL("https://github.com/rosanruan/switch-dev")}
+          title="在 GitHub 上查看项目"
+          className="flex flex-col items-center bg-transparent border-0 p-0"
+        >
+          <img
+            src="/switch-dev-64.png"
+            alt="Switch Dev"
+            className="w-16 h-16 mb-4"
+            draggable={false}
+          />
+          <div className="mb-2">
+            <span className="text-2xl font-bold text-[var(--color-primary)] tracking-widest">SWITCH</span>
+            <span className="text-lg font-semibold text-[var(--color-text-dim)] tracking-widest ml-1.5">DEV</span>
+          </div>
+        </button>
 
         {/* 版本号 */}
         <span className="text-sm text-[var(--color-text-dim)] font-mono mb-6">
@@ -980,6 +1333,175 @@ function AboutSection() {
         </div>
       </div>
     </section>
+  );
+}
+
+// ====== UASelect：User-Agent 可搜索下拉（支持历史来源 + 自由输入） ======
+function UASelect({
+  sources,
+  value,
+  usedValues,
+  onChange,
+  onCustomInput,
+}: {
+  sources: { name: string; userAgent: string; count: number }[];
+  value: string;
+  usedValues: string[];
+  onChange: (source: { name: string; userAgent: string } | null) => void;
+  onCustomInput: (val: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        if (query !== value) onCustomInput(query);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, query, value, onCustomInput]);
+
+  const used = new Set(usedValues.filter(Boolean));
+  const filtered = sources.filter(
+    (s) =>
+      s.name.toLowerCase().includes(query.toLowerCase()) ||
+      s.userAgent.toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <div ref={ref} className="relative flex-1 min-w-[160px]">
+      <input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            setOpen(false);
+            onCustomInput(query);
+          }
+        }}
+        placeholder="选择或输入 User-Agent..."
+        className="w-full px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono"
+      />
+      {open && (
+        <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
+          {filtered.length === 0 && query && (
+            <button
+              onClick={() => { onCustomInput(query); setOpen(false); }}
+              className="w-full px-2 py-1.5 text-left text-xs hover:bg-[var(--color-surface-2)]"
+            >
+              使用 "{query}"
+            </button>
+          )}
+          {filtered.map((s) => {
+            const isUsed = used.has(s.name) || used.has(s.userAgent);
+            return (
+              <button
+                key={s.userAgent}
+                disabled={isUsed}
+                onClick={() => { onChange({ name: s.name, userAgent: s.userAgent }); setOpen(false); setQuery(s.name); }}
+                className={`w-full px-2 py-1.5 text-left text-xs flex items-center gap-2 ${
+                  isUsed ? "opacity-40 cursor-not-allowed" : "hover:bg-[var(--color-surface-2)]"
+                }`}
+              >
+                <span className="font-medium shrink-0">{s.name}</span>
+                <span className="text-[var(--color-text-dim)] truncate flex-1 font-mono">{s.userAgent}</span>
+                <span className="text-[var(--color-text-dim)] shrink-0">×{s.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ====== RequestedModelSelect：请求模型可搜索下拉（历史模型 + 自由输入） ======
+function RequestedModelSelect({
+  historyModels,
+  usedModels,
+  value,
+  onChange,
+}: {
+  historyModels: { model: string; count: number }[];
+  usedModels: string[];
+  value: string;
+  onChange: (val: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        if (query !== value) onChange(query);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, query, value, onChange]);
+
+  const used = new Set(usedModels.map((m) => m.toLowerCase()));
+  const filtered = historyModels.filter((h) =>
+    h.model.toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <div ref={ref} className="relative w-44">
+      <input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { setOpen(false); onChange(query); }
+        }}
+        placeholder="请求模型"
+        className="w-full px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)] font-mono"
+      />
+      {open && (
+        <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
+          {query && !historyModels.some((h) => h.model === query) && (
+            <button
+              onClick={() => { onChange(query); setOpen(false); }}
+              className="w-full px-2 py-1.5 text-left text-xs hover:bg-[var(--color-surface-2)]"
+            >
+              使用 "{query}"
+            </button>
+          )}
+          {filtered.map((h) => {
+            const isUsed = used.has(h.model.toLowerCase());
+            return (
+              <button
+                key={h.model}
+                disabled={isUsed}
+                onClick={() => { onChange(h.model); setOpen(false); }}
+                className={`w-full px-2 py-1.5 text-left text-xs flex items-center gap-2 font-mono ${
+                  isUsed ? "opacity-40 cursor-not-allowed" : "hover:bg-[var(--color-surface-2)]"
+                }`}
+              >
+                <span className="truncate flex-1">{h.model}</span>
+                <span className="text-[var(--color-text-dim)] shrink-0">×{h.count}</span>
+              </button>
+            );
+          })}
+          {filtered.length === 0 && !query && (
+            <div className="px-2 py-1.5 text-xs text-[var(--color-text-dim)]">无历史模型，请手动输入</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

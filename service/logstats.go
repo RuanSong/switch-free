@@ -5,7 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"switchfree/proxy"
+	"switchdev/db"
+	"switchdev/proxy"
 )
 
 // UsageStats 使用统计结果
@@ -36,7 +37,7 @@ type ProviderUsage struct {
 
 // ModelUsage 模型维度统计
 type ModelUsage struct {
-	Model      string  `json:"model"`      // 实际用到的模型（内部 id，如 free/<pid>/<mid>）
+	Model      string  `json:"model"`      // 实际用到的模型（内部 id，如 provider/<pid>/<mid>）
 	ModelLabel string  `json:"modelLabel"` // 显示名（免费模型会带上供应商名）
 	Tokens     int64   `json:"tokens"`
 	Input      int64   `json:"input"`
@@ -46,17 +47,11 @@ type ModelUsage struct {
 	Percent    float64 `json:"percent"` // token 占比 0-100
 }
 
-// builtInProviderLabel 内置 4 上游的显示名
+// builtInProviderLabel 内置 4 上游的显示名（统一用英文 name）
 func builtInProviderLabel(up string) string {
 	switch up {
-	case "joycode":
-		return "京东 JoyCode"
-	case "deveco":
-		return "华为 DevEco"
-	case "opencode":
-		return "OpenCode Zen"
-	case "workbuddy":
-		return "腾讯 WorkBuddy"
+	case "joycode", "deveco", "opencode", "workbuddy":
+		return up
 	default:
 		return ""
 	}
@@ -179,15 +174,59 @@ func ComputeUsageStats(startDate, endDate string, nameProvider func(string) stri
 	return stats
 }
 
-// GetUsageStats 暴露给前端的统计方法（service 层包装）
+// GetUsageStats 暴露给前端的统计方法（优先从 db 查，回退到文件扫描）
 func (s *LogService) GetUsageStats(startDate, endDate string) *UsageStats {
+	if s.core.DB() != nil {
+		dbStats, err := s.core.DB().ComputeUsageStats(startDate, endDate)
+		if err == nil && dbStats != nil {
+			return convertDBUsageStats(dbStats)
+		}
+	}
 	return ComputeUsageStats(startDate, endDate, s.providerNamer())
 }
 
+// convertDBUsageStats 将 db.UsageStats 转换为 service.UsageStats
+func convertDBUsageStats(d *db.UsageStats) *UsageStats {
+	stats := &UsageStats{
+		StartDate:   d.StartDate,
+		EndDate:     d.EndDate,
+		TotalTokens: d.TotalTokens,
+		TotalInput:  d.TotalInput,
+		TotalOutput: d.TotalOutput,
+		TotalCost:   d.TotalCost,
+		TotalReqs:   d.TotalReqs,
+		SuccessReqs: d.SuccessReqs,
+	}
+	for _, p := range d.ByProvider {
+		stats.ByProvider = append(stats.ByProvider, ProviderUsage{
+			Provider:      p.Provider,
+			ProviderLabel: p.ProviderLabel,
+			Tokens:        p.Tokens,
+			Input:         p.Input,
+			Output:        p.Output,
+			Cost:          p.Cost,
+			Requests:      p.Requests,
+			SuccessReqs:   p.SuccessReqs,
+		})
+	}
+	for _, m := range d.ByModel {
+		stats.ByModel = append(stats.ByModel, ModelUsage{
+			Model:      m.Model,
+			ModelLabel: m.ModelLabel,
+			Tokens:     m.Tokens,
+			Input:      m.Input,
+			Output:     m.Output,
+			Cost:       m.Cost,
+			Requests:   m.Requests,
+			Percent:    m.Percent,
+		})
+	}
+	return stats
+}
 // providerNamer 返回一个把免费供应商 id 解析为显示名的闭包（数据来自运行中的代理）。
 func (s *LogService) providerNamer() func(string) string {
 	return func(id string) string {
-		ups := s.core.FreeUpstreams()
+		ups := s.core.ProviderAPIUpstreams()
 		if ups == nil {
 			return id
 		}
@@ -205,9 +244,17 @@ type TodaySummary struct {
 	Cost   float64 `json:"cost"`
 }
 
-// GetTodaySummary 今日总消耗 token 和费用
+// GetTodaySummary 今日总消耗 token 和费用（优先从 db 查，回退到文件扫描）
 func (s *LogService) GetTodaySummary() *TodaySummary {
 	today := time.Now().Format("2006-01-02")
+	if s.core.DB() != nil {
+		if dbStats, err := s.core.DB().ComputeUsageStats(today, today); err == nil && dbStats != nil {
+			return &TodaySummary{
+				Tokens: dbStats.TotalTokens,
+				Cost:   dbStats.TotalCost,
+			}
+		}
+	}
 	stats := ComputeUsageStats(today, today, s.providerNamer())
 	return &TodaySummary{
 		Tokens: stats.TotalTokens,

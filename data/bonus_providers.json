@@ -1,0 +1,19 @@
+{
+  "providers": [
+    {
+      "id": "tabitoken",
+      "name": "tabitoken",
+      "baseUrl": "https://tabitoken.com/v1",
+      "registerUrl": "https://tabitoken.com/sign-up?aff=JGOZ",
+      "bonusRule": "新用户注册赠送$100额度"
+    },
+     {
+      "id": "sensenova",
+      "name": "商汤科技",
+      "baseUrl": "https://token.sensenova.cn/v1",
+      "registerUrl": "https://platform.sensenova.cn/login",
+      "bonusRule": "公测，tokenPlan免费拿，0元/月"
+    }
+    
+  ]
+}

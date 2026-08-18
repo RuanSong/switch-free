@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Preset } from "../../bindings/switchfree/config/models";
+import type { Preset } from "../../bindings/switchdev/config/models";
 import ConfirmPopover from "./ConfirmPopover";
 
 // PresetSwitcher 运行模式方案下拉 + 保存按钮
@@ -14,6 +14,7 @@ export default function PresetSwitcher({
   onSave,
   onDelete,
   onRename,
+  onClearActive,
 }: {
   presets: Preset[];
   activePreset: string;
@@ -22,6 +23,7 @@ export default function PresetSwitcher({
   onSave: (name: string) => void;
   onDelete: (name: string) => void;
   onRename: (oldName: string, newName: string) => void;
+  onClearActive: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -58,6 +60,10 @@ export default function PresetSwitcher({
 
   // 方案摘要：模式 + 链长度，帮用户区分方案
   const summary = (p: Preset): string => {
+    if (p.mode === "ua") {
+      const n = (p.uaRules ?? []).filter((r) => r.enabled).length;
+      return `UA · ${n} 条规则`;
+    }
     if (p.mode === "auto") {
       const n = (p.autoChain ?? []).reduce((sum, ag) => sum + (ag.models?.length ?? 0), 0);
       return `auto · ${n} 个模型`;
@@ -87,9 +93,26 @@ export default function PresetSwitcher({
 
           {open && (
             <div className="absolute right-0 z-50 mt-1 w-72 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-lg max-h-72 overflow-y-auto">
+              {/* 未命名的方案 */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (activePreset) onClearActive();
+                  setOpen(false);
+                }}
+                className={`w-full text-left px-3 py-2 text-sm border-b border-[var(--color-border)] ${
+                  !activePreset
+                    ? "bg-[var(--color-primary)]/10 text-[var(--color-text)]"
+                    : "text-[var(--color-text)] hover:bg-[var(--color-surface-2)]"
+                }`}
+              >
+                未命名的方案
+                {!activePreset && <span className="text-[10px] ml-2 text-[var(--color-primary)]">当前</span>}
+              </button>
+
               {presets.length === 0 ? (
                 <div className="px-3 py-2.5 text-xs text-[var(--color-text-dim)]">
-                  暂无方案，点右侧「保存方案」把当前配置存为快照
+                  暂无已保存方案，点右侧「保存方案」把当前配置存为快照
                 </div>
               ) : (
                 presets.map((p) => (
@@ -153,7 +176,7 @@ export default function PresetSwitcher({
         <Modal onClose={() => setSaveName(null)}>
           <h3 className="font-semibold mb-2">保存方案</h3>
           <p className="text-sm text-[var(--color-text-dim)] mb-3">
-            把当前运行模式配置（模式 / 降级链 / 全局兜底）冻结为一份命名快照。
+            把当前运行模式配置（模式 / 降级链 / 全局兜底 / UA 路由）冻结为一份命名快照。
           </p>
           <input
             autoFocus
@@ -169,9 +192,29 @@ export default function PresetSwitcher({
             placeholder="方案名，如「省钱档」"
             className="w-full px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] mb-2"
           />
+          {presets.length > 0 && (
+            <div className="mb-2">
+              <div className="text-xs text-[var(--color-text-dim)] mb-1.5">或选择已有方案覆盖：</div>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-[var(--color-border)]">
+                {presets.map((p) => (
+                  <button
+                    key={p.name}
+                    type="button"
+                    onClick={() => setSaveName(p.name)}
+                    className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between hover:bg-[var(--color-surface-2)] ${
+                      trimmedSave === p.name ? "bg-[var(--color-primary)]/10" : ""
+                    }`}
+                  >
+                    <span className="truncate font-medium">{p.name}</span>
+                    <span className="text-xs text-[var(--color-text-dim)] ml-2 shrink-0">{summary(p)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {willOverwrite && (
             <p className="text-xs text-[var(--color-warning)] mb-3">
-              ⚠️ 已存在同名方案，保存将覆盖它
+              ⚠️ 已存在同名方案「{trimmedSave}」，保存将覆盖它
             </p>
           )}
           <div className="flex gap-2 justify-end mt-3">
@@ -189,7 +232,7 @@ export default function PresetSwitcher({
               disabled={!trimmedSave}
               className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
             >
-              {willOverwrite ? "覆盖" : "保存"}
+              {willOverwrite ? "覆盖保存" : "保存为新方案"}
             </button>
           </div>
         </Modal>

@@ -11,8 +11,8 @@ import (
 
 	"github.com/minio/selfupdate"
 
-	"switchfree/config"
-	"switchfree/version"
+	"switchdev/config"
+	"switchdev/version"
 )
 
 // Updater 自动升级管理器

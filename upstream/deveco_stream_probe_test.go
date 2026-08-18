@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // TestDevEcoStreamProbe 探测 DevEco 流式 SSE 格式（验证 CallStream 实现）

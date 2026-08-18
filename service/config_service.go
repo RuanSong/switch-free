@@ -8,9 +8,10 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
-	"switchfree/config"
-	"switchfree/proxy"
-	"switchfree/upstream"
+	"switchdev/config"
+	"switchdev/db"
+	"switchdev/proxy"
+	"switchdev/upstream"
 )
 
 // ConfigService 配置管理服务（暴露给前端）
@@ -113,8 +114,20 @@ func (s *ConfigService) RenamePreset(oldName, newName string) error {
 	return nil
 }
 
+// ClearActivePreset 清除当前激活方案标记（切换到"自定义"状态，配置内容不变）
+func (s *ConfigService) ClearActivePreset() error {
+	cur := s.mgr.Get()
+	cur.ActivePreset = ""
+	if err := s.mgr.SaveConfig(cur); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
 // restartProxyOnPort 停止当前代理，用新端口重启
-func (s *ConfigService) restartProxyOnPort(port int) error {	if s.core == nil || s.core.server == nil {
+func (s *ConfigService) restartProxyOnPort(port int) error {
+	if s.core == nil || s.core.server == nil {
 		return nil
 	}
 	s.core.server.Stop()
@@ -199,7 +212,7 @@ func (s *ConfigService) RefreshModels() []UpstreamModels {
 	return result
 }
 
-// fetchAllModels 并发拉取四上游模型，合并本地映射 + 免费 API 模型，返回结果
+// fetchAllModels 并发拉取四上游模型，合并本地映射 + 供应商模型，返回结果
 func (s *ConfigService) fetchAllModels() []UpstreamModels {
 	jy, de, oc, wb := s.core.Upstreams()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -255,22 +268,22 @@ func (s *ConfigService) fetchAllModels() []UpstreamModels {
 		out = append(out, UpstreamModels{Upstream: r.upstream, Source: source, Models: opts})
 	}
 
-	// 免费 API 模型（按 provider 分组，已验证的模型）
-	out = append(out, freeAPIModelsGrouped()...)
+	// 供应商模型（按 provider 分组，已验证的模型）
+	out = append(out, providerAPIModelsGrouped()...)
 	return out
 }
 
-// freeAPIModelsGrouped 把已注册的免费模型按 provider 分组为 UpstreamModels
-func freeAPIModelsGrouped() []UpstreamModels {
+// providerAPIModelsGrouped 把已注册的免费模型按 provider 分组为 UpstreamModels
+func providerAPIModelsGrouped() []UpstreamModels {
 	grouped := map[string][]ModelOption{}
-	for _, fm := range proxy.FreeModels {
+	for _, fm := range proxy.ProviderModels {
 		grouped[fm.ProviderID] = append(grouped[fm.ProviderID], ModelOption{
-			ID:      fm.InternalID,
-			Label:   fm.Label,
-			Context: fm.Context,
-			Stream:  true,
+			ID:       fm.InternalID,
+			Label:    fm.Label,
+			Context:  fm.Context,
+			Stream:   true,
 			ToolCall: true,
-			Free:    true,
+			Free:     true,
 		})
 	}
 	out := make([]UpstreamModels, 0, len(grouped))
@@ -320,4 +333,28 @@ func modelOptionsWorkBuddy() []ModelOption {
 		opts = append(opts, ModelOption{ID: m.ID, Label: m.Label, Context: m.Context, Output: m.Output, Stream: true, Vision: m.Vision, ToolCall: m.ToolCall, Free: m.Free})
 	}
 	return opts
+}
+
+// GetUASources 列出所有已知的请求来源（User-Agent），用于 UA 路由配置辅助
+func (s *ConfigService) GetUASources() []db.SourceInfo {
+	if s.core == nil || s.core.DB() == nil {
+		return nil
+	}
+	out, err := s.core.DB().ListSources()
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// GetModelsByUASource 查询某个 source 历史请求过的模型（按次数降序）
+func (s *ConfigService) GetModelsByUASource(sourceName string) []db.SourceModelStat {
+	if s.core == nil || s.core.DB() == nil {
+		return nil
+	}
+	out, err := s.core.DB().QueryModelsBySource(sourceName)
+	if err != nil {
+		return nil
+	}
+	return out
 }

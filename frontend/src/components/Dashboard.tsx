@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { ProxyService, LogService } from "../../bindings/switchfree/service";
-import type { AllCredStatus, SpeedStats } from "../../bindings/switchfree/service/models";
-import type { ProxyStatus } from "../../bindings/switchfree/proxy/models";
-import type { Config } from "../../bindings/switchfree/config/models";
+import { ProxyService, LogService } from "../../bindings/switchdev/service";
+import type { AllCredStatus, SpeedStats } from "../../bindings/switchdev/service/models";
+import type { ProxyStatus } from "../../bindings/switchdev/proxy/models";
+import type { Config } from "../../bindings/switchdev/config/models";
 
 import CopyButton from "./CopyButton";
 
@@ -45,6 +45,12 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
   // 根据当前配置计算实际会用的模型链（用于显示）
   const { chainText, chainLength } = (() => {
     if (!config) return { chainText: "-", chainLength: 0 };
+    if (config.mode === "ua") {
+      const ruleCount = (config.uaRules ?? []).filter((r) => r.enabled).length;
+      const mappingCount = (config.uaRules ?? []).reduce((n, r) => n + (r.mappings?.length ?? 0), 0);
+      if (mappingCount === 0) return { chainText: ruleCount > 0 ? "已启用规则，未配映射" : "（空）", chainLength: 0 };
+      return { chainText: `${ruleCount} 条规则，${mappingCount} 个模型映射`, chainLength: mappingCount };
+    }
     if (config.mode === "auto") {
       // auto 链：展开 agent 分组
       const flat: { u: string; m: string }[] = [];
@@ -169,23 +175,29 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
             <div>
               <div className="text-[var(--color-text-dim)]">运行模式</div>
               <div className="font-mono">
-                {proxy?.mode === "manual" ? "手动" : "auto"}
+                {proxy?.mode === "manual" ? "手动" : proxy?.mode === "ua" ? "UA" : "auto"}
               </div>
             </div>
             <div className="col-span-2">
               <div className="text-[var(--color-text-dim)]">
-                {config?.mode === "manual" ? "手动降级配置" : "auto 优先级链"}
+                {config?.mode === "manual" ? "手动降级配置" : config?.mode === "ua" ? "UA 路由规则" : "auto 优先级链"}
               </div>
               <div className="font-mono text-xs truncate" title={chainText}>
                 {chainText}
               </div>
             </div>
             <div>
-              <div className="text-[var(--color-text-dim)]">全局兜底</div>
+              <div className="text-[var(--color-text-dim)]">
+                {config?.mode === "ua" ? "UA 兜底" : "全局兜底"}
+              </div>
               <div className="font-mono text-xs truncate">
-                {config?.globalFallback
-                  ? `${UPSTREAM_LABEL[config.globalFallback.upstream] ?? config.globalFallback.upstream}/${config.globalFallback.model}`
-                  : "-"}
+                {config?.mode === "ua"
+                  ? (config?.uaGlobalFallback?.upstream
+                      ? `${UPSTREAM_LABEL[config.uaGlobalFallback.upstream] ?? config.uaGlobalFallback.upstream}/${config.uaGlobalFallback.model}`
+                      : "-")
+                  : (config?.globalFallback?.upstream
+                      ? `${UPSTREAM_LABEL[config.globalFallback.upstream] ?? config.globalFallback.upstream}/${config.globalFallback.model}`
+                      : "-")}
               </div>
             </div>
             <div>
@@ -214,20 +226,22 @@ export default function Dashboard({ proxy, creds, config, onGoCredentials }: Pro
                 </code>
                 <CopyButton text={`http://127.0.0.1:${proxy?.port ?? 8787}/v1`} />
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[var(--color-text-dim)] w-16 shrink-0">apiKey</span>
-                <code className="flex-1 px-3 py-1.5 rounded-md bg-[var(--color-surface-2)] text-sm font-mono text-[var(--color-text)] truncate">
-                  {showKey ? (config?.apiKey || "-") : maskKey(config?.apiKey || "")}
-                </code>
-                <button
-                  onClick={() => setShowKey((v) => !v)}
-                  className="px-2.5 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] text-[var(--color-text)]"
-                  title={showKey ? "隐藏" : "显示"}
-                >
-                  {showKey ? "🙈" : "👁"}
-                </button>
-                <CopyButton text={config?.apiKey || ""} />
-              </div>
+              {config?.authEnabled !== false && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[var(--color-text-dim)] w-16 shrink-0">apiKey</span>
+                  <code className="flex-1 px-3 py-1.5 rounded-md bg-[var(--color-surface-2)] text-sm font-mono text-[var(--color-text)] truncate">
+                    {showKey ? (config?.apiKey || "-") : maskKey(config?.apiKey || "")}
+                  </code>
+                  <button
+                    onClick={() => setShowKey((v) => !v)}
+                    className="px-2.5 py-1 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] text-[var(--color-text)]"
+                    title={showKey ? "隐藏" : "显示"}
+                  >
+                    {showKey ? "🙈" : "👁"}
+                  </button>
+                  <CopyButton text={config?.apiKey || ""} />
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -301,10 +315,10 @@ function rankBadge(i: number): string {
   return ["🥇", "🥈", "🥉"][i] ?? String(i + 1);
 }
 
-// maskKey 隐藏 apiKey：显示前 10 位，其余用 *** 代替
+// maskKey 隐藏 apiKey：显示前 10 位，其余用等长 * 代替
 function maskKey(key: string): string {
   if (!key) return "";
   if (key.length <= 10) return key;
-  return key.slice(0, 10) + "***";
+  return key.slice(0, 10) + "*".repeat(key.length - 10);
 }
 

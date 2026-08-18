@@ -1,12 +1,22 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { BenchmarkService, ModelService, FreeAPIService } from "../../bindings/switchfree/service";
-import type { BenchmarkResult, ModelDetail, AllCredStatus } from "../../bindings/switchfree/service/models";
+import { createPortal } from "react-dom";
+import { BenchmarkService, ModelService, ProviderAPIService } from "../../bindings/switchdev/service";
+import type { BenchmarkResult, ModelDetail, AllCredStatus } from "../../bindings/switchdev/service/models";
 import { useWailsEvent } from "../hooks/useWailsEvent";
 import { ModelSelect } from "./ModelSelect";
 import ConfirmPopover from "./ConfirmPopover";
 
 const DEFAULT_PROMPT = "请详细介绍 Go 语言的 goroutine 和 channel 并发模型，包括基本概念、使用示例和注意事项。";
-const STORAGE_KEY = "benchmark.items.v1";
+const STORAGE_KEY = "benchmark.items.v2";
+const APIMODE_KEY = "benchmark.apimode";
+
+type ApiMode = "anthropic" | "openai-chat" | "openai-responses";
+
+const API_MODES: { value: ApiMode; label: string; desc: string }[] = [
+  { value: "anthropic", label: "Anthropic Messages", desc: "/v1/messages" },
+  { value: "openai-chat", label: "OpenAI Chat Completions", desc: "/v1/chat/completions" },
+  { value: "openai-responses", label: "OpenAI Responses", desc: "/v1/responses" },
+];
 
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
@@ -21,12 +31,11 @@ const UPSTREAM_COLOR: Record<string, string> = {
 };
 
 interface BenchItem {
-  id: string; // 稳定的本地 id（React key，切换模型时不重挂载卡片）
+  id: string;
   upstream: string;
   model: string;
 }
 
-// 结果/流式按 upstream|model 索引（每次测评都对应当前选中的模型）
 const itemKey = (it: BenchItem) => `${it.upstream}|${it.model}`;
 
 let _seq = 0;
@@ -37,7 +46,7 @@ const newItemId = () => {
 
 function upstreamDisplayName(upstream: string, creds: AllCredStatus | null): string {
   if (UPSTREAM_LABEL[upstream]) return UPSTREAM_LABEL[upstream];
-  const src = creds?.freeAPIs?.[upstream]?.source ?? "";
+  const src = creds?.providerAPIs?.[upstream]?.source ?? "";
   return src.split(" (")[0].trim() || upstream;
 }
 
@@ -49,6 +58,7 @@ function defaultModel(models: ModelDetail[], upstream: string): string {
 export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [maxTokens, setMaxTokens] = useState(1024);
+  const [apiMode, setApiMode] = useState<ApiMode>("anthropic");
   const [models, setModels] = useState<ModelDetail[]>([]);
   const [items, setItems] = useState<BenchItem[]>([]);
   const [results, setResults] = useState<Record<string, BenchmarkResult | null>>({});
@@ -56,13 +66,16 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
   const [singleRunning, setSingleRunning] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [streamingContent, setStreamingContent] = useState<Record<string, string>>({});
-  const [addOpen, setAddOpen] = useState(false);
-  const addRef = useRef<HTMLDivElement>(null);
+
+  // 添加测评项面板状态
+  const [pickOpen, setPickOpen] = useState(false);
+  const [pickUpstream, setPickUpstream] = useState<string>("");
+  const [pickSelected, setPickSelected] = useState<Set<string>>(new Set());
+
   const seeded = useRef(false);
 
-  // 主密码锁定状态：锁定时仍可列出/选择供应商模型（模型元数据不加密），
-  // 只是发起测评需要密钥，因此这里仅做提示，不阻断模型选择。
   const [locked, setLocked] = useState(false);
+
   const refreshModels = useCallback(() => {
     ModelService.GetModels()
       .then((m) =>
@@ -74,32 +87,53 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
       )
       .catch(() => {});
   }, []);
+
   const checkLock = useCallback(() => {
-    FreeAPIService.GetLockStatus()
+    ProviderAPIService.GetLockStatus()
       .then((info) => setLocked(!!info?.isLocked))
       .catch(() => {});
   }, []);
+
   useEffect(() => {
     checkLock();
   }, [checkLock]);
-  // 供应商增删/验证/加锁解锁都会推 freeapi:change：同步刷新锁状态 + 模型
-  useWailsEvent("freeapi:change", () => {
+
+  useWailsEvent("providerapi:change", () => {
     checkLock();
     refreshModels();
   });
 
   useEffect(() => {
-    ModelService.GetModels()
-      .then((m) => {
-        const list = (m ?? [])
-          .filter((x): x is ModelDetail => x !== null)
-          .filter((x) => x.upstream !== "opencode");
-        setModels(list);
+    refreshModels();
+  }, [refreshModels]);
+
+  // 恢复 apiMode
+  useEffect(() => {
+    const saved = localStorage.getItem(APIMODE_KEY);
+    if (saved === "anthropic" || saved === "openai-chat" || saved === "openai-responses") {
+      setApiMode(saved);
+    }
+  }, []);
+
+  // 恢复上一次测评结果（从 DB 读回）
+  useEffect(() => {
+    BenchmarkService.GetBenchResults()
+      .then((list) => {
+        if (!list || list.length === 0) return;
+        const map: Record<string, BenchmarkResult | null> = {};
+        for (const r of list) {
+          if (r && r.upstream && r.model) map[`${r.upstream}|${r.model}`] = r;
+        }
+        setResults((prev) => ({ ...map, ...prev }));
       })
       .catch(() => {});
   }, []);
 
-  // 模型加载后：localStorage 有就恢复，否则每个可用 upstream 自动建一项
+  useEffect(() => {
+    localStorage.setItem(APIMODE_KEY, apiMode);
+  }, [apiMode]);
+
+  // 恢复测评项
   useEffect(() => {
     if (models.length === 0 || seeded.current) return;
     seeded.current = true;
@@ -124,14 +158,13 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
     setItems(initial);
   }, [models]);
 
-  // 模型列表变化（如供应商新增验证模型）后，清理已不存在的选项
+  // 清理不存在的模型
   useEffect(() => {
     if (models.length === 0) return;
     setItems((prev) => {
       const valid = new Set(models.map((m) => `${m.upstream}|${m.id}`));
       const next = prev.map((it) => {
         if (valid.has(`${it.upstream}|${it.model}`)) return it;
-        // 之前选的模型没了：回退到该 upstream 的第一个可用模型
         const fallback = defaultModel(models, it.upstream);
         return fallback ? { ...it, model: fallback } : it;
       }).filter((it) => valid.has(`${it.upstream}|${it.model}`));
@@ -139,28 +172,16 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
     });
   }, [models]);
 
-  // 持久化
   useEffect(() => {
     if (seeded.current) localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   }, [items]);
 
-  // 点击外部关闭添加菜单
-  useEffect(() => {
-    if (!addOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [addOpen]);
-
-  // 进度事件：按 upstream|model 索引
+  // 进度事件
   useWailsEvent("benchmark:progress", (data) => {
     const r = data as BenchmarkResult;
     if (r && r.upstream) setResults((prev) => ({ ...prev, [`${r.upstream}|${r.model}`]: r }));
   });
 
-  // 流式 chunk
   useWailsEvent("benchmark:chunk", (data) => {
     const d = data as { upstream: string; model: string; delta: string };
     if (d?.upstream && d.model) {
@@ -171,7 +192,6 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
 
   const modelsFor = (up: string) => models.filter((m) => m.upstream === up);
 
-  // 每个 upstream 已被其他 item 选中的模型（用于下拉去重；同 upstream 不可重复，不同 upstream 各自独立）
   const usedModelsByUpstream = useMemo(() => {
     const m = new Map<string, Set<string>>();
     items.forEach((it) => {
@@ -182,48 +202,134 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
     return m;
   }, [items]);
 
-  // 所有 upstream + 是否还有可添加的模型
+  // 所有供应商
   const allUpstreams = useMemo(
     () => Array.from(new Set(models.map((m) => m.upstream))),
     [models]
   );
-  const addableUpstreams = useMemo(
-    () =>
-      allUpstreams
-        .map((up) => {
-          const used = usedModelsByUpstream.get(up);
-          return {
-            upstream: up,
-            label: upstreamDisplayName(up, creds),
-            count: modelsFor(up).length,
-            hasMore: modelsFor(up).some((m) => !used?.has(m.id)),
-          };
-        })
-        .filter((u) => u.hasMore),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allUpstreams, models, usedModelsByUpstream, creds]
+
+  // ── 添加面板逻辑 ──────────────────────────────────────────
+
+  // 打开面板：初始化选中状态（已有模型默认勾选）
+  const openPickPanel = () => {
+    const existing = new Set<string>();
+    items.forEach((it) => existing.add(`${it.upstream}|${it.model}`));
+    setPickSelected(existing);
+    setPickUpstream(allUpstreams[0] ?? "");
+    setPickOpen(true);
+  };
+
+  const closePickPanel = () => {
+    setPickOpen(false);
+  };
+
+  // Esc 关闭 + 阻止 body 滚动
+  useEffect(() => {
+    if (!pickOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closePickPanel(); };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [pickOpen]);
+
+  const togglePickModel = (upstream: string, modelId: string) => {
+    const key = `${upstream}|${modelId}`;
+    setPickSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // 确定：同步勾选状态——新勾选的添加，反选已有的移除
+  const confirmPick = () => {
+    const existingByKey = new Map(items.map((it) => [`${it.upstream}|${it.model}`, it]));
+    const keep: BenchItem[] = [];
+    const add: BenchItem[] = [];
+    pickSelected.forEach((key) => {
+      if (existingByKey.has(key)) {
+        keep.push(existingByKey.get(key)!);
+      } else {
+        const [upstream, ...rest] = key.split("|");
+        const model = rest.join("|");
+        if (upstream && model) {
+          add.push({ id: newItemId(), upstream, model });
+        }
+      }
+    });
+    if (add.length > 0 || keep.length !== items.length) {
+      setItems([...keep, ...add]);
+    }
+    setPickOpen(false);
+  };
+
+  // 面板中变更数量（新增 + 移除）
+  const pickDelta = useMemo(() => {
+    const existingKeys = new Set(items.map((it) => `${it.upstream}|${it.model}`));
+    let add = 0, remove = 0;
+    pickSelected.forEach((key) => {
+      if (!existingKeys.has(key)) add++;
+    });
+    existingKeys.forEach((key) => {
+      if (!pickSelected.has(key)) remove++;
+    });
+    return { add, remove, total: add + remove };
+  }, [pickSelected, items]);
+
+  // 当前供应商的模型
+  const pickUpstreamModels = useMemo(
+    () => (pickUpstream ? modelsFor(pickUpstream) : []),
+    [pickUpstream, models]
   );
+
+  // 每个供应商的选中数/总数
+  const pickUpstreamCount = useCallback((up: string) => {
+    const all = modelsFor(up);
+    let selected = 0;
+    all.forEach((m) => {
+      if (pickSelected.has(`${up}|${m.id}`)) selected++;
+    });
+    return { selected, total: all.length };
+  }, [models, pickSelected]);
+
+  // ── 列表操作 ─────────────────────────────────────────────
 
   const updateItem = (idx: number, patch: Partial<BenchItem>) =>
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+
   const removeItem = (idx: number) =>
     setItems((prev) => prev.filter((_, i) => i !== idx));
-  const addUpstream = (up: string) => {
-    const used = usedModelsByUpstream.get(up);
-    const m = modelsFor(up).find((x) => !used?.has(x.id));
-    if (!m) return;
-    setItems((prev) => [...prev, { id: newItemId(), upstream: up, model: m.id }]);
-    setAddOpen(false);
+
+  const clearAll = () => {
+    setItems([]);
+    setResults({});
+    setStreamingContent({});
+    setExpanded({});
   };
+
+  // ── 测评执行 ─────────────────────────────────────────────
 
   const run = async () => {
     const valid = items.filter((it) => it.model);
     if (valid.length === 0) return;
     setRunning(true);
-    setResults({});
-    setStreamingContent({});
+    setResults((prev) => {
+      const next = { ...prev };
+      for (const it of valid) next[itemKey(it)] = null;
+      return next;
+    });
+    setStreamingContent((prev) => {
+      const next = { ...prev };
+      for (const it of valid) delete next[itemKey(it)];
+      return next;
+    });
     try {
-      await BenchmarkService.RunBenchmark(valid, prompt, maxTokens);
+      await BenchmarkService.RunBenchmark(valid, prompt, maxTokens, apiMode);
     } finally {
       setRunning(false);
     }
@@ -235,7 +341,7 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
     setResults((prev) => ({ ...prev, [k]: null }));
     setStreamingContent((prev) => ({ ...prev, [k]: "" }));
     try {
-      await BenchmarkService.RunBenchmark([it], prompt, maxTokens);
+      await BenchmarkService.RunBenchmark([it], prompt, maxTokens, apiMode);
     } finally {
       setSingleRunning((prev) => ({ ...prev, [k]: false }));
     }
@@ -247,16 +353,22 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
     .sort((a, b) => b.tps - a.tps);
   const rankOf = (k: string) => ranked.findIndex((r) => `${r.upstream}|${r.model}` === k) + 1;
 
+  const bottomLabel = apiMode === "anthropic"
+    ? "走本代理 /v1/messages 端到端"
+    : apiMode === "openai-chat"
+    ? "走本代理 /v1/chat/completions 端到端"
+    : "走本代理 /v1/responses 端到端";
+
   return (
     <div className="p-6 space-y-6">
-      {/* 锁定提示：仍可选择模型，但发起测评需要密钥 */}
       {locked && (
         <div className="rounded-xl border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]">
           🔒 供应商已锁定，可照常选择供应商模型；发起测评需先到「供应商」页输入主密码解锁。
         </div>
       )}
+
       {/* 配置区 */}
-      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] space-y-3">
+      <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] space-y-4">
         <div>
           <label className="text-sm text-[var(--color-text-dim)]">测评提示词（统一基准）</label>
           <textarea
@@ -266,6 +378,7 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
             className="w-full mt-1 px-3 py-2 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)] text-sm resize-y focus:outline-none focus:border-[var(--color-primary)]"
           />
         </div>
+
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm text-[var(--color-text-dim)]">最大输出</label>
           <select
@@ -279,33 +392,55 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
             <option value={2048}>2048</option>
           </select>
           <span className="text-xs text-[var(--color-text-dim)]">token（越大越能测稳态速率，但更慢）</span>
-          <div ref={addRef} className="relative ml-auto">
+
+          <div className="ml-auto flex items-center gap-2">
             <button
-              onClick={() => setAddOpen((v) => !v)}
-              disabled={running || addableUpstreams.length === 0}
-              className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
+              onClick={openPickPanel}
+              disabled={running || allUpstreams.length === 0}
+              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
             >
               ＋ 添加测评项
             </button>
-            {addOpen && (
-              <div className="absolute right-0 z-50 mt-1 w-64 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md shadow-lg max-h-72 overflow-y-auto">
-                {addableUpstreams.map((u) => (
-                  <button
-                    key={u.upstream}
-                    onClick={() => addUpstream(u.upstream)}
-                    className="w-full px-3 py-2 text-sm text-left hover:bg-[var(--color-surface-2)] flex items-center justify-between gap-2"
-                  >
-                    <span>{u.label}</span>
-                    <span className="text-xs text-[var(--color-text-dim)]">{u.count} 个模型</span>
-                  </button>
-                ))}
-              </div>
+            {items.length > 0 && (
+              <ConfirmPopover
+                title="清空所有测评项？"
+                confirmLabel="清空"
+                onConfirm={clearAll}
+                triggerClassName={`px-3 py-1.5 text-sm rounded-lg text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 ${running ? "pointer-events-none opacity-40" : ""}`}
+              >
+                🗑 清空
+              </ConfirmPopover>
             )}
           </div>
+        </div>
+
+        {/* 接口协议 radio */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <span className="text-sm text-[var(--color-text-dim)] shrink-0">接口协议：</span>
+          {API_MODES.map((m) => (
+            <label
+              key={m.value}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg cursor-pointer border transition-colors ${
+                apiMode === m.value
+                  ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+                  : "border-[var(--color-border)] bg-[var(--color-surface-2)] text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              <input
+                type="radio"
+                name="apiMode"
+                value={m.value}
+                checked={apiMode === m.value}
+                onChange={() => setApiMode(m.value)}
+                className="accent-[var(--color-primary)]"
+              />
+              <span>{m.label}</span>
+            </label>
+          ))}
           {running ? (
             <button
               onClick={() => BenchmarkService.StopBenchmark()}
-              className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-danger)] hover:opacity-90"
+              className="ml-auto px-4 py-1.5 text-sm rounded-lg bg-[var(--color-danger)] hover:opacity-90"
             >
               ⏹ 停止测评
             </button>
@@ -313,13 +448,124 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
             <button
               onClick={run}
               disabled={items.length === 0 || Object.values(singleRunning).some(Boolean)}
-              className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+              className="ml-auto px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
             >
               🏁 开始测评
             </button>
           )}
         </div>
       </section>
+
+      {/* 添加测评项弹框 */}
+      {pickOpen && createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={closePickPanel}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] shadow-2xl flex flex-col w-full overflow-hidden animate-[fadeIn_0.15s_ease-out]"
+            style={{ maxWidth: 640, maxHeight: "80vh" }}
+          >
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[var(--color-border)] shrink-0">
+              <h3 className="text-sm font-medium">选择测评模型</h3>
+              <button
+                onClick={closePickPanel}
+                className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 左右分栏 */}
+            <div className="flex flex-1 min-h-0">
+              {/* 左侧：供应商列表 */}
+              <div className="w-44 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface-2)] overflow-y-auto">
+                {allUpstreams.map((up) => {
+                  const { selected, total } = pickUpstreamCount(up);
+                  const isActive = pickUpstream === up;
+                  return (
+                    <button
+                      key={up}
+                      onClick={() => setPickUpstream(up)}
+                      className={`w-full px-3 py-2.5 text-sm text-left flex items-center justify-between gap-2 transition-colors ${
+                        isActive
+                          ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)] font-medium"
+                          : "hover:bg-[var(--color-surface)] text-[var(--color-text)]"
+                      }`}
+                    >
+                      <span className="truncate">{upstreamDisplayName(up, creds)}</span>
+                      <span className={`text-xs shrink-0 ${selected > 0 ? "text-[var(--color-primary)]" : "text-[var(--color-text-dim)]"}`}>
+                        {selected > 0 ? `${selected}/${total}` : total}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 右侧：模型列表 */}
+              <div className="flex-1 p-3 overflow-y-auto">
+                {pickUpstreamModels.length === 0 ? (
+                  <div className="text-sm text-[var(--color-text-dim)] text-center py-8">
+                    请选择左侧供应商
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1">
+                    {pickUpstreamModels.map((m) => {
+                      const key = `${pickUpstream}|${m.id}`;
+                      const checked = pickSelected.has(key);
+                      return (
+                        <label
+                          key={m.id}
+                          className={`flex items-center gap-2 px-2.5 py-2 text-sm rounded-md cursor-pointer transition-colors ${
+                            checked
+                              ? "bg-[var(--color-primary)]/10 hover:bg-[var(--color-primary)]/15"
+                              : "hover:bg-[var(--color-surface-2)]"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => togglePickModel(pickUpstream, m.id)}
+                            className="accent-[var(--color-primary)] shrink-0"
+                          />
+                          <span className="truncate flex-1">{m.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 底部操作栏 */}
+            <div className="flex items-center justify-between px-5 py-3 border-t border-[var(--color-border)] bg-[var(--color-surface-2)] shrink-0">
+              <span className="text-xs text-[var(--color-text-dim)]">
+                {pickDelta.total > 0
+                  ? `将新增 ${pickDelta.add} 个${pickDelta.remove > 0 ? `，移除 ${pickDelta.remove} 个` : ""}`
+                  : "未做更改"}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={closePickPanel}
+                  className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] hover:bg-[var(--color-border)]"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmPick}
+                  disabled={pickDelta.total === 0}
+                  className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50 text-white"
+                >
+                  确定
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {/* 测评项列表 */}
       <section className="space-y-3">
@@ -416,7 +662,6 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
                     )}
                   </>
                 ) : r && r.errorMsg === "已停止" ? (
-                  // 被停止：保留停止前已流出的文字，末尾标记已停止，不替换为错误行
                   <div className="mt-3 px-3 py-2 rounded-md bg-[var(--color-surface-2)] text-xs whitespace-pre-wrap max-h-60 overflow-y-auto">
                     {streamingContent[k] || ""}
                     {streamingContent[k] ? "\n" : ""}
@@ -440,7 +685,7 @@ export default function Benchmark({ creds }: { creds: AllCredStatus | null }) {
       </section>
 
       <div className="text-xs text-[var(--color-text-dim)] text-center">
-        口径：走本代理 /v1/messages 端到端，tps = 输出 token / 总耗时（含 TTFT + 网络 + 代理开销），与首页速率统计一致
+        口径：{bottomLabel}，tps = 输出 token / 总耗时（含 TTFT + 网络 + 代理开销），与首页速率统计一致
       </div>
     </div>
   );

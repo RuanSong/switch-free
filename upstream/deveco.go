@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // DevEcoUpstream DevEco Code 华为 MaaS 网关适配器
@@ -294,19 +294,43 @@ func (u *DevEcoUpstream) doCallStream(ctx context.Context, body []byte, cred *cr
 			ReqID:      reqID,
 		}, nil
 	}
-	// SSE 流必含 data: + choices；错误 SSE（如 model overloaded 返回 data:{"error":...} 无 choices）降级
-	if !strings.Contains(peekStr, "data:") || !strings.Contains(peekStr, "choices") {
+	// SSE 流必含 data:；无 data: 视为非 SSE 错误页降级
+	if !strings.Contains(peekStr, "data:") {
 		httpResp.Body.Close()
 		snippet := peekStr
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
 		fmt.Printf("[switch-dev] deveco 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		errJSON, _ := json.Marshal(map[string]string{"error": "non-sse: " + snippet})
 		return &StreamResponse{
 			StatusCode: 502,
-			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			Body:       io.NopCloser(bytes.NewReader(errJSON)),
 			ReqID:      reqID,
 		}, nil
+	}
+	// SSE 错误事件：event: error 且 data 为空时提前降级（有 data 内容的错误交给转换器处理）
+	if strings.Contains(peekStr, "event: error") {
+		hasData := false
+		for _, line := range strings.Split(peekStr, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if data != "" && data != "null" && data != "[DONE]" {
+					hasData = true
+					break
+				}
+			}
+		}
+		if !hasData {
+			httpResp.Body.Close()
+			fmt.Printf("[switch-dev] deveco 流式上游 SSE error 事件（空 data），降级\n")
+			return &StreamResponse{
+				StatusCode: 502,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream SSE error"}`))),
+				ReqID:      reqID,
+			}, nil
+		}
 	}
 
 	return &StreamResponse{

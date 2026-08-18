@@ -9,9 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
-	"switchfree/creds"
+	"switchdev/creds"
 )
 
 // JoyCodeUpstream JoyCode Color 网关适配器
@@ -187,7 +188,7 @@ func injectJoyCodeFields(body []byte, cred *creds.JoyCodeCred) []byte {
 	req["orgFullName"] = cred.OrgFullName
 	req["userId"] = cred.UserID
 	req["client"] = "JoyCodeIDE"
-	req["clientVersion"] = "3.8.67"
+	req["clientVersion"] = cred.ClientVersion
 	req["language"] = "UNKNOWN"
 	req["stream"] = false
 	out, err := json.Marshal(req)
@@ -344,28 +345,58 @@ func (u *JoyCodeUpstream) doCallStream(ctx context.Context, body []byte, cred *c
 			ReqID:      reqID,
 		}, nil
 	}
-	if bytes.Contains(peeked, []byte("COLOR_FORWARD_EXCEPTION")) {
+	if bytes.Contains(peeked, []byte("COLOR_FORWARD_EXCEPTION")) || bytes.Contains(peeked, []byte("AI_GRAY_")) {
 		errBody, _ := io.ReadAll(br)
 		rc.Close()
-		fmt.Printf("[switch-dev] JoyCode 流式收到 COLOR_FORWARD_EXCEPTION（406 灰度拒绝），降级到伪流式\n")
+		snippet := string(errBody)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		fmt.Printf("[switch-dev] JoyCode 流式收到灰度拒绝（COLOR_FORWARD_EXCEPTION/AI_GRAY_），降级到伪流式: %s\n", snippet)
 		return &StreamResponse{
 			StatusCode: 406, // 虚拟 406，让 executeChainStream 降级到伪流式（Call 非流式）
 			Body:       io.NopCloser(bytes.NewReader(errBody)),
 			ReqID:      reqID,
 		}, nil
 	}
-	if !bytes.Contains(peeked, []byte("data:")) || !bytes.Contains(peeked, []byte("choices")) {
+	if !bytes.Contains(peeked, []byte("data:")) {
 		rc.Close()
 		snippet := string(peeked)
 		if len(snippet) > 200 {
 			snippet = snippet[:200]
 		}
-		fmt.Printf("[switch-dev] joycode 流式上游返回非 SSE 内容，降级: %s\n", snippet)
+		fmt.Printf("[switch-dev] joycode 流式上游返回非 SSE 内容，回退非流式: %s\n", snippet)
+		// 非流式 Call 发 stream:false，网关可能正常返回 JSON；虚拟 406 让 executeChainStream
+		// 跳过剩余流式上游、让 handler 回退到 Call + 伪流式拆分。
 		return &StreamResponse{
-			StatusCode: 502,
-			Body:       io.NopCloser(bytes.NewReader([]byte(fmt.Sprintf(`{"error":"non-sse: %s"}`, snippet)))),
+			StatusCode: 406,
+			Body:       io.NopCloser(bytes.NewReader(peeked)),
 			ReqID:      reqID,
 		}, nil
+	}
+	// event: error 且 data 为空（如 DevEco 网关错误帧），提前降级
+	peekStr := string(peeked)
+	if bytes.Contains(peeked, []byte("event: error")) {
+		hasData := false
+		for _, line := range strings.Split(peekStr, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if data != "" && data != "null" && data != "[DONE]" {
+					hasData = true
+					break
+				}
+			}
+		}
+		if !hasData {
+			rc.Close()
+			fmt.Printf("[switch-dev] joycode 流式上游 SSE error 事件（空 data），降级\n")
+			return &StreamResponse{
+				StatusCode: 502,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"upstream SSE error"}`))),
+				ReqID:      reqID,
+			}, nil
+		}
 	}
 
 	// 正常 SSE 流（bufio.Reader 包含 peek 的数据，转换器能读到完整流）

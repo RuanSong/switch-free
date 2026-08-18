@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { PricingService } from "../../bindings/switchfree/service";
-import type { PricingItem } from "../../bindings/switchfree/service/models";
+import { PricingService } from "../../bindings/switchdev/service";
+import type { PricingItem } from "../../bindings/switchdev/service/models";
 
 export default function PricingEditor() {
   const [items, setItems] = useState<PricingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<PricingItem | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [confirmSync, setConfirmSync] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -21,6 +24,22 @@ export default function PricingEditor() {
   useEffect(() => {
     load();
   }, []);
+
+  const sync = async () => {
+    setSyncing(true);
+    setMsg(null);
+    setConfirmSync(false);
+    try {
+      const n = await PricingService.SyncFromGitHub();
+      setMsg({ type: "ok", text: `已从 GitHub 同步 ${n} 条费率` });
+      await load();
+    } catch (e) {
+      setMsg({ type: "err", text: `同步失败: ${e}` });
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setMsg(null), 5000);
+    }
+  };
 
   const filtered = filter
     ? items.filter(
@@ -44,16 +63,31 @@ export default function PricingEditor() {
     <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
       <div className="flex items-center justify-between mb-1">
         <h2 className="font-semibold">费率管理</h2>
-        <button
-          onClick={() => setEditing({ modelId: "", displayName: "", inputPerMillion: 0, outputPerMillion: 0, cacheRead: 0, cacheCreation: 0 } as PricingItem)}
-          className="px-3 py-1 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90"
-        >
-          + 新增
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setConfirmSync(true)}
+            disabled={syncing}
+            title="从 GitHub 拉取最新默认费率覆盖本地"
+            className="px-3 py-1 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
+          >
+            {syncing ? "同步中..." : "🔄 同步"}
+          </button>
+          <button
+            onClick={() => setEditing({ modelId: "", displayName: "", inputPerMillion: 0, outputPerMillion: 0, cacheRead: 0, cacheCreation: 0 } as PricingItem)}
+            className="px-3 py-1 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90"
+          >
+            + 新增
+          </button>
+        </div>
       </div>
       <p className="text-xs text-[var(--color-text-dim)] mb-3">
         共 {items.length} 条费率（每百万 token 成本，美元）。日志费用按此表计算。
       </p>
+      {msg && (
+        <div className={`mb-3 px-3 py-1.5 rounded-lg text-xs ${msg.type === "ok" ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"}`}>
+          {msg.text}
+        </div>
+      )}
 
       {/* 搜索 */}
       <input
@@ -121,6 +155,34 @@ export default function PricingEditor() {
           </tbody>
         </table>
       </div>
+
+      {/* 同步确认弹窗 */}
+      {confirmSync && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmSync(false)}>
+          <div className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] shadow-xl max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold mb-2">同步费率</h3>
+            <p className="text-sm text-[var(--color-text-dim)] mb-4">
+              从 GitHub 拉取最新默认费率将覆盖本地所有自定义修改，确认继续？
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmSync(false)}
+                disabled={syncing}
+                className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+              >
+                取消
+              </button>
+              <button
+                onClick={sync}
+                disabled={syncing}
+                className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+              >
+                {syncing ? "同步中..." : "确认覆盖同步"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

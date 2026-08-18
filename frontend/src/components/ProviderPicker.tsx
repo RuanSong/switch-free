@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import type { CatalogProvider } from "../../bindings/switchfree/freeapi/models";
+import type { CatalogProvider } from "../../bindings/switchdev/providerapi/models";
 
 // 标签定义
 type TagCategory = "region" | "credit" | "context" | "count";

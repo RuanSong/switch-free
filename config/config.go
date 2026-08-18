@@ -9,8 +9,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"switchfree/paths"
-	"switchfree/proxy"
+	"switchdev/paths"
+	"switchdev/proxy"
 )
 
 // AgentModels agent 分组内的一组模型
@@ -19,15 +19,33 @@ type AgentModels struct {
 	Models   []string `json:"models"`
 }
 
+// UAModelMap 请求模型 -> 目标上游模型的映射
+type UAModelMap struct {
+	RequestedModel string         `json:"requestedModel"`
+	Target         proxy.ModelRef `json:"target"`
+}
+
+// UARule 单条 User-Agent 路由规则
+type UARule struct {
+	ID       string        `json:"id"`
+	Name     string        `json:"name"`
+	Pattern  string        `json:"pattern"`
+	Enabled  bool          `json:"enabled"`
+	Mappings []UAModelMap `json:"mappings"`
+}
+
 // Preset 运行模式方案快照
 // 只含降级链相关字段，不含 port/apiKey/update —— 那些是环境配置，
 // 不应随方案切换而变（apiKey 变了会让已接入的客户端 401）
 type Preset struct {
-	Name            string                      `json:"name"`
-	Mode            string                      `json:"mode"`
-	AutoChain       []AgentModels               `json:"autoChain"`
-	ManualFallbacks map[string][]proxy.ModelRef `json:"manualFallbacks"`
-	GlobalFallback  proxy.ModelRef              `json:"globalFallback"`
+	Name              string                      `json:"name"`
+	Mode              string                      `json:"mode"`
+	AutoChain         []AgentModels               `json:"autoChain"`
+	ManualFallbacks   map[string][]proxy.ModelRef `json:"manualFallbacks"`
+	GlobalFallback    proxy.ModelRef              `json:"globalFallback"`
+	UARoutingEnabled  bool                        `json:"uaRoutingEnabled"`
+	UARules           []UARule                    `json:"uaRules"`
+	UAGlobalFallback  proxy.ModelRef              `json:"uaGlobalFallback"`
 }
 
 // ModelRef 复用 proxy.ModelRef，避免类型不一致
@@ -54,6 +72,27 @@ func copyFallbacks(src map[string][]proxy.ModelRef) map[string][]proxy.ModelRef 
 	return dst
 }
 
+// copyUARules 深拷贝 UA 路由规则
+func copyUARules(src []UARule) []UARule {
+	if src == nil {
+		return nil
+	}
+	dst := make([]UARule, len(src))
+	for i, r := range src {
+		dst[i] = UARule{
+			ID:      r.ID,
+			Name:    r.Name,
+			Pattern: r.Pattern,
+			Enabled: r.Enabled,
+		}
+		if r.Mappings != nil {
+			dst[i].Mappings = make([]UAModelMap, len(r.Mappings))
+			copy(dst[i].Mappings, r.Mappings)
+		}
+	}
+	return dst
+}
+
 // UpdateConfig 自动升级配置
 type UpdateConfig struct {
 	Enabled   bool        `json:"enabled"`             // 是否启用自动升级检查
@@ -61,6 +100,11 @@ type UpdateConfig struct {
 	GitHub    GitHubConfig `json:"github"`             // GitHub Releases 配置
 	UpdateURL string      `json:"updateUrl"`           // 自定义检查地址（优先于 github）
 	Channel   string      `json:"channel"`             // "stable" | "beta"（默认 stable）
+}
+
+// LogFileConfig 控制台日志落地到文件的配置
+type LogFileConfig struct {
+	Enabled bool `json:"enabled"` // 是否把控制台日志同时写入文件（默认开启）
 }
 
 // GitHubConfig GitHub Releases 配置
@@ -72,19 +116,24 @@ type GitHubConfig struct {
 
 // Config 代理运行配置
 type Config struct {
-	Mode            string                       `json:"mode"`            // "auto" | "manual"
-	AutoChain       []AgentModels                `json:"autoChain"`       // auto 模式优先级链
-	ManualFallbacks map[string][]proxy.ModelRef  `json:"manualFallbacks"` // 手动模式下模型的降级链
-	GlobalFallback  proxy.ModelRef               `json:"globalFallback"`  // 全局兜底
-	Port            int                          `json:"port"`            // 代理监听端口
-	APIKey          string                       `json:"apiKey"`          // 客户端接入密钥（严格校验）
-	AutoUpdate      UpdateConfig                 `json:"update"`          // 自动升级配置
-	Presets         []Preset                     `json:"presets"`         // 已保存的运行模式方案
-	ActivePreset    string                       `json:"activePreset"`    // 当前激活方案名（仅 UI 提示；偏离后置空 = 自定义）
-	Provider        ProviderSettings             `json:"provider"`        // 供应商配置相关偏好
+	Mode              string                      `json:"mode"`              // "auto" | "manual" | "ua"
+	AutoChain         []AgentModels               `json:"autoChain"`         // auto 模式优先级链
+	ManualFallbacks   map[string][]proxy.ModelRef `json:"manualFallbacks"`   // 手动模式下模型的降级链
+	GlobalFallback    proxy.ModelRef              `json:"globalFallback"`    // auto/manual 全局兜底
+	UARoutingEnabled  bool                        `json:"uaRoutingEnabled"`  // auto/manual 模式下 UA 叠加层开关
+	UARules           []UARule                    `json:"uaRules"`           // UA 路由规则
+	UAGlobalFallback  proxy.ModelRef              `json:"uaGlobalFallback"`  // ua 模式全局兜底
+	Port              int                         `json:"port"`              // 代理监听端口
+	APIKey            string                      `json:"apiKey"`            // 客户端接入密钥（AuthEnabled=true 时严格校验）
+	AuthEnabled       bool                        `json:"authEnabled"`       // 是否要求客户端携带 apiKey；默认 true，关闭后网关不鉴权
+	AutoUpdate       UpdateConfig                `json:"update"`           // 自动升级配置
+	LogFile          LogFileConfig               `json:"logFile"`          // 控制台日志落地文件配置
+	Presets          []Preset                    `json:"presets"`          // 已保存的运行模式方案
+	ActivePreset     string                      `json:"activePreset"`     // 当前激活方案名（仅 UI 提示；偏离后置空 = 自定义）
+	Provider         ProviderSettings            `json:"provider"`         // 供应商配置相关偏好
 
 	mu   sync.RWMutex `json:"-"`
-	path string        `json:"-"`
+	path string       `json:"-"`
 }
 
 // ProviderSettings 供应商功能偏好
@@ -104,7 +153,7 @@ func DefaultConfigPath() string {
 const DefaultPort = 8787
 
 // DefaultAutoBenchmarkOnEdit 控制"进入编辑时自动拉取并测评模型"的默认开关。
-// 默认关闭，打包时可用 -ldflags "-X switchfree/config.DefaultAutoBenchmarkOnEdit=true" 改为默认开启。
+// 默认关闭，打包时可用 -ldflags "-X switchdev/config.DefaultAutoBenchmarkOnEdit=true" 改为默认开启。
 var DefaultAutoBenchmarkOnEdit = "false"
 
 // generateAPIKey 生成随机 apiKey，格式 rs-<uuid>
@@ -116,13 +165,19 @@ func generateAPIKey() string {
 // Defaults 返回默认配置（首次安装：不预设模型，用户按需配置）
 func Defaults() *Config {
 	return &Config{
-		Mode:            "auto",
-		AutoChain:       []AgentModels{},
-		ManualFallbacks: map[string][]proxy.ModelRef{},
-		GlobalFallback:  proxy.ModelRef{},
-		Port:            DefaultPort,
-		Presets:         []Preset{},
-		ActivePreset:    "",
+		Mode:             "auto",
+		AutoChain:        []AgentModels{},
+		ManualFallbacks:  map[string][]proxy.ModelRef{},
+		GlobalFallback:   proxy.ModelRef{},
+		UARoutingEnabled: true,
+		UARules: []UARule{
+			{ID: "ua-claude-code", Name: "Claude Code", Pattern: "claude-cli", Enabled: true, Mappings: []UAModelMap{}},
+			{ID: "ua-codex", Name: "Codex", Pattern: "codex", Enabled: true, Mappings: []UAModelMap{}},
+		},
+		Port:         DefaultPort,
+		AuthEnabled:  true,
+		Presets:      []Preset{},
+		ActivePreset: "",
 		Provider: ProviderSettings{
 			AutoBenchmarkOnEdit: DefaultAutoBenchmarkOnEdit == "true",
 			IdleAutoLock:        true,
@@ -135,6 +190,9 @@ func Defaults() *Config {
 				Repo:  "switch-dev",
 			},
 			Channel: "stable",
+		},
+		LogFile: LogFileConfig{
+			Enabled: true,
 		},
 	}
 }
@@ -176,6 +234,14 @@ func Load(path string) (*Config, error) {
 		keyGenerated = true
 	}
 
+	// 老配置无 authEnabled 字段：零值 false 会意外关闭鉴权，检测缺省后默认开启
+	var probe struct {
+		AuthEnabled *bool `json:"authEnabled"`
+	}
+	if err := json.Unmarshal(data, &probe); err == nil && probe.AuthEnabled == nil {
+		c.AuthEnabled = true
+	}
+
 	if err := c.Validate(); err != nil {
 		*c = *Defaults()
 		c.path = path
@@ -184,7 +250,7 @@ func Load(path string) (*Config, error) {
 		return c, fmt.Errorf("配置校验失败，已重置为默认: %w", err)
 	}
 
-	// 补全的 apiKey 需持久化（升级用户首次启动）
+	// 补全的字段需持久化（升级用户首次启动）
 	if keyGenerated {
 		c.Save()
 	}
@@ -234,8 +300,8 @@ func (c *Config) Validate() error {
 	}
 
 	// 模式
-	if c.Mode != "auto" && c.Mode != "manual" {
-		return fmt.Errorf("无效的模式: %s，应为 auto 或 manual", c.Mode)
+	if c.Mode != "auto" && c.Mode != "manual" && c.Mode != "ua" {
+		return fmt.Errorf("无效的模式: %s，应为 auto、manual 或 ua", c.Mode)
 	}
 
 	// auto 链（允许为空，首次安装时用户未配置）
@@ -267,6 +333,23 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("globalFallback 的 upstream 无效: %s", c.GlobalFallback.Upstream)
 	}
 
+	// ua 模式全局兜底（允许为空）
+	if c.UAGlobalFallback.Upstream != "" && !isValidUpstream(c.UAGlobalFallback.Upstream) {
+		return fmt.Errorf("uaGlobalFallback 的 upstream 无效: %s", c.UAGlobalFallback.Upstream)
+	}
+
+	// UA 路由规则
+	for i, rule := range c.UARules {
+		if strings.TrimSpace(rule.Pattern) == "" {
+			return fmt.Errorf("uaRules[%d] 的 pattern 不能为空", i)
+		}
+		for j, m := range rule.Mappings {
+			if m.Target.Upstream != "" && !isValidUpstream(m.Target.Upstream) {
+				return fmt.Errorf("uaRules[%d].mappings[%d] 的 upstream 无效: %s", i, j, m.Target.Upstream)
+			}
+		}
+	}
+
 	// 方案列表：名字非空、不重名、mode 合法、upstream 合法
 	seenPreset := make(map[string]bool, len(c.Presets))
 	for _, p := range c.Presets {
@@ -277,7 +360,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("方案名重复: %s", p.Name)
 		}
 		seenPreset[p.Name] = true
-		if p.Mode != "auto" && p.Mode != "manual" {
+		if p.Mode != "auto" && p.Mode != "manual" && p.Mode != "ua" {
 			return fmt.Errorf("方案 %s 的模式无效: %s", p.Name, p.Mode)
 		}
 		for _, ag := range p.AutoChain {
@@ -295,6 +378,9 @@ func (c *Config) Validate() error {
 		if p.GlobalFallback.Upstream != "" && !isValidUpstream(p.GlobalFallback.Upstream) {
 			return fmt.Errorf("方案 %s 的 globalFallback upstream 无效: %s", p.Name, p.GlobalFallback.Upstream)
 		}
+		if p.UAGlobalFallback.Upstream != "" && !isValidUpstream(p.UAGlobalFallback.Upstream) {
+			return fmt.Errorf("方案 %s 的 uaGlobalFallback upstream 无效: %s", p.Name, p.UAGlobalFallback.Upstream)
+		}
 	}
 
 	// ActivePreset 刻意不做存在性校验：
@@ -309,26 +395,34 @@ func (c *Config) Clone() *Config {
 	defer c.mu.RUnlock()
 
 	cp := &Config{
-		Mode:            c.Mode,
-		AutoChain:       copyChain(c.AutoChain),
-		ManualFallbacks: copyFallbacks(c.ManualFallbacks),
-		GlobalFallback:  c.GlobalFallback,
-		Port:            c.Port,
-		APIKey:          c.APIKey,
-		AutoUpdate:      c.AutoUpdate,
-		ActivePreset:    c.ActivePreset,
-		Provider:        c.Provider,
-		path:            c.path,
+		Mode:             c.Mode,
+		AutoChain:        copyChain(c.AutoChain),
+		ManualFallbacks:  copyFallbacks(c.ManualFallbacks),
+		GlobalFallback:   c.GlobalFallback,
+		UARoutingEnabled: c.UARoutingEnabled,
+		UARules:          copyUARules(c.UARules),
+		UAGlobalFallback: c.UAGlobalFallback,
+		Port:             c.Port,
+		APIKey:           c.APIKey,
+		AuthEnabled:      c.AuthEnabled,
+		AutoUpdate:       c.AutoUpdate,
+		LogFile:          c.LogFile,
+		ActivePreset:     c.ActivePreset,
+		Provider:         c.Provider,
+		path:             c.path,
 	}
 	// 方案列表必须深拷贝，否则前端改动会串到 Manager 持有的配置上
 	cp.Presets = make([]Preset, len(c.Presets))
 	for i, p := range c.Presets {
 		cp.Presets[i] = Preset{
-			Name:            p.Name,
-			Mode:            p.Mode,
-			AutoChain:       copyChain(p.AutoChain),
-			ManualFallbacks: copyFallbacks(p.ManualFallbacks),
-			GlobalFallback:  p.GlobalFallback,
+			Name:             p.Name,
+			Mode:             p.Mode,
+			AutoChain:        copyChain(p.AutoChain),
+			ManualFallbacks:  copyFallbacks(p.ManualFallbacks),
+			GlobalFallback:   p.GlobalFallback,
+			UARoutingEnabled: p.UARoutingEnabled,
+			UARules:          copyUARules(p.UARules),
+			UAGlobalFallback: p.UAGlobalFallback,
 		}
 	}
 	return cp
@@ -347,9 +441,14 @@ func (c *Config) Update(newCfg *Config) error {
 	c.AutoChain = newCfg.AutoChain
 	c.ManualFallbacks = newCfg.ManualFallbacks
 	c.GlobalFallback = newCfg.GlobalFallback
+	c.UARoutingEnabled = newCfg.UARoutingEnabled
+	c.UARules = newCfg.UARules
+	c.UAGlobalFallback = newCfg.UAGlobalFallback
 	c.Port = newCfg.Port
 	c.APIKey = newCfg.APIKey
+	c.AuthEnabled = newCfg.AuthEnabled
 	c.AutoUpdate = newCfg.AutoUpdate
+	c.LogFile = newCfg.LogFile
 	c.Presets = newCfg.Presets
 	c.ActivePreset = newCfg.ActivePreset
 	c.Provider = newCfg.Provider
@@ -370,6 +469,13 @@ func (c *Config) GetAPIKey() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.APIKey
+}
+
+// GetAuthEnabled 线程安全读取鉴权开关
+func (c *Config) GetAuthEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AuthEnabled
 }
 
 // isValidUpstream 检查 upstream 名是否合法

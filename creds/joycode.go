@@ -13,7 +13,7 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-	"switchfree/paths"
+	"switchdev/paths"
 )
 
 // JoyCode 凭据配置
@@ -41,14 +41,15 @@ func DefaultJoyCodeConfig() JoyCodeConfig {
 
 // JoyCodeCred 运行时凭据
 type JoyCodeCred struct {
-	PtKey       string
-	UserID      string
-	Tenant      string
-	LoginType   string
-	OrgFullName string
-	Origin      string
-	FetchedAt   time.Time
-	Valid       bool
+	PtKey         string
+	UserID        string
+	Tenant        string
+	LoginType     string
+	OrgFullName   string
+	Origin        string
+	ClientVersion string
+	FetchedAt     time.Time
+	Valid         bool
 }
 
 // JoyCodeCredManager JoyCode 凭据管理器
@@ -84,6 +85,12 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 		}
 		return nil, fmt.Errorf("读取 state.vscdb 失败: %v", err)
 	}
+
+	// 读取客户端真实版本（releaseNotes/lastVersion），用于注入 clientVersion 字段；
+	// 硬编码旧版本会被网关灰度策略拒绝（AI_GRAY_ACCESS_DENIED）。
+	var clientVersion string
+	_ = db.QueryRow("SELECT value FROM ItemTable WHERE key='releaseNotes/lastVersion'").Scan(&clientVersion)
+	clientVersion = strings.TrimSpace(clientVersion)
 
 	raw := strings.TrimSpace(string(rawBytes))
 	if raw == "" {
@@ -127,15 +134,20 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 		origin = "https://api-ai.jd.com"
 	}
 
+	if clientVersion == "" {
+		clientVersion = "3.0.10"
+	}
+
 	return &JoyCodeCred{
-		PtKey:       u.PtKey,
-		UserID:      u.UserID,
-		Tenant:      u.Tenant,
-		LoginType:   loginType,
-		OrgFullName: orgFullName,
-		Origin:      origin,
-		FetchedAt:   time.Now(),
-		Valid:       false, // 待校验
+		PtKey:         u.PtKey,
+		UserID:        u.UserID,
+		Tenant:        u.Tenant,
+		LoginType:     loginType,
+		OrgFullName:   orgFullName,
+		Origin:        origin,
+		ClientVersion: clientVersion,
+		FetchedAt:     time.Now(),
+		Valid:         false, // 待校验
 	}, nil
 }
 
