@@ -1,13 +1,13 @@
 # Switch Dev - 构建 / 打包 / 发布
 #
 # 用法:
-#   make build          # 构建本机 macOS 桌面版（bin/switch-free）
+#   make build          # 构建本机 macOS 桌面版（bin/switch-dev）
 #   make package        # 打包 .app（含图标 + plist，macOS）
 #   make dmg            # 打包 macOS DMG 安装镜像（含 .app + Applications 快捷方式）
 #   make windows        # 交叉编译 Windows .exe（含图标嵌入）
 #   make nsis           # 打包 Windows NSIS 安装程序（需 makensis）
 #   make dist           # 一键打包所有平台安装包（DMG + NSIS）
-#   make build-server   # 构建本机 server 版（无 GUI，bin/switch-free-server）
+#   make build-server   # 构建本机 server 版（无 GUI，bin/switch-dev-server）
 #   make build-binaries # 构建全平台裸二进制到 dist/（自动更新用）
 #   make test           # 运行 Go 测试
 #   make fmt            # 格式化 Go 代码
@@ -240,7 +240,7 @@ build-windows-amd64: sync-version build-frontend
 build-binaries: build-darwin-arm64 build-darwin-amd64 build-windows-amd64
 	@echo ""
 	@echo "🎉 全部裸二进制构建完成:"
-	@ls -lh $(DIST)/switch-free-*
+	@ls -lh $(DIST)/$(APP)-*
 
 ## 运行 Go 测试
 test:
@@ -331,11 +331,11 @@ upload:
 	@test -n "$(V)" || (echo "❌ 版本号为空" && exit 1)
 	@test -n "$$(gh auth status 2>&1 | grep -o 'Logged in')" || (echo "❌ 请先运行 gh auth login" && exit 1)
 	@echo "🔄 上传 dist/ 产物到 Release $(TAG)..."
-	@required="$(DIST)/switch-free-darwin-arm64 $(DIST)/switch-free-darwin-amd64 $(DIST)/switch-free-windows-amd64.exe"; \
+	@required="$(DIST)/$(APP)-darwin-arm64 $(DIST)/$(APP)-darwin-amd64 $(DIST)/$(APP)-windows-amd64.exe"; \
 	missing=""; \
 	for f in $$required; do [ -f "$$f" ] || missing="$$missing $$f"; done; \
 	if [ -n "$$missing" ]; then echo "❌ 缺少裸二进制:$$missing（先 make build-binaries）"; exit 1; fi; \
-	optional="$(DIST)/switch-free-darwin-universal.dmg $(DIST)/switch-free-windows-amd64-installer.exe"; \
+	optional="$(DIST)/$(APP)-darwin-universal.dmg $(DIST)/$(APP)-windows-amd64-installer.exe"; \
 	toUpload="$$required"; \
 	for f in $$optional; do [ -f "$$f" ] && toUpload="$$toUpload $$f" || echo "ℹ️ 跳过可选安装包（不存在）: $$f"; done; \
 	gh release upload $(TAG) $$toUpload --repo $(REPO) --clobber; \

@@ -18,6 +18,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-18
+
 ### 新增
 - 支持接入免费的大模型 API 供应商（如 Groq、NVIDIA NIM、Gemini 等），评测通过的模型与内置上游（JoyCode/DevEco/OpenCode/WorkBuddy）平级使用，可加入降级链
 - 免费 API 供应商支持两种添加方式：从内置目录选择（自动填充地址）或手动自定义（任意 OpenAI 兼容地址）
