@@ -22,7 +22,7 @@ Unicode true
 ## !define INFO_PROJECTNAME    "my-project" # Default "switch-free"
 ## !define INFO_COMPANYNAME    "Switch Dev" # Default "Switch Dev"
 ## !define INFO_PRODUCTNAME    "Switch Dev" # Default "Switch Dev"
-## !define INFO_PRODUCTVERSION "0.0.3"     # Default "0.0.3"
+## !define INFO_PRODUCTVERSION "0.1.0"     # Default "0.1.0"
 ## !define INFO_COPYRIGHT      "(c) 2025-2026, Switch Dev Contributors" # Default "© 2025-2026, Switch Dev Contributors"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"

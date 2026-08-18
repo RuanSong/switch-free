@@ -39,7 +39,11 @@ ARCH        ?= amd64
 sync-version:
 	@perl -i -pe 's/version: "[0-9]+\.[0-9]+\.[0-9]+"/version: "$(V)"/' build/config.yml
 	@perl -i -pe 's/version: "[0-9]+\.[0-9]+\.[0-9]+"/version: "$(V)"/' version/config.yml
-	@echo "✅ 同步版本号 $(V) -> build/config.yml + version/config.yml"
+	@# Windows .exe 文件属性版本（syso 从 info.json 读取）
+	@perl -i -pe 's/("(?:file_version|ProductVersion)"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")/$${1}$(V)$${2}/' build/windows/info.json
+	@# macOS .app/DMG Finder 显示版本（Info.plist 的 CFBundleVersion / CFBundleShortVersionString）
+	@perl -0777 -i -pe 's/(CFBundle(?:ShortVersionString|Version)<\/key>\s*<string>)[0-9]+\.[0-9]+\.[0-9]+(<\/string>)/$${1}$(V)$${2}/g' build/darwin/Info.plist build/darwin/Info.dev.plist
+	@echo "✅ 同步版本号 $(V) -> config.yml + version/config.yml + info.json + Info.plist"
 
 ## 构建本机 macOS 桌面版（wails3 完整 GUI）
 build: sync-version
@@ -175,8 +179,12 @@ nsis: windows
 	@mkdir -p $(DIST)
 	@# 生成 WebView2 引导程序
 	wails3 generate webview2bootstrapper -dir build/windows/nsis
-	@# 构建 NSIS 安装包
+	@# 构建 NSIS 安装包（显式注入版本号/公司/产品名/版权，避免 wails_tools.nsh 的缓存默认值过期）
 	makensis -DARG_WAILS_$(shell echo $(ARCH) | tr 'a-z' 'A-Z')_BINARY="$(shell pwd)/bin/$(APP).exe" \
+		-DINFO_PRODUCTVERSION="$(V)" \
+		-DINFO_COMPANYNAME="Switch Dev" \
+		-DINFO_PRODUCTNAME="Switch Dev" \
+		-DINFO_COPYRIGHT="(c) 2025-2026, Switch Dev Contributors" \
 		"$(shell pwd)/build/windows/nsis/project.nsi"
 	@# 复制到 dist
 	cp bin/$(APP)-$(ARCH)-installer.exe $(DIST)/$(APP)-windows-$(ARCH)-installer.exe

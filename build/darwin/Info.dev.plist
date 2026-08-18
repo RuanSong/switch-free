@@ -16,7 +16,7 @@
         <key>CFBundleGetInfoString</key>
             <string>Multi-upstream LLM proxy for Claude Code</string>
         <key>CFBundleShortVersionString</key>
-            <string>0.0.2</string>
+            <string>0.1.0</string>
         <key>CFBundleIconFile</key>
             <string>icons</string>
         <key>CFBundleIconName</key>
