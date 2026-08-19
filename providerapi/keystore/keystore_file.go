@@ -54,3 +54,15 @@ func (fileBackend) delete(_, account string) error {
 	}
 	return nil
 }
+
+// recover 单存储平台：读取并校验密码是否正确。
+func (b fileBackend) recover(service, account string, valid func(string) bool) string {
+	v, err := b.get(service, account)
+	if err != nil || v == "" {
+		return ""
+	}
+	if valid(v) {
+		return v
+	}
+	return ""
+}

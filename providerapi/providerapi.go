@@ -38,6 +38,10 @@ type ProviderConfig struct {
 	Imported     bool            `json:"imported"`     // 是否通过分享文件导入
 	Verified     bool            `json:"verified"`     // provider 是否至少评测通过一个模型
 	Models       []ProviderModel `json:"models"`       // 该 provider 的模型（逐个评测通过才加）
+
+	// HasKey 仅运行时/传输用，不落盘：该供应商在后端是否持有可用 apiKey。
+	// 导入供应商的明文 key 不下发前端（APIKey 被置空），用 HasKey 告知 UI「已保存密钥，可直接测评」。
+	HasKey bool `json:"hasKey"`
 }
 
 // EffectiveProtocol 返回规范化的出站协议，空值默认 openai

@@ -196,10 +196,15 @@ export default function ProviderAPI() {
   // 后端批量测评进度/结果
   const batchOkRef = useRef<string[]>([]);
   const batchTargetsRef = useRef<CatalogModel[]>([]);
+  const batchResRef = useRef<Record<string, any>>({});
+  // 本会话已确保存在（已 UpsertProvider）的供应商 id，避免逐个加入模型时重复
+  // UpsertProvider（整体覆盖且传入 models:[] 会把前一个刚加入的模型冲掉）
+  const ensuredProvidersRef = useRef<Set<string>>(new Set());
   useWailsEvent("providerapi:bench", (data: any) => {
     const mid = data?.modelId as string;
     if (mid) {
       const res = data.result ?? {};
+      batchResRef.current[mid] = res;
       setBenchResult((p) => ({ ...p, [mid]: res }));
       setBenchmarking((p) => ({ ...p, [mid]: false }));
       if (res?.success) {
@@ -212,17 +217,55 @@ export default function ProviderAPI() {
   });
 
   // 批量测评全部完成（后台 goroutine 结束）
-  useWailsEvent("providerapi:bench-done", (data: any) => {
+  useWailsEvent("providerapi:bench-done", async (data: any) => {
     setBatchRunning(false);
     const targets = batchTargetsRef.current;
     for (const m of targets) {
       setBenchmarking((p) => ({ ...p, [m.id]: false }));
     }
     const okIds = batchOkRef.current;
-    setSelectedIds((ids) => ids.filter((id) => okIds.includes(id)));
     const total = data?.total ?? targets.length;
-    flash("ok", `批量测评完成：成功 ${okIds.length}/${total}`);
+    // 测评通过的模型自动加入（新增/编辑模式都生效）；已加入的只回写速度，不重复计数。
+    const pid = getEffectiveId();
+    const alreadyAddedIds = new Set(
+      (providers[pid]?.models ?? []).filter((m) => m.verified).map((m) => m.id)
+    );
+    let autoAdded: string[] = [];
+    for (const mid of okIds) {
+      if (alreadyAddedIds.has(mid)) {
+        // 已加入：回写最新测速
+        const m = targets.find((x) => x.id === mid);
+        if (m) {
+          await ProviderAPIService.AddVerifiedModel(pid, {
+            id: m.id,
+            context: parseContext(m.context),
+            verified: true,
+            healthy: true,
+            failCount: 0,
+            tps: batchResRef.current[mid]?.tps ?? 0,
+          } as ProviderModel);
+        }
+        continue;
+      }
+      const m = targets.find((x) => x.id === mid);
+      if (m) {
+        const ok = await persistVerifiedModel(m, batchResRef.current[mid]?.tps ?? 0);
+        if (ok) autoAdded.push(mid);
+      }
+    }
+    if (autoAdded.length > 0 || alreadyAddedIds.size > 0) await load();
+    // 已加入的模型取消勾选（成功且已加入的都不再保持选中）
+    setSelectedIds((ids) =>
+      ids.filter((id) => !(okIds.includes(id) && (autoAdded.includes(id) || alreadyAddedIds.has(id))))
+    );
+    flash(
+      "ok",
+      `批量测评完成：成功 ${okIds.length}/${total}` +
+        (autoAdded.length > 0 ? `，已自动加入 ${autoAdded.length} 个` : "")
+    );
     batchTargetsRef.current = [];
+    batchOkRef.current = [];
+    batchResRef.current = {};
   });
 
   const flash = (type: "ok" | "err", text: string) => {
@@ -266,13 +309,38 @@ export default function ProviderAPI() {
     return catProv?.protocol ?? "openai";
   };
 
-  // 测试连接 + 拉取模型（用 baseURL + apiKey）；autoBench=true 时拉取成功后自动测评全部模型
+  // 测评/拉取模型时的凭据决策：
+  //  - 输入框填了 key -> 用表单的 baseURL + key（新建目录供应商/用户换 key）
+  //  - 输入框为空但该供应商后端已存 key（hasKey，如分享导入的供应商）-> 走 ByID，
+  //    明文 key 不经过前端，仅传 providerID + 当前表单 baseURL/protocol 作为覆盖
+  //  - 都没有 -> 报错
+  type BenchCreds =
+    | { ok: true; useID: true; id: string; baseURL: string; protocol: string }
+    | { ok: true; useID: false; baseURL: string; apiKey: string; protocol: string }
+    | { ok: false; error: string };
+  const resolveBenchCreds = (): BenchCreds => {
+    const protocol = getEffectiveProtocol();
+    if (apiKey.trim()) {
+      if (!baseURL.trim()) return { ok: false, error: "请先填写 BaseURL" };
+      return { ok: true, useID: false, baseURL: baseURL.trim(), apiKey: apiKey.trim(), protocol };
+    }
+    const eid = getEffectiveId();
+    const existing = eid ? providers[eid] : undefined;
+    if (existing?.hasKey) {
+      if (!baseURL.trim()) return { ok: false, error: "请先填写 BaseURL" };
+      return { ok: true, useID: true, id: eid, baseURL: baseURL.trim(), protocol };
+    }
+    return { ok: false, error: "请先填写 API Key" };
+  };
+
+  // 测试连接 + 拉取模型（用表单 key 或已保存密钥）；autoBench=true 时拉取成功后自动测评全部模型
   const testAndFetch = async (autoBench = false): Promise<CatalogModel[] | undefined> => {
-    if (!baseURL.trim() || !apiKey.trim()) {
-      flash("err", "请先填写 BaseURL 和 API Key");
+    const creds = resolveBenchCreds();
+    if (!creds.ok) {
+      flash("err", creds.error);
       return;
     }
-    const protocol = getEffectiveProtocol();
+    const protocol = creds.protocol;
     setLoadingModels(true);
     setBenchResult({});
     setSelectedIds([]);
@@ -294,7 +362,9 @@ export default function ProviderAPI() {
         }
         fetchedIDs = catModels.map((m) => m.id);
       } else {
-        const fetched = await ProviderAPIService.FetchProviderModels(baseURL.trim(), apiKey.trim());
+        const fetched = creds.useID
+          ? await ProviderAPIService.FetchProviderModelsByID(creds.id, creds.baseURL)
+          : await ProviderAPIService.FetchProviderModels(creds.baseURL, creds.apiKey);
         if (!fetched || fetched.length === 0) {
           flash("err", "未拉取到模型，请检查 BaseURL 和 API Key");
           setCandidateModels([]);
@@ -320,6 +390,9 @@ export default function ProviderAPI() {
         setSelectedIds(merged.map((m) => m.id));
         // 等状态刷新后再跑
         setTimeout(() => runBatchBenchmark(merged), 0);
+      } else if (!editingId && merged.length > 0) {
+        // 新增供应商手动拉取成功：默认勾选全部模型（编辑已有供应商时保持原勾选，不替用户改）
+        setSelectedIds(merged.map((m) => m.id));
       }
       return merged;
     } catch (e) {
@@ -331,18 +404,24 @@ export default function ProviderAPI() {
 
   // 评测单个模型；对已加入的模型，测完自动把最新速度回写保存
   const benchmarkOne = async (model: CatalogModel) => {
-    if (!baseURL.trim() || !apiKey.trim()) {
-      flash("err", "请先填写 API Key");
+    const creds = resolveBenchCreds();
+    if (!creds.ok) {
+      flash("err", creds.error);
       return;
     }
     setBenchmarking((p) => ({ ...p, [model.id]: true }));
     try {
-      const res = await ProviderAPIService.BenchmarkModel(baseURL.trim(), apiKey.trim(), model.id, "", getEffectiveProtocol(), 256);
+      const res = creds.useID
+        ? await ProviderAPIService.BenchmarkModelByID(creds.id, model.id, "", creds.baseURL, creds.protocol, 256)
+        : await ProviderAPIService.BenchmarkModel(creds.baseURL, creds.apiKey, model.id, "", creds.protocol, 256);
       setBenchResult((p) => ({ ...p, [model.id]: res ?? {} }));
-      // 已加入模型：把新测速持久化（AddVerifiedModel 同 id 覆盖，保留 healthy/failCount）
       if (res?.success) {
         const pid = getEffectiveId();
-        if (providers[pid]?.models?.some((x) => x.id === model.id && x.verified)) {
+        const alreadyAdded = providers[pid]?.models?.some(
+          (x) => x.id === model.id && x.verified
+        );
+        if (alreadyAdded) {
+          // 已加入模型：把新测速持久化（AddVerifiedModel 同 id 覆盖，保留 healthy/failCount）
           await ProviderAPIService.AddVerifiedModel(pid, {
             id: model.id,
             context: parseContext(model.context),
@@ -352,6 +431,14 @@ export default function ProviderAPI() {
             tps: res.tps ?? 0,
           } as ProviderModel);
           await load();
+        } else {
+          // 测评通过且尚未加入 -> 自动加入（新增/编辑模式都生效；
+          // 之前用 !editingId 判断导致编辑模式下重测的新模型永远不会被加入）
+          const added = await persistVerifiedModel(model, res.tps ?? 0);
+          if (added) {
+            await load();
+            flash("ok", `模型 ${model.id} 测评通过，已自动加入`);
+          }
         }
       }
     } catch (e) {
@@ -364,8 +451,9 @@ export default function ProviderAPI() {
   // 对指定模型批量测评；并发数由后端根据模型数量自动决定
   const runBatchBenchmark = async (targets: CatalogModel[]) => {
     if (targets.length === 0) return;
-    if (!baseURL.trim() || !apiKey.trim()) {
-      flash("err", "请先填写 BaseURL 和 API Key");
+    const creds = resolveBenchCreds();
+    if (!creds.ok) {
+      flash("err", creds.error);
       return;
     }
     setBatchRunning(true);
@@ -375,17 +463,29 @@ export default function ProviderAPI() {
       setBenchmarking((p) => ({ ...p, [m.id]: true }));
     }
     batchOkRef.current = [];
+    batchResRef.current = {};
     batchTargetsRef.current = targets;
 
     try {
-      await ProviderAPIService.BatchBenchmark(
-        baseURL.trim(),
-        apiKey.trim(),
-        "",
-        getEffectiveProtocol(),
-        256,
-        targets.map((m) => m.id)
-      );
+      if (creds.useID) {
+        await ProviderAPIService.BatchBenchmarkByID(
+          creds.id,
+          "",
+          creds.baseURL,
+          creds.protocol,
+          256,
+          targets.map((m) => m.id)
+        );
+      } else {
+        await ProviderAPIService.BatchBenchmark(
+          creds.baseURL,
+          creds.apiKey,
+          "",
+          creds.protocol,
+          256,
+          targets.map((m) => m.id)
+        );
+      }
     } catch (e) {
       flash("err", `批量测评失败: ${e}`);
       setBatchRunning(false);
@@ -409,7 +509,9 @@ export default function ProviderAPI() {
 
   // 批量加入：把所有评测通过（benchResult.success）且尚未加入的模型一次性加入
   const batchAddPassed = async () => {
-    if (!baseURL.trim() || !apiKey.trim()) {
+    const eid0 = getEffectiveId();
+    const existing0 = eid0 ? providers[eid0] : undefined;
+    if (!baseURL.trim() || (!apiKey.trim() && !existing0?.hasKey)) {
       flash("err", "请先填写 BaseURL 和 API Key");
       return;
     }
@@ -443,6 +545,7 @@ export default function ProviderAPI() {
           verified: false,
           imported: false,
           models: [],
+          hasKey: false,
         };
         await ProviderAPIService.UpsertProvider(cfg);
       }
@@ -461,38 +564,39 @@ export default function ProviderAPI() {
       flash("ok", `已批量加入 ${passed.length} 个模型`);
       setSelectedIds((ids) => ids.filter((id) => !passed.some((m) => m.id === id)));
       await load();
+      // 新增供应商：批量加入即完成创建，退出编辑态回到列表；编辑已有供应商时留在表单继续操作
+      if (!editingId) {
+        cancelEdit();
+      }
     } catch (e) {
       flash("err", `批量加入失败: ${e}`);
     }
   };
 
-  // 评测通过 -> 加入供应商
-  // 若供应商尚未保存，先按当前表单值 UpsertProvider，再加入模型（用户无需单独点「保存」）
-  const addVerifiedModel = async (model: CatalogModel) => {
-    if (!baseURL.trim() || !apiKey.trim()) {
-      flash("err", "请先填写 BaseURL 和 API Key");
-      return;
-    }
+  // 持久化一个已通过测评的模型：供应商不存在则先按表单创建，再 AddVerifiedModel。
+  // 静默执行（不弹提示、不刷新列表），由调用方统一 flash/load。返回是否真正加入。
+  const persistVerifiedModel = async (model: CatalogModel, tps: number): Promise<boolean> => {
     const providerId = getEffectiveId();
-    const catName = fromCatalog
-      ? catalog?.providers.find((x) => x.id === selectedCatalog)?.name
-      : undefined;
+    const existingForCheck = providers[providerId];
+    if (!baseURL.trim() || (!apiKey.trim() && !existingForCheck?.hasKey)) {
+      return false;
+    }
     const pm: ProviderModel = {
       id: model.id,
       context: parseContext(model.context),
       verified: true,
       healthy: true,
       failCount: 0,
-      tps: benchResult[model.id]?.tps ?? 0,
+      tps: tps ?? 0,
     };
     try {
-      const existing = providers[providerId];
-      // 供应商还没落盘：先按当前表单保存（关联已有模型），再加入新模型
-      if (!existing) {
+      // 供应商既不在前端 state（异步循环间不刷新）、也未在本会话创建过时才 UpsertProvider。
+      // UpsertProvider 是整体覆盖且此处 cfg.models 为空，重复调用会冲掉前一个已加入的模型。
+      if (!existingForCheck && !ensuredProvidersRef.current.has(providerId)) {
         const catProv = catalog?.providers.find((x) => x.id === selectedCatalog);
         const cfg: ProviderConfig = {
           id: providerId,
-          name: catName || customName.trim() || providerId,
+          name: catProv?.name || customName.trim() || providerId,
           baseURL: baseURL.trim(),
           apiKey: apiKey.trim(),
           getAPIKeyURL: catProv?.get_api_key_url ?? "",
@@ -502,16 +606,30 @@ export default function ProviderAPI() {
           verified: false,
           imported: false,
           models: [],
+          hasKey: false,
         };
         await ProviderAPIService.UpsertProvider(cfg);
+        ensuredProvidersRef.current.add(providerId);
       }
       await ProviderAPIService.AddVerifiedModel(providerId, pm);
-      flash("ok", `模型 ${model.id} 已评测通过并加入`);
       setSelectedIds((ids) => ids.filter((x) => x !== model.id));
-      await load();
-    } catch (e) {
-      flash("err", `添加失败: ${e}`);
+      return true;
+    } catch {
+      return false;
     }
+  };
+
+  // 评测通过 -> 加入供应商
+  // 若供应商尚未保存，先按当前表单值 UpsertProvider，再加入模型（用户无需单独点「保存」）
+  const addVerifiedModel = async (model: CatalogModel) => {
+    const ok = await persistVerifiedModel(model, benchResult[model.id]?.tps ?? 0);
+    if (!ok) {
+      flash("err", "添加失败，请确认已填写 BaseURL 和 API Key");
+      return;
+    }
+    flash("ok", `模型 ${model.id} 已评测通过并加入`);
+    await load();
+    // 停留在添加/编辑表单：批量测评时会逐个点「加入」，不应每加一个就退出
   };
 
   // 取消加入：把已加入的模型从供应商移除（保留候选列表里的评测结果，可重新加入）
@@ -567,6 +685,7 @@ export default function ProviderAPI() {
       imported: keepImported,
       verified: existing?.verified ?? false,
       models: existing?.models ?? [],
+      hasKey: false,
     };
     try {
       await ProviderAPIService.UpsertProvider(cfg);
@@ -670,6 +789,7 @@ export default function ProviderAPI() {
 
   // 开始新增供应商
   const startNew = () => {
+    ensuredProvidersRef.current = new Set();
     setShowAdd(true);
     setEditingId("");
     setEffectiveId("");
@@ -695,6 +815,7 @@ export default function ProviderAPI() {
   const startEdit = (id: string) => {
     const p = providers[id];
     if (!p) return;
+    ensuredProvidersRef.current = new Set();
     setEditingId(id);
     setEffectiveId(id);
     setShowAdd(true);
@@ -749,13 +870,15 @@ export default function ProviderAPI() {
     };
     scrollFormIntoView();
     // 进入编辑时，若开关开启且有 BaseURL/API Key，自动拉取模型并测评
-    if (autoBenchOnEdit && p.baseURL && p.apiKey) {
+    // 导入供应商的明文 key 已脱敏（p.apiKey 为空），用 hasKey 判断后端是否持有密钥
+    if (autoBenchOnEdit && p.baseURL && (p.apiKey || p.hasKey)) {
       setTimeout(() => testAndFetch(true), 0);
     }
   };
 
   // 取消编辑/新增
   const cancelEdit = () => {
+    ensuredProvidersRef.current = new Set();
     setEditingId("");
     setEffectiveId("");
     setShowAdd(false);
@@ -1252,7 +1375,11 @@ export default function ProviderAPI() {
           {(editingId || !activeProvider) && (
             <button
               onClick={saveProvider}
-              disabled={!baseURL.trim() || !apiKey.trim()}
+              disabled={
+                !baseURL.trim() ||
+                (!editingId && !apiKey.trim()) || // 新建必须填写 Key
+                (!!editingId && !apiKey.trim() && !activeProvider?.hasKey) // 编辑：留空时后端须已有保存的 Key
+              }
               className="px-4 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)] disabled:opacity-50"
             >
               {editingId ? "💾 保存修改" : "💾 保存供应商"}
@@ -1503,9 +1630,13 @@ function BonusModal({
               {pageItems.map((p) => {
                 const isAdded = addedBaseUrls.has(p.baseUrl.replace(/\/$/, ""));
                 return (
-                <label
+                <div
                   key={p.id}
-                  onClick={() => { if (inline && !isAdded) onPick(p); }}
+                  role={inline ? "button" : undefined}
+                  onClick={() => {
+                    if (inline) { if (!isAdded) onPick(p); }
+                    else { onSelect(p.id); }
+                  }}
                   className={`flex items-start gap-3 p-3 rounded-lg border ${
                     inline
                       ? isAdded
@@ -1518,7 +1649,8 @@ function BonusModal({
                       )
                   }`}
                 >
-                  {!inline && (
+                  {/* 左：选择控件（非 inline 为 radio；inline 为「+添加」按钮） */}
+                  {!inline ? (
                     <input
                       type="radio"
                       name="bonus-provider"
@@ -1527,25 +1659,47 @@ function BonusModal({
                       onClick={(e) => e.stopPropagation()}
                       className="mt-1 accent-[var(--color-primary)] shrink-0"
                     />
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isAdded}
+                      onClick={(e) => { e.stopPropagation(); if (!isAdded) onPick(p); }}
+                      title={isAdded ? "已添加" : "添加该供应商"}
+                      className={`mt-0.5 w-6 h-6 shrink-0 flex items-center justify-center rounded-full border text-sm leading-none
+                        ${isAdded
+                          ? "border-[var(--color-success)]/50 text-[var(--color-success)] cursor-default"
+                          : "border-[var(--color-primary)] text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10"}`}
+                    >
+                      {isAdded ? "✓" : "+"}
+                    </button>
                   )}
+
+                  {/* 中：名称 + bonus 说明 + BaseURL（点击 = 选择/添加） */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); onOpenRegister(p.registerUrl); }}
-                        className="text-sm font-medium text-[var(--color-primary)] hover:underline shrink-0 cursor-pointer"
-                      >
-                        {p.name} ↗
-                      </button>
+                      <span className="text-sm font-medium shrink-0">{p.name}</span>
                       {isAdded && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/20 text-[var(--color-success)] shrink-0">已添加</span>
                       )}
+                    </div>
+                    <div className="text-xs mt-1">{p.bonusRule}</div>
+                    <div className="flex items-center gap-1.5 mt-1">
                       <span className="text-[10px] text-[var(--color-text-dim)] shrink-0">BaseURL:</span>
                       <span className="text-xs text-[var(--color-text-dim)] font-mono truncate">{p.baseUrl}</span>
                     </div>
-                    <div className="text-xs mt-1">{p.bonusRule}</div>
                   </div>
-                </label>
+
+                  {/* 右：显式「去注册」跳转按钮（与选择分离，stopPropagation 避免误触选择） */}
+                  <button
+                    type="button"
+                    disabled={!p.registerUrl}
+                    onClick={(e) => { e.stopPropagation(); onOpenRegister(p.registerUrl); }}
+                    title={p.registerUrl ? "在浏览器中打开注册页" : "暂无注册链接"}
+                    className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-[var(--color-primary)]/40 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    去注册 ↗
+                  </button>
+                </div>
                 );
               })}
             </div>

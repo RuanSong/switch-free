@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback } from "react";
 import { LogService } from "../../bindings/switchdev/service";
 import type { LogStats } from "../../bindings/switchdev/service/models";
 import type { LogEntry } from "../../bindings/switchdev/proxy/models";
-import UsageTrendChart from "./UsageTrendChart";
 
 interface Props {
   logs: LogEntry[]; // 内存实时日志（最新）
@@ -124,13 +123,6 @@ export default function Logs({ logs, stats }: Props) {
         <FilterBtn label="鉴权失败" count={stats?.authError ?? 0} active={filter === "auth_error"} onClick={() => setFilter("auth_error")} color="text-[var(--color-danger)]" />
         <FilterBtn label="降级" count={0} active={filter === "fallback"} onClick={() => setFilter("fallback")} color="text-[var(--color-text-dim)]" />
       </div>
-
-      {/* 使用趋势：按天->按小时，按周/月->按天 */}
-      <UsageTrendChart
-        startDate={calcRange().start}
-        endDate={calcRange().end}
-        granularity={range === "today" ? "hour" : "day"}
-      />
 
       {/* 日志列表 */}
       <div className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden">

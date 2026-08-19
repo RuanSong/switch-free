@@ -126,6 +126,7 @@ type Config struct {
 	Port              int                         `json:"port"`              // 代理监听端口
 	APIKey            string                      `json:"apiKey"`            // 客户端接入密钥（AuthEnabled=true 时严格校验）
 	AuthEnabled       bool                        `json:"authEnabled"`       // 是否要求客户端携带 apiKey；默认 true，关闭后网关不鉴权
+	AutoStart         bool                        `json:"autoStart"`         // 登录系统时自动启动（静默到托盘，以 --tray 启动）
 	AutoUpdate       UpdateConfig                `json:"update"`           // 自动升级配置
 	LogFile          LogFileConfig               `json:"logFile"`          // 控制台日志落地文件配置
 	Presets          []Preset                    `json:"presets"`          // 已保存的运行模式方案
@@ -176,6 +177,7 @@ func Defaults() *Config {
 		},
 		Port:         DefaultPort,
 		AuthEnabled:  true,
+		AutoStart:    false,
 		Presets:      []Preset{},
 		ActivePreset: "",
 		Provider: ProviderSettings{
@@ -405,6 +407,7 @@ func (c *Config) Clone() *Config {
 		Port:             c.Port,
 		APIKey:           c.APIKey,
 		AuthEnabled:      c.AuthEnabled,
+		AutoStart:        c.AutoStart,
 		AutoUpdate:       c.AutoUpdate,
 		LogFile:          c.LogFile,
 		ActivePreset:     c.ActivePreset,
@@ -447,6 +450,7 @@ func (c *Config) Update(newCfg *Config) error {
 	c.Port = newCfg.Port
 	c.APIKey = newCfg.APIKey
 	c.AuthEnabled = newCfg.AuthEnabled
+	c.AutoStart = newCfg.AutoStart
 	c.AutoUpdate = newCfg.AutoUpdate
 	c.LogFile = newCfg.LogFile
 	c.Presets = newCfg.Presets
@@ -478,13 +482,18 @@ func (c *Config) GetAuthEnabled() bool {
 	return c.AuthEnabled
 }
 
-// isValidUpstream 检查 upstream 名是否合法
+// isValidUpstream 检查 upstream 名是否合法。
+// 内置 4 上游固定；其余非空名都视为合法的 ProviderAPI 供应商 id
+// （内置目录 slug 如 "groq"，或自定义的 "custom-xxxxxx"，由 ProviderAPI 子系统动态管理，
+// config 包无法静态枚举，且与 providerapi 包存在导入方向约束）。
+// 运行时 pickUpstream 对找不到的 upstream 会安全跳过（executeChain* 里 up==nil 即 continue），
+// 因此这里采用与 isValidModel 一致的宽松策略，避免保存降级链/方案时误拒自定义供应商。
 func isValidUpstream(u string) bool {
 	switch u {
 	case "joycode", "deveco", "opencode", "workbuddy":
 		return true
 	}
-	return false
+	return strings.TrimSpace(u) != ""
 }
 
 // isValidModel 检查模型 id 是否在已知白名单中（宽松校验，允许自定义）

@@ -10,6 +10,7 @@ import UpdatePanel from "./UpdatePanel";
 import PresetSwitcher from "./PresetSwitcher";
 import ConfirmPopover from "./ConfirmPopover";
 import { ModelSelect, FreeBadge } from "./ModelSelect";
+import { useWailsEvent } from "../hooks/useWailsEvent";
 
 const UPSTREAM_LABEL: Record<string, string> = {
   joycode: "JoyCode",
@@ -150,6 +151,20 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       mountedRef.current = true;
     }
   }, []);
+
+  // 供应商增删/模型变化时刷新上游列表与供应商名（后端已在此时清掉模型缓存）。
+  // 这样在「供应商」页添加并验证模型后切回设置页，upstream 下拉能立即出现新供应商。
+  useWailsEvent("providerapi:change", () => {
+    loadProviderNames();
+    ConfigService.RefreshModels()
+      .then((a) => setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null)))
+      .catch(() => {});
+  });
+  useWailsEvent("cred:change", () => {
+    ConfigService.RefreshModels()
+      .then((a) => setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null)))
+      .catch(() => {});
+  });
 
   // 自动保存：运行模式配置变更时即时保存（跳过首次同步）
   // 只提交运行模式四个字段，避免把「通用」tab 里未点保存的端口改动一起带上
@@ -369,6 +384,18 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
       flash("ok", enabled ? "已开启日志文件" : "已关闭日志文件");
     } catch (e) {
       flash("err", `保存失败: ${e}`);
+    }
+  };
+
+  // 切换"开机自动启动"：后端同时操作系统登录项（注册表/LaunchAgent/.desktop）
+  const toggleAutoStart = async (enabled: boolean) => {
+    try {
+      await ConfigService.SetAutoStart(enabled);
+      const cur = await ConfigService.GetConfig();
+      if (cur) setCfg(cur);
+      flash("ok", enabled ? "已开启开机自启（登录后静默到托盘）" : "已关闭开机自启");
+    } catch (e) {
+      flash("err", `设置失败: ${e}`);
     }
   };
 
@@ -675,6 +702,23 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
               </button>
             </div>
           )}
+        </section>
+
+        {/* 启动 */}
+        <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <h2 className="font-semibold mb-1">启动</h2>
+          <p className="text-xs text-[var(--color-text-dim)] mb-3">
+            登录系统时自动在后台启动 Switch Dev，不弹出主窗口（静默驻留托盘，双击托盘图标打开）。
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!cfg?.autoStart}
+              onChange={(e) => toggleAutoStart(e.target.checked)}
+              className="w-4 h-4 accent-[var(--color-primary)]"
+            />
+            <span className="text-sm">开机自动启动（静默到托盘）</span>
+          </label>
         </section>
 
         {/* 供应商配置 */}

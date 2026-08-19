@@ -3,6 +3,8 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -59,6 +61,14 @@ var mainWindow *application.WebviewWindow
 var systemTray *application.SystemTray
 
 func main() {
+	// 开机自启以 --tray 启动：窗口创建后即隐藏，静默驻留托盘。
+	startHidden := false
+	for _, a := range os.Args[1:] {
+		if a == "--tray" {
+			startHidden = true
+		}
+	}
+
 	// 1. 凭据管理器
 	jyMgr := creds.NewJoyCodeCredManager(creds.DefaultJoyCodeConfig())
 	deMgr := creds.NewDevEcoCredManager(creds.DefaultDevEcoConfig())
@@ -141,6 +151,10 @@ func main() {
 	modelSvc := service.NewModelService(core)
 	logSvc := service.NewLogService(core)
 	cfgSvc := service.NewConfigServiceWithCore(cfgMgr, core)
+	// 启动时让操作系统自启项与配置一致（用当前可执行路径重新注册，修复路径变更）
+	if err := cfgSvc.ReconcileAutoStart(); err != nil {
+		log.Printf("⚠️ 同步开机自启状态失败: %v", err)
+	}
 	pricingSvc := service.NewPricingService(pricingMgr)
 	updaterMgr := updater.NewUpdater(cfgMgr.Get())
 	updaterSvc := service.NewUpdaterService(updaterMgr)
@@ -188,6 +202,7 @@ func main() {
 		MinWidth:         800,
 		MinHeight:        600,
 		BackgroundColour: application.NewRGB(15, 23, 42), // 深色背景
+		Hidden:           startHidden,                   // --tray 开机自启时静默到托盘
 		URL:              "/",
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
@@ -237,10 +252,54 @@ func main() {
 	// 10.5 启动 3s 后后台检查更新（有新版本发事件给前端弹窗）
 	go startUpdateCheck(updaterSvc)
 
+	// 更新完成后：释放端口 -> 以非托盘模式启动新进程 -> 退出旧进程
+	service.SetRestartHandler(func() {
+		relaunchForUpdate(server, app)
+	})
+
 	// 11. 运行
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// relaunchForUpdate 自动更新成功后重启应用：
+//  1. 先停掉 HTTP 代理释放监听端口；
+//  2. 以新二进制启动新进程（剥离 --tray，重启后正常显示主窗口，让用户看到更新结果）；
+//  3. 退出旧进程。
+//
+// 必须在独立 goroutine 中调用，避免阻塞 Wails 事件循环。
+func relaunchForUpdate(server *proxy.Server, app *application.App) {
+	// 先关端口服务（不推事件，避免退出时 Emit 卡死）
+	if server != nil {
+		_ = server.StopQuiet()
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("⚠️ 更新重启：无法获取可执行路径: %v", err)
+	} else {
+		// 剥离 --tray：更新是用户主动触发的，重启后显示主窗口，而非静默托盘
+		args := make([]string, 0, len(os.Args)-1)
+		for _, a := range os.Args[1:] {
+			if a != "--tray" {
+				args = append(args, a)
+			}
+		}
+		cmd := exec.Command(exe, args...)
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			log.Printf("⚠️ 更新重启：启动新进程失败: %v", err)
+		}
+	}
+
+	// 放行真正退出并结束旧进程（异步，与托盘「退出」同样的退出序列）
+	go func() {
+		realQuit.Store(true)
+		app.Quit()
+	}()
 }
 
 // startUpdateCheck 启动后延迟 3s 首次检查更新，之后每 6 小时周期检查。
@@ -494,10 +553,10 @@ func registerProviderAPIRefresh(server *proxy.Server, mgr *providerapi.Manager, 
 		}
 		proxy.SetProviderModels(providerModels)
 
-		// 推送状态刷新（前端凭据页/模型页）
+		// 推送状态刷新（前端凭据页/模型页）；导入供应商的明文 key 不经过事件下发前端
 		if core != nil {
 			core.EmitEvent("cred:change", core.GetCredStatus())
-			core.EmitEvent("providerapi:change", mgr.GetProviders())
+			core.EmitEvent("providerapi:change", service.SanitizeProviders(mgr.GetProviders()))
 		}
 	}
 	rebuildProviderAPIs = rebuild

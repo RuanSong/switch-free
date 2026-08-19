@@ -53,27 +53,35 @@ func (m *Manager) loadV2(disk *onDiskFile) error {
 	if disk.WrappedDEK == nil {
 		return errors.New("加密配置缺少 wrappedDEK")
 	}
-	// 尝试从钥匙串取记住的主密码自动解锁
-	if mp, err := keystore.Get(keystore.Account); err == nil && mp != "" && disk.KDF != nil {
-		if dek, err := m.unwrapDEK(mp, disk.KDF, disk.WrappedDEK); err == nil {
-			m.mu.Lock()
-			m.dek = dek
-			m.kdfSalt, _ = base64.StdEncoding.DecodeString(disk.KDF.Salt)
-			m.kdfMeta = disk.KDF
-			m.wrappedDEK = disk.WrappedDEK
-			m.recoveryMeta = disk.Recovery
-			m.masterSet = disk.MasterSet || disk.Recovery != nil
-			m.config = m.decryptConfig(disk)
-			m.uiLocked = false
-			m.mu.Unlock()
-			return nil
+	// 尝试用记住的主密码自动解锁。keystore.Recover 以钥匙串为主、文件副本兜底，
+	// 用「能否解开 DEK」作为校验：任一副本正确即返回，且若是文件副本正确会回填钥匙串自愈。
+	// 注意：任何副本解不开都【不删除】——自动加密模式下记住的密码是唯一凭证，
+	// 删除会导致磁盘密文永久无法解开（历史上曾因此造成凭据丢失）。
+	if disk.KDF != nil {
+		mp := keystore.Recover(keystore.Account, func(pw string) bool {
+			_, err := m.unwrapDEK(pw, disk.KDF, disk.WrappedDEK)
+			return err == nil
+		})
+		if mp != "" {
+			if dek, err := m.unwrapDEK(mp, disk.KDF, disk.WrappedDEK); err == nil {
+				m.mu.Lock()
+				m.dek = dek
+				m.kdfSalt, _ = base64.StdEncoding.DecodeString(disk.KDF.Salt)
+				m.kdfMeta = disk.KDF
+				m.wrappedDEK = disk.WrappedDEK
+				m.recoveryMeta = disk.Recovery
+				m.masterSet = disk.MasterSet || disk.Recovery != nil
+				m.config = m.decryptConfig(disk)
+				m.uiLocked = false
+				m.mu.Unlock()
+				return nil
+			}
 		}
-		// 自动解锁失败：钥匙串密码与磁盘不匹配，清除过期条目
-		_ = keystore.Delete(keystore.Account)
 	}
 	// 未能自动解锁：保留磁盘上的加密元数据，但仍加载供应商的明文元数据
 	// （id/名称/baseURL/模型列表/verified 等在磁盘上本就是明文，仅 apiKey 加密），
 	// 这样锁定状态下也能列出/选择模型，只是没有 apiKey 无法真正发起调用。
+	// 钥匙串/文件副本一律保留，等待用户手动输入正确主密码（Unlock 会刷新主存储）。
 	m.mu.Lock()
 	m.kdfMeta = disk.KDF
 	m.wrappedDEK = disk.WrappedDEK
@@ -130,19 +138,26 @@ func (m *Manager) Lock() {
 	m.uiLocked = true
 }
 
-// TryAutoUnlock 尝试用钥匙串记住的密码自动解锁。
-// 返回 nil 表示解锁成功；钥匙串无密码或密码过期返回错误（过期条目会被清除）。
+// TryAutoUnlock 尝试用记住的密码（钥匙串为主、文件副本兜底）自动解锁。
+// 任一副本能解开 DEK 即成功；正确的文件副本会回填钥匙串自愈。
+// 任何副本都解不开时返回错误，但【不删除】已存储的密码，避免自动加密模式下
+// 唯一凭证被清除导致磁盘密文永久不可解。
 func (m *Manager) TryAutoUnlock() error {
-	mp, err := keystore.Get(keystore.Account)
-	if err != nil || mp == "" {
-		return errors.New("钥匙串没有记住的密码")
+	m.mu.RLock()
+	kdfMeta := m.kdfMeta
+	wrappedDEK := m.wrappedDEK
+	m.mu.RUnlock()
+	if kdfMeta == nil || wrappedDEK == nil {
+		return errors.New("配置未加密，无需解锁")
 	}
-	if err := m.Unlock(mp); err != nil {
-		// 钥匙串密码过期：清除，避免 remembered 状态误导
-		_ = keystore.Delete(keystore.Account)
-		return err
+	mp := keystore.Recover(keystore.Account, func(pw string) bool {
+		_, err := m.unwrapDEK(pw, kdfMeta, wrappedDEK)
+		return err == nil
+	})
+	if mp == "" {
+		return errors.New("没有可用的记住密码，或记住的密码与配置不匹配")
 	}
-	return nil
+	return m.Unlock(mp)
 }
 
 // syncRememberedPassword 解锁成功后防御性同步钥匙串：

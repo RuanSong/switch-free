@@ -7,6 +7,7 @@ export default function UpdatePanel() {
   const [currentVersion, setCurrentVersion] = useState<string>("");
   const [checking, setChecking] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
@@ -24,7 +25,11 @@ export default function UpdatePanel() {
   // 下载进度
   useWailsEvent("update:progress", (data) => {
     const s = data as { state: string; percent: number; message: string };
-    if (s.state === "done") {
+    if (s.state === "restarting") {
+      setProgress({ percent: 100, message: s.message || "更新完成，正在重启…" });
+      setRestarting(true);
+      setUpdating(true); // 重启中保持按钮禁用
+    } else if (s.state === "done") {
       setProgress({ percent: 100, message: s.message || "更新完成，请重启应用" });
       setUpdating(false);
     } else if (s.state === "error") {
@@ -141,7 +146,7 @@ export default function UpdatePanel() {
                 isCritical ? "bg-[var(--color-danger)]" : "bg-[var(--color-primary)]"
               }`}
             >
-              {updating ? "更新中..." : isCritical ? "立即更新（必需）" : "立即更新"}
+              {restarting ? "正在重启..." : updating ? "更新中..." : isCritical ? "立即更新（必需）" : "立即更新"}
             </button>
             {/* 强制更新不提供「忽略」；仅可选更新可稍后 */}
             {!isCritical && (

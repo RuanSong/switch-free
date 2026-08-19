@@ -1,8 +1,16 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { LogService } from "../../bindings/switchdev/service";
 import type { UsageStats as UsageStatsData } from "../../bindings/switchdev/service/models";
+import UsageTrendChart from "./UsageTrendChart";
 
-type Range = "today" | "week" | "month" | "custom";
+type Range = "yesterday" | "today" | "week" | "month" | "custom";
+type Tab = "trend" | "provider" | "model";
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: "trend", label: "使用趋势" },
+  { key: "provider", label: "按供应商" },
+  { key: "model", label: "按模型" },
+];
 
 const pad = (n: number) => String(n).padStart(2, "0");
 function fmtDate(d: Date): string {
@@ -18,6 +26,7 @@ function startOfWeek(d: Date): Date {
 
 export default function UsageStats() {
   const [range, setRange] = useState<Range>("week");
+  const [tab, setTab] = useState<Tab>("trend");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [data, setData] = useState<UsageStatsData | null>(null);
@@ -28,6 +37,11 @@ export default function UsageStats() {
     const today = new Date();
     const todayStr = fmtDate(today);
     if (range === "today") return { start: todayStr, end: todayStr };
+    if (range === "yesterday") {
+      const y = dateAddDays(today, -1);
+      const yStr = fmtDate(y);
+      return { start: yStr, end: yStr };
+    }
     if (range === "week") {
       return { start: fmtDate(startOfWeek(today)), end: todayStr };
     }
@@ -37,6 +51,10 @@ export default function UsageStats() {
     // custom
     return { start: customStart || todayStr, end: customEnd || todayStr };
   }, [range, customStart, customEnd]);
+
+  // 趋势图粒度：单日（今日/昨日）按小时，跨天范围按天
+  const trendGranularity: "hour" | "day" =
+    range === "today" || range === "yesterday" ? "hour" : "day";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,6 +81,7 @@ export default function UsageStats() {
     <div className="p-6 space-y-6">
       {/* 时间范围切换 */}
       <div className="flex items-center gap-2 flex-wrap">
+        <RangeBtn label="昨日" active={range === "yesterday"} onClick={() => setRange("yesterday")} />
         <RangeBtn label="今天" active={range === "today"} onClick={() => setRange("today")} />
         <RangeBtn label="本周" active={range === "week"} onClick={() => setRange("week")} />
         <RangeBtn label="本月" active={range === "month"} onClick={() => setRange("month")} />
@@ -93,8 +112,38 @@ export default function UsageStats() {
             <SumCard label="供应商数" value={String(data.byProvider.length)} sub={`模型 ${data.byModel.length} 个`} color="text-[var(--color-warning)]" />
           </div>
 
+          {/* Tab 切换：使用趋势 / 按供应商 / 按模型（保持挂载，避免趋势图重复请求） */}
+          <div className="flex items-center gap-1 border-b border-[var(--color-border)]">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`px-4 py-2 text-sm font-medium transition-colors relative -mb-px border-b-2 ${
+                  tab === t.key
+                    ? "border-[var(--color-primary)] text-[var(--color-primary)]"
+                    : "border-transparent text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* 使用趋势：单日（今日/昨日）按小时，跨天按天 */}
+          <div className={tab === "trend" ? "" : "hidden"}>
+            <UsageTrendChart
+              startDate={calcRange().start}
+              endDate={calcRange().end}
+              granularity={trendGranularity}
+            />
+          </div>
+
           {/* 供应商维度 */}
-          <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <section
+            className={`bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] ${
+              tab === "provider" ? "" : "hidden"
+            }`}
+          >
             <h2 className="font-semibold mb-3">按供应商统计</h2>
             {data.byProvider.length === 0 ? (
               <div className="text-sm text-[var(--color-text-dim)] text-center py-4">该范围无数据</div>
@@ -124,7 +173,11 @@ export default function UsageStats() {
           </section>
 
           {/* 模型维度 */}
-          <section className="bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)]">
+          <section
+            className={`bg-[var(--color-surface)] rounded-xl p-5 border border-[var(--color-border)] ${
+              tab === "model" ? "" : "hidden"
+            }`}
+          >
             <h2 className="font-semibold mb-3">按模型统计（实际使用）</h2>
             {data.byModel.length === 0 ? (
               <div className="text-sm text-[var(--color-text-dim)] text-center py-4">该范围无数据</div>

@@ -43,17 +43,36 @@ func SetProviderAPIRefreshCallback(fn func()) {
 
 // refresh 内部触发重建（若已注入回调）
 func (s *ProviderAPIService) refresh() {
+	// 清空 ConfigService 的模型列表缓存，否则设置页要等 10 分钟才出现新供应商
+	if invalidateModelsCache != nil {
+		invalidateModelsCache()
+	}
 	if providerAPIRefreshCallback != nil {
 		providerAPIRefreshCallback()
 	}
 }
 
-// GetProviders 返回所有已添加供应商（含模型 verified/healthy 状态）
-func (s *ProviderAPIService) GetProviders() map[string]*providerapi.ProviderConfig {
-	return s.mgr.GetProviders()
+// SanitizeProviders 对一批供应商做前端脱敏：
+// 通过分享导入的供应商，明文 apiKey 不下发（置空，HasKey=true 告知 UI 后端持有密钥）。
+// 任何要把供应商数据推给前端的路径（GetProviders / providerapi:change 事件）都必须经过这里。
+func SanitizeProviders(in map[string]*providerapi.ProviderConfig) map[string]*providerapi.ProviderConfig {
+	for _, p := range in {
+		p.HasKey = strings.TrimSpace(p.APIKey) != ""
+		if p.Imported {
+			p.APIKey = ""
+		}
+	}
+	return in
 }
 
-// UpsertProvider 新增/更新供应商配置（保存到 credentials.json + 重建上游）
+// GetProviders 返回所有已添加供应商（含模型 verified/healthy 状态）。
+// 安全：通过分享导入的供应商，明文 apiKey 不下发前端（见 SanitizeProviders）。
+func (s *ProviderAPIService) GetProviders() map[string]*providerapi.ProviderConfig {
+	return SanitizeProviders(s.mgr.GetProviders())
+}
+
+// UpsertProvider 新增/更新供应商配置（保存到 credentials.json + 重建上游）。
+// 编辑已存在的供应商时若 APIKey 为空，保留原 key（前端对导入供应商脱敏，不会回传明文 key）。
 func (s *ProviderAPIService) UpsertProvider(cfg *providerapi.ProviderConfig) error {
 	if strings.TrimSpace(cfg.ID) == "" {
 		return fmt.Errorf("供应商 id 不能为空")
@@ -62,7 +81,11 @@ func (s *ProviderAPIService) UpsertProvider(cfg *providerapi.ProviderConfig) err
 		return fmt.Errorf("BaseURL 不能为空")
 	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return fmt.Errorf("API Key 不能为空")
+		if existing := s.mgr.GetProvider(cfg.ID); existing != nil && strings.TrimSpace(existing.APIKey) != "" {
+			cfg.APIKey = existing.APIKey // 保留已存密钥
+		} else {
+			return fmt.Errorf("API Key 不能为空")
+		}
 	}
 	if err := s.mgr.UpsertProvider(cfg); err != nil {
 		return err
@@ -318,6 +341,66 @@ func (s *ProviderAPIService) BatchBenchmark(baseURL, apiKey, prompt, protocol st
 	if len(modelIDs) == 0 {
 		return nil
 	}
+	s.runBatchBenchmark(baseURL, apiKey, prompt, protocol, maxTokens, modelIDs)
+	return nil
+}
+
+// resolveProviderCreds 按 id 取已保存供应商的连接凭据（供导入供应商「不显示 key 但能测评」使用）。
+// baseURLOverride / protocolOverride 非空时覆盖已存值（用户编辑了表单但保留 key 的场景）；
+// apiKey 始终来自后端，永不下发前端。锁定/无 key 时返回错误。
+func (s *ProviderAPIService) resolveProviderCreds(id, baseURLOverride, protocolOverride string) (baseURL, apiKey, protocol string, err error) {
+	p := s.mgr.GetProvider(strings.TrimSpace(id))
+	if p == nil {
+		return "", "", "", fmt.Errorf("供应商不存在: %s", id)
+	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		return "", "", "", fmt.Errorf("该供应商尚未保存 API Key（可能处于锁定状态），请先解锁或填写 Key")
+	}
+	baseURL = p.BaseURL
+	if strings.TrimSpace(baseURLOverride) != "" {
+		baseURL = baseURLOverride
+	}
+	protocol = p.EffectiveProtocol()
+	if strings.TrimSpace(protocolOverride) != "" {
+		protocol = protocolOverride
+	}
+	return baseURL, p.APIKey, protocol, nil
+}
+
+// FetchProviderModelsByID 用已保存供应商的密钥拉取模型列表（明文 key 不经过前端）。
+// baseURLOverride 非空时使用该地址（否则用已存 baseURL）。
+func (s *ProviderAPIService) FetchProviderModelsByID(id, baseURLOverride string) ([]upstream.FetchedModel, error) {
+	baseURL, apiKey, _, err := s.resolveProviderCreds(id, baseURLOverride, "")
+	if err != nil {
+		return nil, err
+	}
+	return s.FetchProviderModels(baseURL, apiKey)
+}
+
+// BenchmarkModelByID 用已保存供应商的密钥测评单个模型。
+func (s *ProviderAPIService) BenchmarkModelByID(id, modelID, prompt, baseURLOverride, protocolOverride string, maxTokens int) (map[string]interface{}, error) {
+	baseURL, apiKey, protocol, err := s.resolveProviderCreds(id, baseURLOverride, protocolOverride)
+	if err != nil {
+		return nil, err
+	}
+	return s.BenchmarkModel(baseURL, apiKey, modelID, prompt, protocol, maxTokens)
+}
+
+// BatchBenchmarkByID 用已保存供应商的密钥批量测评模型。
+func (s *ProviderAPIService) BatchBenchmarkByID(id, prompt, baseURLOverride, protocolOverride string, maxTokens int, modelIDs []string) error {
+	baseURL, apiKey, protocol, err := s.resolveProviderCreds(id, baseURLOverride, protocolOverride)
+	if err != nil {
+		return err
+	}
+	if len(modelIDs) == 0 {
+		return nil
+	}
+	s.runBatchBenchmark(baseURL, apiKey, prompt, protocol, maxTokens, modelIDs)
+	return nil
+}
+
+// runBatchBenchmark 在后台并发测评，进度通过 providerapi:bench / providerapi:bench-done 事件推送。
+func (s *ProviderAPIService) runBatchBenchmark(baseURL, apiKey, prompt, protocol string, maxTokens int, modelIDs []string) {
 	total := len(modelIDs)
 	queue := append([]string(nil), modelIDs...)
 	// 根据模型数量动态调整并发：20 个以内用 4，超过 20 用 8
@@ -381,7 +464,6 @@ func (s *ProviderAPIService) BatchBenchmark(baseURL, apiKey, prompt, protocol st
 			})
 		}
 	}()
-	return nil
 }
 
 // GetStatus 返回各供应商凭据 + 模型 verified/healthy 状态

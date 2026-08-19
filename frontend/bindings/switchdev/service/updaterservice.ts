@@ -15,7 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as updater$0 from "../updater/models.js";
 
 /**
- * ApplyUpdate 下载并应用更新（阻塞，进度通过事件推送）
+ * ApplyUpdate 下载并应用更新（阻塞，进度通过事件推送）。
+ * 二进制替换成功后：先推 done 事件让前端收尾，再由 main 注入的回调重启应用
+ * （释放端口 -> 启动新进程 -> 退出旧进程）。
  */
 export function ApplyUpdate(info: updater$0.UpdateInfo | null): $CancellablePromise<void> {
     return $Call.ByID(3087407177, info);

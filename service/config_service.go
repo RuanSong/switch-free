@@ -8,6 +8,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"switchdev/autostart"
 	"switchdev/config"
 	"switchdev/db"
 	"switchdev/proxy"
@@ -26,9 +27,17 @@ type ConfigService struct {
 	modelsFetching bool
 }
 
+// invalidateModelsCache 由 ConfigService 初始化时注入，供供应商变化时清空模型缓存。
+// 用包级钩子避免 ProviderAPIService 反向依赖 ConfigService 实例。
+var invalidateModelsCache func()
+
 // NewConfigServiceWithCore 创建配置服务（持有 Core 以访问 upstream）
 func NewConfigServiceWithCore(mgr *config.Manager, core *Core) *ConfigService {
-	return &ConfigService{mgr: mgr, core: core}
+	s := &ConfigService{mgr: mgr, core: core}
+	// 注册模型缓存失效钩子：供应商增删/模型变化（ProviderAPIService.refresh）时
+	// 清空 10 分钟缓存，否则设置页 upstream 下拉要等缓存过期才出现新供应商。
+	invalidateModelsCache = s.invalidateModelCache
+	return s
 }
 
 // 兼容旧调用（无 core，模型列表退化为本地白名单）
@@ -53,6 +62,12 @@ func (s *ConfigService) SaveConfig(cfg *config.Config) error {
 			return fmt.Errorf("配置已保存，但代理切换端口失败: %w", err)
 		}
 	}
+	// 同步操作系统登录自启项（按配置注册/注销）
+	if err := s.syncAutoStart(cfg.AutoStart); err != nil {
+		// 自启写失败不阻断配置保存，仅把错误返回给前端提示
+		s.emitConfigChange()
+		return fmt.Errorf("配置已保存，但设置开机自启失败: %w", err)
+	}
 	s.emitConfigChange()
 	return nil
 }
@@ -69,6 +84,8 @@ func (s *ConfigService) ResetConfig() error {
 			return fmt.Errorf("配置已重置，但代理切换端口失败: %w", err)
 		}
 	}
+	// 重置后自启应关闭：注销系统登录项（失败不阻断重置）
+	_ = s.syncAutoStart(false)
 	s.emitConfigChange()
 	return nil
 }
@@ -193,6 +210,18 @@ func (s *ConfigService) GetAvailableModels() []UpstreamModels {
 	s.modelsCacheAt = time.Now()
 	s.modelsMu.Unlock()
 	return result
+}
+
+// InvalidateModelCache 清空模型列表缓存（供应商增删/模型变化时调用）
+func (s *ConfigService) InvalidateModelCache() {
+	s.invalidateModelCache()
+}
+
+func (s *ConfigService) invalidateModelCache() {
+	s.modelsMu.Lock()
+	s.modelsCache = nil
+	s.modelsCacheAt = time.Time{}
+	s.modelsMu.Unlock()
 }
 
 // RefreshModels 强制刷新模型列表（忽略缓存）
@@ -357,4 +386,40 @@ func (s *ConfigService) GetModelsByUASource(sourceName string) []db.SourceModelS
 		return nil
 	}
 	return out
+}
+
+// ===== 开机自启动 =====
+
+// syncAutoStart 按 enabled 注册/注销操作系统登录自启项。
+func (s *ConfigService) syncAutoStart(enabled bool) error {
+	a := autostart.CurrentApp()
+	if enabled {
+		return a.Enable()
+	}
+	return a.Disable()
+}
+
+// GetAutoStart 返回当前是否已开启开机自启（以系统实际注册状态为准，防止配置与系统不一致）。
+func (s *ConfigService) GetAutoStart() bool {
+	return autostart.CurrentApp().IsEnabled()
+}
+
+// SetAutoStart 切换开机自启，并把结果写回配置。
+func (s *ConfigService) SetAutoStart(enabled bool) error {
+	if err := s.syncAutoStart(enabled); err != nil {
+		return err
+	}
+	cfg := s.mgr.Get().Clone()
+	cfg.AutoStart = enabled
+	if err := s.mgr.SaveConfig(cfg); err != nil {
+		return err
+	}
+	s.emitConfigChange()
+	return nil
+}
+
+// ReconcileAutoStart 启动时调用：让系统自启状态与配置一致（配置优先）。
+// 用当前可执行路径重新注册，修复「程序移动位置后旧自启项失效」。
+func (s *ConfigService) ReconcileAutoStart() error {
+	return s.syncAutoStart(s.mgr.Get().AutoStart)
 }

@@ -33,12 +33,28 @@ export function BatchBenchmark(baseURL: string, apiKey: string, prompt: string, 
 }
 
 /**
+ * BatchBenchmarkByID 用已保存供应商的密钥批量测评模型。
+ */
+export function BatchBenchmarkByID(id: string, prompt: string, baseURLOverride: string, protocolOverride: string, maxTokens: number, modelIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(1774477321, id, prompt, baseURLOverride, protocolOverride, maxTokens, modelIDs);
+}
+
+/**
  * BenchmarkModel 对单个模型直接发请求评测（不经过代理，验证模型可用 + 测 TPS）
  * protocol: "anthropic" 走 /v1/messages + x-api-key；其他走 OpenAI /chat/completions + Bearer。
  * 返回评测结果；通过（success）后由前端决定是否 AddVerifiedModel
  */
 export function BenchmarkModel(baseURL: string, apiKey: string, modelID: string, prompt: string, protocol: string, maxTokens: number): $CancellablePromise<{ [_ in string]?: any }> {
     return $Call.ByID(3080884350, baseURL, apiKey, modelID, prompt, protocol, maxTokens).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * BenchmarkModelByID 用已保存供应商的密钥测评单个模型。
+ */
+export function BenchmarkModelByID(id: string, modelID: string, prompt: string, baseURLOverride: string, protocolOverride: string, maxTokens: number): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(1010523770, id, modelID, prompt, baseURLOverride, protocolOverride, maxTokens).then(($result: any) => {
         return $$createType0($result);
     });
 }
@@ -86,6 +102,16 @@ export function FetchProviderModels(baseURL: string, apiKey: string): $Cancellab
 }
 
 /**
+ * FetchProviderModelsByID 用已保存供应商的密钥拉取模型列表（明文 key 不经过前端）。
+ * baseURLOverride 非空时使用该地址（否则用已存 baseURL）。
+ */
+export function FetchProviderModelsByID(id: string, baseURLOverride: string): $CancellablePromise<upstream$0.FetchedModel[]> {
+    return $Call.ByID(85589749, id, baseURLOverride).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+/**
  * GenerateSharePassword 生成随机分享密码（6 位字母+数字，去易混字符）
  */
 export function GenerateSharePassword(): $CancellablePromise<string> {
@@ -120,7 +146,8 @@ export function GetLockStatus(): $CancellablePromise<providerapi$0.LocksetInfo> 
 }
 
 /**
- * GetProviders 返回所有已添加供应商（含模型 verified/healthy 状态）
+ * GetProviders 返回所有已添加供应商（含模型 verified/healthy 状态）。
+ * 安全：通过分享导入的供应商，明文 apiKey 不下发前端（见 SanitizeProviders）。
  */
 export function GetProviders(): $CancellablePromise<{ [_ in string]?: providerapi$0.ProviderConfig | null }> {
     return $Call.ByID(1014688056).then(($result: any) => {
@@ -236,7 +263,8 @@ export function Unlock(password: string): $CancellablePromise<void> {
 }
 
 /**
- * UpsertProvider 新增/更新供应商配置（保存到 credentials.json + 重建上游）
+ * UpsertProvider 新增/更新供应商配置（保存到 credentials.json + 重建上游）。
+ * 编辑已存在的供应商时若 APIKey 为空，保留原 key（前端对导入供应商脱敏，不会回传明文 key）。
  */
 export function UpsertProvider(cfg: providerapi$0.ProviderConfig | null): $CancellablePromise<void> {
     return $Call.ByID(2158729804, cfg);

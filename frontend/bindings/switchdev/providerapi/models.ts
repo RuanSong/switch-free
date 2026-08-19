@@ -407,6 +407,12 @@ export class ProviderConfig {
      */
     "models": ProviderModel[];
 
+    /**
+     * HasKey 仅运行时/传输用，不落盘：该供应商在后端是否持有可用 apiKey。
+     * 导入供应商的明文 key 不下发前端（APIKey 被置空），用 HasKey 告知 UI「已保存密钥，可直接测评」。
+     */
+    "hasKey": boolean;
+
     /** Creates a new ProviderConfig instance. */
     constructor($$source: Partial<ProviderConfig> = {}) {
         if (!("id" in $$source)) {
@@ -441,6 +447,9 @@ export class ProviderConfig {
         }
         if (!("models" in $$source)) {
             this["models"] = [];
+        }
+        if (!("hasKey" in $$source)) {
+            this["hasKey"] = false;
         }
 
         Object.assign(this, $$source);

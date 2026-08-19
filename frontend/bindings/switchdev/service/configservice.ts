@@ -43,6 +43,13 @@ export function DeletePreset(name: string): $CancellablePromise<void> {
 }
 
 /**
+ * GetAutoStart 返回当前是否已开启开机自启（以系统实际注册状态为准，防止配置与系统不一致）。
+ */
+export function GetAutoStart(): $CancellablePromise<boolean> {
+    return $Call.ByID(1573953834);
+}
+
+/**
  * GetAvailableModels 返回各 upstream 可选模型（实时合并 + 缓存 10 分钟）
  * 若 core 未注入，回退本地白名单
  */
@@ -80,6 +87,21 @@ export function GetUASources(): $CancellablePromise<db$0.SourceInfo[]> {
 }
 
 /**
+ * InvalidateModelCache 清空模型列表缓存（供应商增删/模型变化时调用）
+ */
+export function InvalidateModelCache(): $CancellablePromise<void> {
+    return $Call.ByID(503319539);
+}
+
+/**
+ * ReconcileAutoStart 启动时调用：让系统自启状态与配置一致（配置优先）。
+ * 用当前可执行路径重新注册，修复「程序移动位置后旧自启项失效」。
+ */
+export function ReconcileAutoStart(): $CancellablePromise<void> {
+    return $Call.ByID(3365035890);
+}
+
+/**
  * RefreshModels 强制刷新模型列表（忽略缓存）
  */
 export function RefreshModels(): $CancellablePromise<$models.UpstreamModels[]> {
@@ -114,6 +136,13 @@ export function SaveConfig(cfg: config$0.Config | null): $CancellablePromise<voi
  */
 export function SavePreset(name: string): $CancellablePromise<void> {
     return $Call.ByID(1764980289, name);
+}
+
+/**
+ * SetAutoStart 切换开机自启，并把结果写回配置。
+ */
+export function SetAutoStart(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1275086038, enabled);
 }
 
 // Private type creation functions
