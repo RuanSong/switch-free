@@ -247,17 +247,13 @@ func ActualUpstreamModel(internalID string) string {
 	return internalID
 }
 
-// ====== Auto 模式 ======
+// ====== 模型解析 ======
 
-const (
-	AutoModel                = "glm-5.1"
-	AutoModelJoyCodeFallback = "JoyAI-Code-1.5"
-)
-
-// ResolveModel 把客户端发来的 model 名解析成代理内部统一 id
+// ResolveModel 把客户端发来的 model 名解析成代理内部统一 id。
+// 未识别的模型名原样返回（调用方据此判断是否识别），不再硬编码兜底到 glm-5.1。
 func ResolveModel(requestedModel string) string {
-	if requestedModel == "" || lowerEqual(requestedModel, "auto") {
-		return AutoModel
+	if requestedModel == "" {
+		return ""
 	}
 	// provider 模型：原样返回（不降级）
 	if IsProviderModel(requestedModel) {
@@ -281,7 +277,27 @@ func ResolveModel(requestedModel string) string {
 	if id, ok := JoyCodeLabelToID[lower(requestedModel)]; ok {
 		return id
 	}
-	return AutoModel
+	return requestedModel
+}
+
+// IsKnownModel 判断客户端发来的 model 名能否被识别为某个已知上游模型
+// （含 label 反查）。auto/manual 降级链据此决定链首用请求模型还是 GlobalFallback。
+func IsKnownModel(requestedModel string) bool {
+	if requestedModel == "" || IsProviderModel(requestedModel) {
+		return requestedModel != ""
+	}
+	if WorkBuddyModelIDs[requestedModel] || OpenCodeModelIDs[requestedModel] ||
+		DevEcoModelIDs[requestedModel] || JoyCodeModelIDs[requestedModel] {
+		return true
+	}
+	low := lower(requestedModel)
+	if _, ok := DevEcoLabelToID[low]; ok {
+		return true
+	}
+	if _, ok := JoyCodeLabelToID[low]; ok {
+		return true
+	}
+	return false
 }
 
 // ResolveUpstream 判断 model 走哪个上游
@@ -362,8 +378,4 @@ func lower(s string) string {
 		}
 	}
 	return string(result)
-}
-
-func lowerEqual(s, target string) bool {
-	return lower(s) == target
 }

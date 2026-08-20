@@ -67,6 +67,13 @@ export function RefreshCreds(name: string): $CancellablePromise<void> {
     return $Call.ByID(714027080, name);
 }
 
+/**
+ * SetUpstreamEnabled 设置上游启用开关（全局生效；禁用后调用时跳过其下所有模型）
+ */
+export function SetUpstreamEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(232698410, name, enabled);
+}
+
 // Private type creation functions
 const $$createType0 = $models.AgentDetail.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);

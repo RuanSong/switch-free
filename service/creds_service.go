@@ -69,6 +69,11 @@ func (s *CredsService) GetCredStatus() *AllCredStatus {
 	return s.core.GetCredStatus()
 }
 
+// SetUpstreamEnabled 设置上游启用开关（全局生效；禁用后调用时跳过其下所有模型）
+func (s *CredsService) SetUpstreamEnabled(name string, enabled bool) error {
+	return s.core.SetUpstreamEnabled(name, enabled)
+}
+
 // RefreshCreds 强制刷新某上游凭据
 func (s *CredsService) RefreshCreds(name string) error {
 	err := s.core.RefreshCreds(name)

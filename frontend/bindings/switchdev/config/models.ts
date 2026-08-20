@@ -125,6 +125,11 @@ export class Config {
      */
     "provider": ProviderSettings;
 
+    /**
+     * 各上游启用开关（key=upstream/provider id，缺省视为启用）
+     */
+    "upstreams"?: { [_ in string]?: UpstreamSettings };
+
     /** Creates a new Config instance. */
     constructor($$source: Partial<Config> = {}) {
         if (!("mode" in $$source)) {
@@ -192,6 +197,7 @@ export class Config {
         const $$createField12_0 = $$createType9;
         const $$createField13_0 = $$createType11;
         const $$createField15_0 = $$createType12;
+        const $$createField16_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoChain" in $$parsedSource) {
             $$parsedSource["autoChain"] = $$createField1_0($$parsedSource["autoChain"]);
@@ -219,6 +225,9 @@ export class Config {
         }
         if ("provider" in $$parsedSource) {
             $$parsedSource["provider"] = $$createField15_0($$parsedSource["provider"]);
+        }
+        if ("upstreams" in $$parsedSource) {
+            $$parsedSource["upstreams"] = $$createField16_0($$parsedSource["upstreams"]);
         }
         return new Config($$parsedSource as Partial<Config>);
     }
@@ -470,7 +479,7 @@ export class UARule {
      * Creates a new UARule instance from a string or object.
      */
     static createFrom($$source: any = {}): UARule {
-        const $$createField4_0 = $$createType14;
+        const $$createField4_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("mappings" in $$parsedSource) {
             $$parsedSource["mappings"] = $$createField4_0($$parsedSource["mappings"]);
@@ -533,12 +542,39 @@ export class UpdateConfig {
      * Creates a new UpdateConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): UpdateConfig {
-        const $$createField2_0 = $$createType15;
+        const $$createField2_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("github" in $$parsedSource) {
             $$parsedSource["github"] = $$createField2_0($$parsedSource["github"]);
         }
         return new UpdateConfig($$parsedSource as Partial<UpdateConfig>);
+    }
+}
+
+/**
+ * UpstreamSettings 单个上游的开关配置
+ */
+export class UpstreamSettings {
+    /**
+     * Enabled 该上游是否启用；禁用时其下所有模型在调用时被直接跳过（全局生效）
+     */
+    "enabled": boolean;
+
+    /** Creates a new UpstreamSettings instance. */
+    constructor($$source: Partial<UpstreamSettings> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UpstreamSettings instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UpstreamSettings {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UpstreamSettings($$parsedSource as Partial<UpstreamSettings>);
     }
 }
 
@@ -556,6 +592,8 @@ const $$createType9 = LogFileConfig.createFrom;
 const $$createType10 = Preset.createFrom;
 const $$createType11 = $Create.Array($$createType10);
 const $$createType12 = ProviderSettings.createFrom;
-const $$createType13 = UAModelMap.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = GitHubConfig.createFrom;
+const $$createType13 = UpstreamSettings.createFrom;
+const $$createType14 = $Create.Map($Create.Any, $$createType13);
+const $$createType15 = UAModelMap.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = GitHubConfig.createFrom;

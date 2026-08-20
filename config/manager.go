@@ -64,6 +64,13 @@ func (m *Manager) GetAuthEnabled() bool {
 	return m.config.GetAuthEnabled()
 }
 
+// IsUpstreamEnabled 判断上游是否启用（供代理调用时跳过禁用上游）
+func (m *Manager) IsUpstreamEnabled(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.config.IsUpstreamEnabled(name)
+}
+
 // SaveConfig 保存并热加载新配置
 // 调用方提供新 *Config 对象（通常来自前端），由 Manager 校验 + 替换 + 写盘
 // 成功后触发 onChange 回调（在锁外调用，避免回调内再访问 Manager 导致死锁）

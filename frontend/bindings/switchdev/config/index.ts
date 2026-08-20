@@ -10,5 +10,6 @@ export {
     ProviderSettings,
     UAModelMap,
     UARule,
-    UpdateConfig
+    UpdateConfig,
+    UpstreamSettings
 } from "./models.js";

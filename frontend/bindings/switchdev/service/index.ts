@@ -25,7 +25,6 @@ export {
 export {
     AgentDetail,
     AllCredStatus,
-    AutoStrategy,
     BenchmarkResult,
     BenchmarkTarget,
     Dashboard,

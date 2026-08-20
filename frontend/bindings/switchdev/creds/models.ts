@@ -15,6 +15,11 @@ export class CredStatusInfo {
      * ★ 工具是否装了（凭据文件存在）
      */
     "installed": boolean;
+
+    /**
+     * ★ 上游是否启用（禁用则调用时跳过其下所有模型）
+     */
+    "enabled": boolean;
     "userId"?: string;
     "expiresAt"?: string;
     "keyPreview"?: string;
@@ -54,6 +59,9 @@ export class CredStatusInfo {
         }
         if (!("installed" in $$source)) {
             this["installed"] = false;
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
         }
         if (!("source" in $$source)) {
             this["source"] = "";

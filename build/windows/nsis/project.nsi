@@ -32,6 +32,11 @@ Unicode true
 ####
 ## Include the wails tools
 ####
+# 按用户安装（无需 UAC 提权，装到 %LOCALAPPDATA%\Programs）。
+# 这样应用运行时（普通用户权限）对安装目录有写权限，自我更新
+# （selfupdate 在同目录写 .exe.new）才不会被 Access denied 拒绝。
+# 必须在 !include wails_tools.nsh 之前定义，模板据此设置 RequestExecutionLevel。
+!define REQUEST_EXECUTION_LEVEL "user"
 !include "wails_tools.nsh"
 
 # The version information for this two must consist of 4 parts
@@ -75,7 +80,9 @@ ManifestDPIAware true
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
-InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}" # Default installing folder ($PROGRAMFILES is Program Files folder).
+# 按用户安装：装到 %LOCALAPPDATA%\Programs（当前用户可写，无需 UAC）。
+# 这样自我更新时 selfupdate 在同目录写 .exe.new 才不会 Access denied。
+InstallDir "$LOCALAPPDATA\Programs\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
@@ -96,11 +103,23 @@ Section
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
-    
-    !insertmacro wails.writeUninstaller
+
+    # 按用户安装：卸载信息写 HKCU（模板的 wails.writeUninstaller 硬编码 HKLM，
+    # user 权限无提权会写失败，导致「应用和功能」里没有卸载项）。
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+    SetRegView 64
+    WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${INFO_PRODUCTNAME}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
+    WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" "$\"$INSTDIR\uninstall.exe$\" /S"
+    ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+    IntFmt $0 "0x%08X" $0
+    WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" $0
 SectionEnd
 
-Section "uninstall" 
+Section "uninstall"
     !insertmacro wails.setShellContext
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
@@ -113,5 +132,8 @@ Section "uninstall"
     !insertmacro wails.unassociateFiles
     !insertmacro wails.unassociateCustomProtocols
 
-    !insertmacro wails.deleteUninstaller
+    # 按用户安装：删除 HKCU 卸载项（对应上面的写入）
+    Delete "$INSTDIR\uninstall.exe"
+    SetRegView 64
+    DeleteRegKey HKCU "${UNINST_KEY}"
 SectionEnd

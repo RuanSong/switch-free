@@ -28,10 +28,10 @@ type ModelDetail struct {
 func (s *ModelService) GetModels() []*ModelDetail {
 	var result []*ModelDetail
 
-	// auto 虚拟模型
+	// auto 虚拟模型（实际走向由运行模式的降级链决定）
 	result = append(result, &ModelDetail{
-		ID: "auto", Label: "Auto（DevEco GLM-5.1，失败降级 JoyCode）",
-		Upstream: "deveco", Stream: true, ToolCall: true,
+		ID: "auto", Label: "Auto（按运行模式降级链）",
+		Upstream: "auto", Stream: true, ToolCall: true,
 	})
 
 	// OpenCode Zen 模型
@@ -76,22 +76,4 @@ func (s *ModelService) GetModels() []*ModelDetail {
 	}
 
 	return result
-}
-
-// AutoStrategy auto 模式策略说明
-type AutoStrategy struct {
-	Primary          string `json:"primary"`  // 主力上游模型
-	Fallback         string `json:"fallback"` // 降级模型
-	PrimaryUpstream  string `json:"primaryUpstream"`
-	FallbackUpstream string `json:"fallbackUpstream"`
-}
-
-// GetAutoStrategy 获取 auto 模式策略
-func (s *ModelService) GetAutoStrategy() *AutoStrategy {
-	return &AutoStrategy{
-		Primary:          proxy.AutoModel,
-		Fallback:         proxy.AutoModelJoyCodeFallback,
-		PrimaryUpstream:  proxy.ResolveUpstream(proxy.AutoModel),
-		FallbackUpstream: "joycode",
-	}
 }

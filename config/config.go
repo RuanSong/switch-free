@@ -93,6 +93,18 @@ func copyUARules(src []UARule) []UARule {
 	return dst
 }
 
+// copyUpstreams 深拷贝上游开关 map
+func copyUpstreams(src map[string]UpstreamSettings) map[string]UpstreamSettings {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]UpstreamSettings, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // UpdateConfig 自动升级配置
 type UpdateConfig struct {
 	Enabled   bool        `json:"enabled"`             // 是否启用自动升级检查
@@ -114,6 +126,12 @@ type GitHubConfig struct {
 	Token string `json:"token"` // 私有仓库 PAT（公开仓库可空）
 }
 
+// UpstreamSettings 单个上游的开关配置
+type UpstreamSettings struct {
+	// Enabled 该上游是否启用；禁用时其下所有模型在调用时被直接跳过（全局生效）
+	Enabled bool `json:"enabled"`
+}
+
 // Config 代理运行配置
 type Config struct {
 	Mode              string                      `json:"mode"`              // "auto" | "manual" | "ua"
@@ -132,6 +150,7 @@ type Config struct {
 	Presets          []Preset                    `json:"presets"`          // 已保存的运行模式方案
 	ActivePreset     string                      `json:"activePreset"`     // 当前激活方案名（仅 UI 提示；偏离后置空 = 自定义）
 	Provider         ProviderSettings            `json:"provider"`         // 供应商配置相关偏好
+	Upstreams        map[string]UpstreamSettings `json:"upstreams,omitempty"` // 各上游启用开关（key=upstream/provider id，缺省视为启用）
 
 	mu   sync.RWMutex `json:"-"`
 	path string       `json:"-"`
@@ -412,6 +431,7 @@ func (c *Config) Clone() *Config {
 		LogFile:          c.LogFile,
 		ActivePreset:     c.ActivePreset,
 		Provider:         c.Provider,
+		Upstreams:        copyUpstreams(c.Upstreams),
 		path:             c.path,
 	}
 	// 方案列表必须深拷贝，否则前端改动会串到 Manager 持有的配置上
@@ -456,6 +476,7 @@ func (c *Config) Update(newCfg *Config) error {
 	c.Presets = newCfg.Presets
 	c.ActivePreset = newCfg.ActivePreset
 	c.Provider = newCfg.Provider
+	c.Upstreams = newCfg.Upstreams
 	c.mu.Unlock()
 
 	return c.Save()
@@ -480,6 +501,20 @@ func (c *Config) GetAuthEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.AuthEnabled
+}
+
+// IsUpstreamEnabled 判断上游是否启用（缺省/未配置视为启用，保证升级与新增供应商非破坏）
+func (c *Config) IsUpstreamEnabled(name string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.Upstreams == nil {
+		return true
+	}
+	s, ok := c.Upstreams[name]
+	if !ok {
+		return true
+	}
+	return s.Enabled
 }
 
 // isValidUpstream 检查 upstream 名是否合法。

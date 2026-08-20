@@ -50,6 +50,15 @@ type ConfigResolver interface {
 	GetMode() string
 	GetAPIKey() string
 	GetAuthEnabled() bool
+	IsUpstreamEnabled(name string) bool
+}
+
+// isUpstreamEnabled 判断上游是否启用；未注入 resolver 时默认启用（防御）
+func (s *Server) isUpstreamEnabled(name string) bool {
+	if s.ConfigResolver == nil {
+		return true
+	}
+	return s.ConfigResolver.IsUpstreamEnabled(name)
 }
 
 // callUpstreamAnthropic Anthropic 入口的上游分发（基于配置链遍历）
@@ -110,6 +119,13 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 	for _, ref := range ordered {
 		up := s.pickUpstream(ref.Upstream)
 		if up == nil {
+			continue
+		}
+
+		// 上游被禁用的直接跳过（全局开关，不发起请求）
+		if !s.isUpstreamEnabled(ref.Upstream) {
+			fmt.Printf("[switch-dev] 跳过 %s/%s（上游已禁用）\n", ref.Upstream, ref.Model)
+			s.recordSkipLog(requestedModel, ref, "upstream_disabled")
 			continue
 		}
 
@@ -197,6 +213,12 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 	for _, ref := range ordered {
 		up := s.pickUpstream(ref.Upstream)
 		if up == nil {
+			continue
+		}
+		// 上游被禁用的直接跳过（全局开关，不发起请求）
+		if !s.isUpstreamEnabled(ref.Upstream) {
+			fmt.Printf("[switch-dev] 跳过 %s/%s（上游已禁用）\n", ref.Upstream, ref.Model)
+			s.recordSkipLog(requestedModel, ref, "upstream_disabled")
 			continue
 		}
 		if !up.HasValidCreds() {
@@ -419,9 +441,8 @@ func (s *Server) buildAnthropicOpenAIBody(body *AnthropicRequest, ref ModelRef, 
 	if !stream {
 		oaiBody.Stream = false
 	}
-	// free 供应商：AnthropicToOpenAI 内部会把未知 model 经 ResolveModel 兜底成
-	// AutoModel(glm-5.1)，这里强制改回剥离前缀后的真实上游 model id，
-	// 否则会把 glm-5.1 发到该供应商的 baseURL 导致 model_invalid。
+	// free 供应商：强制把 model 改回剥离 provider 前缀后的真实上游 model id，
+	// 否则 AnthropicToOpenAI 会用代理内部路由 id 导致上游 model_invalid。
 	if IsProviderModel(ref.Model) {
 		oaiBody.Model = stripProviderPrefix(ref.Model)
 	}

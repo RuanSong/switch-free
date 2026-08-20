@@ -183,7 +183,6 @@ export class ProxyStatus {
     "running": boolean;
     "port": number;
     "host": string;
-    "autoModel": string;
 
     /**
      * "auto" | "manual"
@@ -201,9 +200,6 @@ export class ProxyStatus {
         }
         if (!("host" in $$source)) {
             this["host"] = "";
-        }
-        if (!("autoModel" in $$source)) {
-            this["autoModel"] = "";
         }
         if (!("mode" in $$source)) {
             this["mode"] = "";

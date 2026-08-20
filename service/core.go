@@ -10,6 +10,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"switchdev/creds"
+	"switchdev/config"
 	"switchdev/db"
 	"switchdev/proxy"
 	"switchdev/upstream"
@@ -24,6 +25,7 @@ type Core struct {
 	opencode  *upstream.OpenCodeUpstream
 	workbuddy *upstream.WorkBuddyUpstream
 	db        *db.DB
+	cfgMgr    *config.Manager // 配置管理器（上游开关等读写）
 
 	// 凭据管理器（用于刷新操作）
 	joycodeMgr   *creds.JoyCodeCredManager
@@ -52,6 +54,29 @@ func NewCore() *Core {
 
 // SetDB 注入数据库实例
 func (c *Core) SetDB(d *db.DB) { c.db = d }
+
+// SetConfigManager 注入配置管理器（上游开关读写用）
+func (c *Core) SetConfigManager(m *config.Manager) { c.cfgMgr = m }
+
+// SetUpstreamEnabled 设置上游启用开关（全局生效，禁用后调用时跳过其下所有模型）
+func (c *Core) SetUpstreamEnabled(name string, enabled bool) error {
+	if c.cfgMgr == nil {
+		return fmt.Errorf("配置管理器未初始化")
+	}
+	cfg := c.cfgMgr.Get()
+	if cfg.Upstreams == nil {
+		cfg.Upstreams = map[string]config.UpstreamSettings{}
+	}
+	s := cfg.Upstreams[name]
+	s.Enabled = enabled
+	cfg.Upstreams[name] = s
+	if err := c.cfgMgr.SaveConfig(cfg); err != nil {
+		return err
+	}
+	// 推送凭据状态（含 enabled），让前端卡片即时刷新
+	c.EmitEvent("cred:change", c.GetCredStatus())
+	return nil
+}
 
 // DB 返回数据库实例（可能为 nil，表示未初始化）
 func (c *Core) DB() *db.DB { return c.db }
@@ -116,11 +141,15 @@ func (c *Core) RecordLog(entry *proxy.LogEntry) {
 	// 实时推送到前端
 	c.EmitEvent("log:new", entry)
 
-	// 异步持久化到 SQLite
+	// 异步持久化到 SQLite + 累计用量统计表
 	if c.db != nil {
 		go func(e *proxy.LogEntry) {
 			if err := c.db.InsertLog(e); err != nil {
 				fmt.Fprintf(os.Stderr, "[db] 写入日志失败: %v\n", err)
+			}
+			// 统计表独立累积：清空 logs 不影响统计。失败仅记日志，不影响主流程。
+			if err := c.db.UpsertUsageStat(e); err != nil {
+				fmt.Fprintf(os.Stderr, "[db] 累计用量统计失败: %v\n", err)
 			}
 		}(entry)
 	}
@@ -196,18 +225,32 @@ func (c *Core) GetCredStatus() *AllCredStatus {
 	server := c.server
 	c.mu.RUnlock()
 
+	// 启用状态来自配置（缺省视为启用）；逐上游填入 CredStatusInfo
+	enabled := func(name string) bool {
+		if server == nil || server.ConfigResolver == nil {
+			return true
+		}
+		return server.ConfigResolver.IsUpstreamEnabled(name)
+	}
+
 	status := &AllCredStatus{
 		JoyCode:   c.joycode.CredStatus(),
 		DevEco:    c.deveco.CredStatus(),
 		OpenCode:  c.opencode.CredStatus(),
 		WorkBuddy: c.workbuddy.CredStatus(),
 	}
+	status.JoyCode.Enabled = enabled("joycode")
+	status.DevEco.Enabled = enabled("deveco")
+	status.OpenCode.Enabled = enabled("opencode")
+	status.WorkBuddy.Enabled = enabled("workbuddy")
 	if server != nil {
 		providerAPIs := server.GetProviderAPIs()
 		if len(providerAPIs) > 0 {
 			status.ProviderAPIs = map[string]*creds.CredStatusInfo{}
 			for pid, up := range providerAPIs {
-				status.ProviderAPIs[pid] = up.CredStatus()
+				st := up.CredStatus()
+				st.Enabled = enabled(pid)
+				status.ProviderAPIs[pid] = st
 			}
 		}
 	}

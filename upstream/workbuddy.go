@@ -126,8 +126,14 @@ func (u *WorkBuddyUpstream) doCall(ctx context.Context, body []byte, cred *creds
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cred.AccessToken))
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Private-Data", "false")
+	// 与官方 WorkBuddy CLI 的 auth 拦截器一致：每个 chat 请求必带 X-Requested-With；
+	// 有 uid 时 X-User-Id 与 X-Userinfo 成对发送，缺一会被风控识别为非官方客户端
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	if cred.UID != "" {
 		req.Header.Set("X-User-Id", cred.UID)
+		if ui := creds.UserInfoHeader(cred.UID); ui != "" {
+			req.Header.Set("X-Userinfo", ui)
+		}
 	}
 	// 不设 Accept-Encoding，让 Go http.Client 自动透明解压 gzip
 

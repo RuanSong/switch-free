@@ -6,6 +6,7 @@ import "fmt"
 type CredStatusInfo struct {
 	Valid      bool   `json:"valid"`
 	Installed  bool   `json:"installed"` // ★ 工具是否装了（凭据文件存在）
+	Enabled    bool   `json:"enabled"`   // ★ 上游是否启用（禁用则调用时跳过其下所有模型）
 	UserID     string `json:"userId,omitempty"`
 	ExpiresAt  string `json:"expiresAt,omitempty"`
 	KeyPreview string `json:"keyPreview,omitempty"`

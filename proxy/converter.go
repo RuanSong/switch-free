@@ -359,10 +359,8 @@ func OpenAIToAnthropic(oai *OpenAIResponse, reqID string) *AnthropicResponse {
 		usage.OutputTokens = oai.Usage.CompletionTokens
 	}
 
+	// 上游响应未回传 model 时保持空串，不再硬编码成 glm-5.1（避免误报实际模型）
 	model := oai.Model
-	if model == "" {
-		model = AutoModel
-	}
 
 	return &AnthropicResponse{
 		ID:         fmt.Sprintf("msg_%s", reqID),

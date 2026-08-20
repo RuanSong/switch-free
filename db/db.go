@@ -146,6 +146,27 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_logs_source    ON logs(source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_model     ON logs(model_id)`,
 
+		// usage_stats：按小时桶聚合的用量统计表。与 logs 解耦 —— 清空 logs 不影响统计。
+		// 只累计 status='success' 的请求（与现有统计口径一致）。
+		// model_id 存「实际生效模型」（used_model 优先，回退 model），source_id/upstream_id 归一化外键。
+		`CREATE TABLE IF NOT EXISTS usage_stats (
+			hour             TEXT NOT NULL,
+			date             TEXT NOT NULL,
+			upstream_id      INTEGER NOT NULL DEFAULT 0,
+			model_id         INTEGER NOT NULL DEFAULT 0,
+			source_id        INTEGER NOT NULL DEFAULT 0,
+			reqs             INTEGER NOT NULL DEFAULT 0,
+			input_tokens     INTEGER NOT NULL DEFAULT 0,
+			output_tokens    INTEGER NOT NULL DEFAULT 0,
+			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_hit_reqs   INTEGER NOT NULL DEFAULT 0,
+			cost             REAL NOT NULL DEFAULT 0,
+			duration_ms      INTEGER NOT NULL DEFAULT 0,
+			output_reqs      INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (hour, upstream_id, model_id, source_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_stats_date ON usage_stats(date)`,
+
 		`CREATE TABLE IF NOT EXISTS config (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL

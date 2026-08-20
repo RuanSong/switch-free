@@ -64,11 +64,12 @@ func (d *DB) ComputeUsageTrend(startDate, endDate, granularity string) (*UsageTr
 		}
 	}
 
-	// 从 db 按范围查所有成功日志，聚合到桶
+	// 从 usage_stats 聚合表按小时桶汇总（清空 logs 不影响趋势）
 	rows, err := d.conn.Query(`
-		SELECT date_time, input_tokens, output_tokens, cache_hit_tokens
-		FROM logs
-		WHERE date BETWEEN ? AND ? AND status = 'success'
+		SELECT hour, SUM(input_tokens), SUM(output_tokens), SUM(cache_hit_tokens), SUM(cache_hit_reqs), SUM(reqs)
+		FROM usage_stats
+		WHERE date BETWEEN ? AND ?
+		GROUP BY hour
 	`, startDate, endDate)
 	if err != nil {
 		return nil, err
@@ -83,20 +84,22 @@ func (d *DB) ComputeUsageTrend(startDate, endDate, granularity string) (*UsageTr
 	}
 
 	for rows.Next() {
-		var dt string
-		var input, output, cache int64
-		if err := rows.Scan(&dt, &input, &output, &cache); err != nil {
+		var hour string
+		var input, output, cache, cacheReqs, reqs int64
+		if err := rows.Scan(&hour, &input, &output, &cache, &cacheReqs, &reqs); err != nil {
 			continue
 		}
-		if len(dt) < 16 {
+		if len(hour) < 13 {
 			continue
 		}
+		// hour format "2006-01-02 15" -> 与桶 label 对齐
 		var label string
 		if granularity == "hour" {
-			// dt format "2006-01-02 15:04:05" -> "01-02 15:00"
-			label = dt[5:10] + " " + dt[11:13] + ":00"
+			// -> "01-02 15:00"
+			label = hour[5:10] + " " + hour[11:13] + ":00"
 		} else {
-			label = dt[5:10]
+			// -> "01-02"
+			label = hour[5:10]
 		}
 		idx, ok := pointMap[label]
 		if !ok {
@@ -105,11 +108,9 @@ func (d *DB) ComputeUsageTrend(startDate, endDate, granularity string) (*UsageTr
 		trend.Points[idx].Tokens += input + output
 		trend.Points[idx].InputTokens += input
 		trend.Points[idx].OutputTokens += output
-		trend.Points[idx].Reqs++
-		if cache > 0 {
-			trend.Points[idx].CacheHitTokens += cache
-			trend.Points[idx].CacheHitReqs++
-		}
+		trend.Points[idx].Reqs += reqs
+		trend.Points[idx].CacheHitTokens += cache
+		trend.Points[idx].CacheHitReqs += cacheReqs
 	}
 
 	return trend, nil

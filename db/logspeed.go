@@ -26,24 +26,21 @@ type SpeedStats struct {
 	ByModel       []ModelSpeed `json:"byModel"`
 }
 
-// ComputeTodaySpeed 统计今日模型输出速率
+// ComputeTodaySpeed 统计今日模型输出速率（读 usage_stats 聚合表，清空 logs 不影响）。
+// 速率为小时桶内加权 tok/s：SUM(output_tokens) / SUM(duration_ms)。
 func (d *DB) ComputeTodaySpeed() (*SpeedStats, error) {
 	today := time.Now().Format("2006-01-02")
 
 	rows, err := d.conn.Query(`
 		SELECT
-			COALESCE(NULLIF(mu.model_id, ''), m.model_id, '') AS model,
-			COUNT(*) AS reqs,
-			SUM(l.output_tokens) AS output,
-			SUM(l.duration) / 1000.0 AS duration
-		FROM logs l
-		LEFT JOIN models m  ON l.model_id = m.id
-		LEFT JOIN models mu ON l.used_model_id = mu.id
-		WHERE l.date = ?
-			AND l.status = 'success'
-			AND l.output_tokens > 0
-			AND l.duration >= 50
-		GROUP BY COALESCE(NULLIF(mu.model_id, ''), m.model_id, '')
+			COALESCE(m.model_id, '') AS model,
+			SUM(s.reqs) AS reqs,
+			SUM(s.output_tokens) AS output,
+			SUM(s.duration_ms) / 1000.0 AS duration
+		FROM usage_stats s
+		LEFT JOIN models m ON s.model_id = m.id
+		WHERE s.date = ?
+		GROUP BY COALESCE(m.model_id, '')
 	`, today)
 	if err != nil {
 		return nil, err

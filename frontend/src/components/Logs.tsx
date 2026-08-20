@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { LogService } from "../../bindings/switchdev/service";
 import type { LogStats } from "../../bindings/switchdev/service/models";
 import type { LogEntry } from "../../bindings/switchdev/proxy/models";
+import ConfirmPopover from "./ConfirmPopover";
 
 interface Props {
   logs: LogEntry[]; // 内存实时日志（最新）
@@ -106,12 +107,14 @@ export default function Logs({ logs, stats }: Props) {
           >
             {loading ? "加载中..." : "🔄 刷新"}
           </button>
-          <button
-            onClick={clear}
-            className="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+          <ConfirmPopover
+            onConfirm={clear}
+            title={"清空后日志不可恢复，但用量统计数据会保留。\n确认清空所有日志？"}
+            confirmLabel="清空"
+            triggerClassName="px-3 py-1.5 text-sm rounded-lg bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
           >
             🗑 清空
-          </button>
+          </ConfirmPopover>
         </div>
       </div>
 

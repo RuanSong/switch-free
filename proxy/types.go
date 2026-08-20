@@ -141,12 +141,11 @@ type OpenAIUsage struct {
 // ====== 代理状态 ======
 
 type ProxyStatus struct {
-	Running   bool   `json:"running"`
-	Port      int    `json:"port"`
-	Host      string `json:"host"`
-	AutoModel string `json:"autoModel"`
-	Mode      string `json:"mode"` // "auto" | "manual"
-	Requests  int64  `json:"requests"`
+	Running  bool   `json:"running"`
+	Port     int    `json:"port"`
+	Host     string `json:"host"`
+	Mode     string `json:"mode"` // "auto" | "manual"
+	Requests int64  `json:"requests"`
 }
 
 // ====== 请求日志条目 ======

@@ -142,6 +142,26 @@ func JoyCodeVscdbCandidates() []string {
 	return c
 }
 
+// JoyCodeExtPkgCandidates JoyCode 扩展 package.json 跨平台候选路径
+//
+// clientVersion 必须与官方客户端一致：官方扩展在请求里注入的是**扩展自身 package.json
+// 的 version**（getVersion()），而不是 state.vscdb 的 releaseNotes/lastVersion（后者是
+// 应用壳版本，可能远旧于扩展版本）。网关灰度按 clientVersion 放行，发旧版本会被拒
+// （AI_GRAY_ACCESS_DENIED）。因此我们从扩展安装目录读取真实版本。
+func JoyCodeExtPkgCandidates() []string {
+	home, _ := os.UserHomeDir()
+	rel := filepath.Join("Resources", "app", "extensions", "joycoder-editor", "package.json")
+	c := []string{
+		filepath.Join("/Applications", "JoyCode.app", "Contents", rel), // macOS 全局安装
+		filepath.Join(home, "Applications", "JoyCode.app", "Contents", rel), // macOS 用户级安装
+	}
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		// Windows 用户级安装（Programs\JoyCode\resources\app\...）
+		c = append(c, filepath.Join(local, "Programs", "JoyCode", "resources", "app", "extensions", "joycoder-editor", "package.json"))
+	}
+	return c
+}
+
 // WorkBuddyInfoCandidates WorkBuddy 凭据跨平台候选路径
 // WorkBuddy 是腾讯 CodeBuddy 桌面版（Electron）：
 //   - macOS: ~/Library/Application Support/CodeBuddyExtension/.../workbuddy-desktop.info

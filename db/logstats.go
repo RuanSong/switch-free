@@ -49,20 +49,20 @@ type UsageStats struct {
 func (d *DB) ComputeUsageStats(startDate, endDate string) (*UsageStats, error) {
 	stats := &UsageStats{StartDate: startDate, EndDate: endDate}
 
-	// 供应商维度
+	// 供应商维度（读 usage_stats 聚合表，清空 logs 不影响统计）
 	provRows, err := d.conn.Query(`
 		SELECT
 			COALESCE(u.name, 'unknown') AS provider,
 			COALESCE(u.label, u.name, 'unknown') AS label,
-			COUNT(*) AS reqs,
-			SUM(l.input_tokens) AS input,
-			SUM(l.output_tokens) AS output,
-			SUM(l.cost) AS cost
-		FROM logs l
-		LEFT JOIN upstreams u ON l.upstream_id = u.id
-		WHERE l.date BETWEEN ? AND ? AND l.status = 'success'
-		GROUP BY l.upstream_id
-		ORDER BY SUM(l.input_tokens + l.output_tokens) DESC
+			SUM(s.reqs) AS reqs,
+			SUM(s.input_tokens) AS input,
+			SUM(s.output_tokens) AS output,
+			SUM(s.cost) AS cost
+		FROM usage_stats s
+		LEFT JOIN upstreams u ON s.upstream_id = u.id
+		WHERE s.date BETWEEN ? AND ?
+		GROUP BY s.upstream_id
+		ORDER BY SUM(s.input_tokens + s.output_tokens) DESC
 	`, startDate, endDate)
 	if err != nil {
 		return nil, err
@@ -90,21 +90,19 @@ func (d *DB) ComputeUsageStats(startDate, endDate string) (*UsageStats, error) {
 		stats.SuccessReqs += p.SuccessReqs
 	}
 
-	// 模型维度：按实际发往上游的 model 名聚合（provider/<pid>/<mid>、wb/<mid>、DevEco 本地 id 等
-	// 都剥成规范名），使同一模型在不同供应商/前缀下合并为一行。
-	// 优先用 used_model（实际命中的模型），请求模型是 "auto"/空 时回退到它。
+	// 模型维度：usage_stats.model_id 已存「实际生效模型」（写入时 used_model 优先）。
+	// 按规范名聚合（provider/<pid>/<mid>、wb/<mid> 等剥前缀），使同一模型合并为一行。
 	modelRows, err := d.conn.Query(`
 		SELECT
-			COALESCE(NULLIF(mu.model_id, ''), m.model_id, '') AS model,
-			COUNT(*) AS reqs,
-			SUM(l.input_tokens) AS input,
-			SUM(l.output_tokens) AS output,
-			SUM(l.cost) AS cost
-		FROM logs l
-		LEFT JOIN models m  ON l.model_id = m.id
-		LEFT JOIN models mu ON l.used_model_id = mu.id
-		WHERE l.date BETWEEN ? AND ? AND l.status = 'success'
-		GROUP BY COALESCE(NULLIF(mu.model_id, ''), m.model_id, '')
+			COALESCE(m.model_id, '') AS model,
+			SUM(s.reqs) AS reqs,
+			SUM(s.input_tokens) AS input,
+			SUM(s.output_tokens) AS output,
+			SUM(s.cost) AS cost
+		FROM usage_stats s
+		LEFT JOIN models m ON s.model_id = m.id
+		WHERE s.date BETWEEN ? AND ?
+		GROUP BY COALESCE(m.model_id, '')
 	`, startDate, endDate)
 	if err != nil {
 		return nil, err

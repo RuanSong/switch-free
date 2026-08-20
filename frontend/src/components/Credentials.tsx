@@ -84,8 +84,10 @@ function NoUpstream() {
 
 function CredCard({ upstream, status, isProviderApi }: { upstream: string; status: CredStatusInfo | null; isProviderApi?: boolean }) {
   const [busy, setBusy] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const valid = status?.valid ?? false;
   const installed = status?.installed ?? false;
+  const enabled = status?.enabled ?? true;
   const isGui = status?.agentType === "gui";
   // 免费 API 供应商用 source（= 供应商显示名）作为名字；内置上游用 nameFromUpstream
   const name = isProviderApi
@@ -101,6 +103,18 @@ function CredCard({ upstream, status, isProviderApi }: { upstream: string; statu
       await CredsService.RefreshCreds(upstream);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleEnabled = async (next: boolean) => {
+    setToggling(true);
+    try {
+      await CredsService.SetUpstreamEnabled(upstream, next);
+      // 状态由 cred:change 事件回推刷新（enabled 字段在 AllCredStatus 里）
+    } catch (e) {
+      console.error("切换上游启用状态失败", e);
+    } finally {
+      setToggling(false);
     }
   };
 
@@ -157,9 +171,29 @@ function CredCard({ upstream, status, isProviderApi }: { upstream: string; statu
               </span>
             )}
             {badge}
+            {!enabled && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--color-surface-2)] text-[var(--color-text-dim)]">
+                ⏸ 已停用
+              </span>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
+          {/* 启用/停用开关（全局生效：停用后调用时跳过该上游所有模型） */}
+          <label
+            className="flex items-center gap-1.5 cursor-pointer select-none"
+            title={enabled ? "点击停用：调用时跳过该上游所有模型" : "点击启用该上游"}
+          >
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={toggling}
+              onChange={(e) => toggleEnabled(e.target.checked)}
+              className="w-4 h-4 accent-[var(--color-primary)] disabled:opacity-50"
+            />
+            <span className="text-xs text-[var(--color-text-dim)]">{enabled ? "已启用" : "已停用"}</span>
+          </label>
+          <div className="flex gap-2">
           {!isProviderApi && installed && (
             <button
               onClick={refresh}
@@ -177,6 +211,7 @@ function CredCard({ upstream, status, isProviderApi }: { upstream: string; statu
               登录页
             </button>
           )}
+          </div>
         </div>
       </div>
 

@@ -25,6 +25,7 @@ type JoyCodeConfig struct {
 	ClientVersion string
 	Language      string
 	VscdbPath     string
+	ExtPkgPath    string // 扩展 package.json 路径（读取真实 clientVersion 用）
 }
 
 func DefaultJoyCodeConfig() JoyCodeConfig {
@@ -36,6 +37,7 @@ func DefaultJoyCodeConfig() JoyCodeConfig {
 		ClientVersion: "3.8.67",
 		Language:      "UNKNOWN",
 		VscdbPath:     paths.Resolve("JOYCODE_VSCDB", paths.JoyCodeVscdbCandidates()),
+		ExtPkgPath:    paths.Resolve("JOYCODE_EXT_PKG", paths.JoyCodeExtPkgCandidates()),
 	}
 }
 
@@ -86,11 +88,12 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 		return nil, fmt.Errorf("读取 state.vscdb 失败: %v", err)
 	}
 
-	// 读取客户端真实版本（releaseNotes/lastVersion），用于注入 clientVersion 字段；
-	// 硬编码旧版本会被网关灰度策略拒绝（AI_GRAY_ACCESS_DENIED）。
-	var clientVersion string
-	_ = db.QueryRow("SELECT value FROM ItemTable WHERE key='releaseNotes/lastVersion'").Scan(&clientVersion)
-	clientVersion = strings.TrimSpace(clientVersion)
+	// 读取客户端真实版本，用于注入 clientVersion 字段；硬编码旧版本会被网关灰度策略拒绝
+	// （AI_GRAY_ACCESS_DENIED）。官方客户端注入的是**扩展自身 package.json 的 version**
+	// （getVersion()），而不是 state.vscdb 的 releaseNotes/lastVersion（那是应用壳版本，
+	// 可能远旧于扩展版本，例如壳 3.0.10 / 扩展 3.8.67）。因此优先读扩展 package.json，
+	// 其次 vscdb，最后兜底当前默认版本。
+	clientVersion := m.resolveClientVersion(db)
 
 	raw := strings.TrimSpace(string(rawBytes))
 	if raw == "" {
@@ -135,7 +138,7 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 	}
 
 	if clientVersion == "" {
-		clientVersion = "3.0.10"
+		clientVersion = m.config.ClientVersion
 	}
 
 	return &JoyCodeCred{
@@ -149,6 +152,39 @@ func (m *JoyCodeCredManager) LoadCredsFromVscdb() (*JoyCodeCred, error) {
 		FetchedAt:     time.Now(),
 		Valid:         false, // 待校验
 	}, nil
+}
+
+// resolveClientVersion 解析要注入的 clientVersion，优先级与官方客户端对齐：
+//  1. 扩展 package.json 的 version（官方 getVersion() 的来源，灰度放行的真实版本）
+//  2. state.vscdb 的 releaseNotes/lastVersion（应用壳版本，仅作扩展缺失时的回退）
+//  3. 空串（交由调用方回退到 config.ClientVersion 当前默认版本）
+func (m *JoyCodeCredManager) resolveClientVersion(db *sql.DB) string {
+	// 1. 扩展 package.json version
+	if v := readExtPkgVersion(m.config.ExtPkgPath); v != "" {
+		return v
+	}
+	// 2. vscdb releaseNotes/lastVersion
+	var v string
+	_ = db.QueryRow("SELECT value FROM ItemTable WHERE key='releaseNotes/lastVersion'").Scan(&v)
+	return strings.TrimSpace(v)
+}
+
+// readExtPkgVersion 从扩展 package.json 读取 version 字段（失败返回空串）
+func readExtPkgVersion(pkgPath string) string {
+	if pkgPath == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := parseJSON(raw, &pkg); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pkg.Version)
 }
 
 // EnsureCreds 确保有有效凭据

@@ -141,49 +141,6 @@ export class AllCredStatus {
 }
 
 /**
- * AutoStrategy auto 模式策略说明
- */
-export class AutoStrategy {
-    /**
-     * 主力上游模型
-     */
-    "primary": string;
-
-    /**
-     * 降级模型
-     */
-    "fallback": string;
-    "primaryUpstream": string;
-    "fallbackUpstream": string;
-
-    /** Creates a new AutoStrategy instance. */
-    constructor($$source: Partial<AutoStrategy> = {}) {
-        if (!("primary" in $$source)) {
-            this["primary"] = "";
-        }
-        if (!("fallback" in $$source)) {
-            this["fallback"] = "";
-        }
-        if (!("primaryUpstream" in $$source)) {
-            this["primaryUpstream"] = "";
-        }
-        if (!("fallbackUpstream" in $$source)) {
-            this["fallbackUpstream"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new AutoStrategy instance from a string or object.
-     */
-    static createFrom($$source: any = {}): AutoStrategy {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new AutoStrategy($$parsedSource as Partial<AutoStrategy>);
-    }
-}
-
-/**
  * BenchmarkResult 单个上游模型测评结果
  */
 export class BenchmarkResult {

@@ -157,12 +157,11 @@ func (s *Server) GetStatus() *ProxyStatus {
 		mode = s.ConfigResolver.GetMode()
 	}
 	return &ProxyStatus{
-		Running:   s.running.Load(),
-		Port:      s.Port,
-		Host:      s.Host,
-		AutoModel: AutoModel,
-		Mode:      mode,
-		Requests:  atomic.LoadInt64(&s.requests),
+		Running:  s.running.Load(),
+		Port:     s.Port,
+		Host:     s.Host,
+		Mode:     mode,
+		Requests: atomic.LoadInt64(&s.requests),
 	}
 }
 
@@ -255,7 +254,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"ok":                 jcStatus.Valid || deStatus.Valid || ocStatus.Valid || wbStatus.Valid,
 		"service":            "switch-dev",
-		"autoResolvesTo":     AutoModel,
 		"joycodeCredValid":   jcStatus.Valid,
 		"joycodeUserId":      jcStatus.UserID,
 		"devecoCredValid":    deStatus.Valid,

@@ -15,26 +15,15 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
- * GetAutoStrategy 获取 auto 模式策略
- */
-export function GetAutoStrategy(): $CancellablePromise<$models.AutoStrategy | null> {
-    return $Call.ByID(986115054).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
  * GetModels 获取全部可用模型
  */
 export function GetModels(): $CancellablePromise<($models.ModelDetail | null)[]> {
     return $Call.ByID(3137098590).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType2($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = $models.AutoStrategy.createFrom;
+const $$createType0 = $models.ModelDetail.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = $models.ModelDetail.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $Create.Array($$createType3);
+const $$createType2 = $Create.Array($$createType1);

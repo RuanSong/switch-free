@@ -68,6 +68,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const [savingPort, setSavingPort] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [showCfgKey, setShowCfgKey] = useState(false); // 配置 JSON 预览里 apiKey 是否明文（独立于上方输入框）
   // 设置页 tab：运行模式 / 通用 / 费率 / 更新 / 关于
   const [tab, setTab] = useState<SettingsTab>("mode");
   // UA 路由：历史请求来源列表（辅助配置）
@@ -1150,16 +1151,36 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         </button>
       </section>
 
-        {/* 配置 JSON 预览 */}
-        <details className="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)]">
-          <summary className="cursor-pointer text-sm text-[var(--color-text-dim)]">查看运行模式配置 JSON</summary>
-          <pre className="mt-3 text-xs font-mono p-3 rounded bg-[var(--color-bg)] overflow-x-auto">
-{JSON.stringify({ mode: cfg.mode, autoChain: cfg.autoChain, manualFallbacks: cfg.manualFallbacks, globalFallback: cfg.globalFallback }, null, 2)}
-          </pre>
-          <div className="mt-2">
-            <CopyButton text={JSON.stringify({ mode: cfg.mode, autoChain: cfg.autoChain, manualFallbacks: cfg.manualFallbacks, globalFallback: cfg.globalFallback }, null, 2)} label="复制运行模式配置" />
-          </div>
-        </details>
+        {/* 配置 JSON 预览（完整实时，与当前配置一致；apiKey 默认脱敏） */}
+        {(() => {
+          // 完整配置：剔除 Go 序列化不导出/运行期私有字段（mu/path 已被后端 json:"-" 排除，cfg 即完整配置）
+          // apiKey 默认脱敏，点眼睛临时显示明文（与上方 apiKey 输入框行为一致）
+          const fullCfg = { ...cfg, apiKey: showCfgKey ? cfg.apiKey ?? "" : maskKey(cfg.apiKey ?? "") };
+          const fullJson = JSON.stringify(fullCfg, null, 2);
+          return (
+            <details className="bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)]">
+              <summary className="cursor-pointer text-sm text-[var(--color-text-dim)]">查看完整运行配置 JSON（实时）</summary>
+              <div className="relative mt-3">
+                <pre className="text-xs font-mono p-3 rounded bg-[var(--color-bg)] overflow-x-auto max-h-96 overflow-y-auto">
+{fullJson}
+                </pre>
+                <button
+                  onClick={() => setShowCfgKey((v) => !v)}
+                  title={showCfgKey ? "隐藏 apiKey" : "显示 apiKey 明文"}
+                  className="absolute top-2 right-2 px-1.5 py-0.5 text-xs rounded bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+                >
+                  {showCfgKey ? "🙈" : "👁"}
+                </button>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <CopyButton text={fullJson} label="复制完整配置" />
+                <span className="text-[10px] text-[var(--color-text-dim)]">
+                  {showCfgKey ? "⚠️ 当前 apiKey 为明文，复制内容含真实密钥" : "apiKey 已脱敏，复制内容不含真实密钥"}
+                </span>
+              </div>
+            </details>
+          );
+        })()}
       </div>
       )}
 

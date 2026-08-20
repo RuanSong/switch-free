@@ -4,7 +4,6 @@ import (
 	"embed"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -115,6 +114,7 @@ func main() {
 	// 5. Core（共享状态）
 	core := service.NewCore()
 	core.Setup(jyMgr, deMgr, ocMgr, wbMgr, jyUp, deUp, ocUp, wbUp, server)
+	core.SetConfigManager(cfgMgr)
 
 	// 5.3 本地数据库（SQLite）
 	dbPath := filepath.Join(paths.AppConfigDir(), "switch-dev.db")
@@ -124,6 +124,11 @@ func main() {
 	} else {
 		core.SetDB(database)
 		defer database.Close()
+		// 建表后把历史 logs 一次性回填进 usage_stats（幂等，已回填则跳过），
+		// 之后统计读聚合表，清空日志不影响统计。
+		if err := database.BackfillUsageStats(); err != nil {
+			log.Printf("⚠️ 用量统计回填失败: %v", err)
+		}
 	}
 
 	// 5.5 免费 API（独立文件 + 目录 + 健康监控）
@@ -286,19 +291,36 @@ func relaunchForUpdate(server *proxy.Server, app *application.App) {
 				args = append(args, a)
 			}
 		}
-		cmd := exec.Command(exe, args...)
-		cmd.Stdin = nil
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-		if err := cmd.Start(); err != nil {
+		// 用平台相关方式启动并脱离当前进程组，否则 app.Quit() 会把子进程一起带走
+		if err := startNewInstance(exe, args); err != nil {
 			log.Printf("⚠️ 更新重启：启动新进程失败: %v", err)
 		}
 	}
 
-	// 放行真正退出并结束旧进程（异步，与托盘「退出」同样的退出序列）
+	// 放行真正退出并结束旧进程（延迟，与托盘「退出」同样的退出序列，
+	// 避免在当前调用栈（可能还在 Wails 事件循环内）重入 teardown 导致卡死）
+	time.AfterFunc(180*time.Millisecond, func() {
+		quitApplication(app)
+	})
+}
+
+// quitApplication 执行真正的退出：放行 ShouldQuit，然后请 Wails 收尾。
+// 带兜底看门狗：Wails/WebView2 在 Windows 上偶发 teardown 重入或卡死，
+// 若 app.Quit() 在限定时间内未让进程退出，则强制 os.Exit，避免出现
+// 「托盘图标残留、任务管理器找不到进程却杀不死」的僵尸状态。
+func quitApplication(app *application.App) {
+	realQuit.Store(true)
+
+	// 正常退出路径（Wails 在主线程收尾窗口/托盘/WebView2 并 PostQuitMessage）
+	app.Quit()
+
+	// 兜底：给正常收尾 5 秒，仍未退出就强制结束。
+	// Windows 上 Wails v3 的 cleanup 依赖主线程消息循环；一旦卡死，UI 已无响应，
+	// 此时强制退出是唯一能保证不残留僵尸进程/托盘幽灵图标的手段。
 	go func() {
-		realQuit.Store(true)
-		app.Quit()
+		time.Sleep(5 * time.Second)
+		log.Printf("⚠️ 正常退出超时（Wails 收尾无响应），强制结束进程")
+		os.Exit(0)
 	}()
 }
 
@@ -491,14 +513,16 @@ func buildTrayMenu(server *proxy.Server, cfgMgr *config.Manager, cfgSvc *service
 
 	// ── 退出 ──
 	menu.Add("退出").OnClick(func(*application.Context) {
-		// 异步执行退出：macOS 托盘菜单回调在主线程，同步调用 app.Quit() 会
-		// 触发 NSApp.terminate，而 terminate 需要 runloop 迭代才能完成，
-		// 此时主线程卡在菜单回调未返回 -> 死锁卡死。放到 goroutine 让回调立即返回。
-		go func() {
-			_ = server.StopQuiet() // 先关端口服务（不推事件，避免 Event.Emit 在退出时卡死）
-			realQuit.Store(true)   // 标记允许真正退出（ShouldQuit 放行）
-			app.Quit()
-		}()
+		// 本回调在托盘右键菜单（TrackPopupMenuEx）的模态消息循环内、主线程上派发。
+		// 若在菜单关闭前直接调用 app.Quit()，Wails cleanup 会以 InvokeSync 把
+		// 窗口/托盘/WebView2 的销毁排队到主线程，与尚未返回的 TrackPopupMenuEx
+		// 模态循环发生重入死锁 —— 表现为：点退出后界面卡死、托盘图标残留、
+		// 任务管理器里找不到/杀不掉进程。
+		// 因此延迟到菜单彻底关闭、主线程空闲后，再执行真正的退出序列。
+		time.AfterFunc(180*time.Millisecond, func() {
+			_ = server.StopQuiet() // 先关端口（带 2s 超时，不阻塞退出）
+			quitApplication(app)
+		})
 	})
 
 	return menu

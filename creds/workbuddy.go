@@ -1,6 +1,7 @@
 package creds
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -203,13 +204,41 @@ func (m *WorkBuddyCredManager) CredStatus() *CredStatusInfo {
 	return info
 }
 
+// UserInfoHeader 生成 X-Userinfo 头值：base64(JSON{"sub":uid})，与官方 CLI 的 buildUserInfoHeader 一致。
+// 官方语义：有 uid 时 X-User-Id 与 X-Userinfo 成对发送；无 uid 时两者都省略。返回 "" 表示应省略。
+func UserInfoHeader(uid string) string {
+	if uid == "" {
+		return ""
+	}
+	payload, err := json.Marshal(map[string]string{"sub": uid})
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(payload)
+}
+
+// WorkBuddyAuthHeaders 返回与官方 WorkBuddy 客户端一致的鉴权请求头。
+// 用于 /plugin/auth/* 鉴权链路，使指纹与官方客户端一致，避免风控误伤。
+func WorkBuddyAuthHeaders(cred *WorkBuddyCred) map[string]string {
+	h := map[string]string{
+		"Authorization":   fmt.Sprintf("Bearer %s", cred.AccessToken),
+		"Content-Type":    "application/json",
+		"Accept":          "application/json",
+		"X-Requested-With": "XMLHttpRequest",
+	}
+	if cred.UID != "" {
+		h["X-User-Id"] = cred.UID
+		if ui := UserInfoHeader(cred.UID); ui != "" {
+			h["X-Userinfo"] = ui
+		}
+	}
+	return h
+}
+
 // VerifyCreds 调 /v2/plugin/auth/state 验证 accessToken（code:0 = 有效）
 func (m *WorkBuddyCredManager) VerifyCreds(cred *WorkBuddyCred) (valid bool, statusCode int, err error) {
 	url := m.config.BaseURL + "/plugin/auth/state?platform=workbuddy"
-	body, status, err := httpPost(url, "", map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", cred.AccessToken),
-		"Content-Type":  "application/json",
-	})
+	body, status, err := httpPost(url, "", WorkBuddyAuthHeaders(cred))
 	if err != nil {
 		return false, -1, err
 	}
@@ -236,12 +265,10 @@ type WorkBuddyRefreshResult struct {
 // RefreshToken 用 refreshToken 续期 accessToken（内存缓存，不回写 info 文件）
 func (m *WorkBuddyCredManager) RefreshToken(cred *WorkBuddyCred) (*WorkBuddyRefreshResult, error) {
 	url := m.config.BaseURL + "/plugin/auth/token/refresh"
-	body, status, err := httpPost(url, "", map[string]string{
-		"Authorization":         fmt.Sprintf("Bearer %s", cred.AccessToken),
-		"X-Refresh-Token":       cred.RefreshToken,
-		"X-Auth-Refresh-Source": "plugin",
-		"Content-Type":          "application/json",
-	})
+	headers := WorkBuddyAuthHeaders(cred)
+	headers["X-Refresh-Token"] = cred.RefreshToken
+	headers["X-Auth-Refresh-Source"] = "plugin"
+	body, status, err := httpPost(url, "", headers)
 	if err != nil {
 		return nil, fmt.Errorf("refresh 请求失败: %v", err)
 	}

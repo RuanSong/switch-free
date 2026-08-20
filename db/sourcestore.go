@@ -37,12 +37,13 @@ type SourceInfo struct {
 	Count     int    `json:"count"`
 }
 
-// ListSources 列出所有 source 及其请求次数（按次数降序）
+// ListSources 列出所有 source 及其请求次数（按次数降序）。
+// 次数来自 usage_stats 聚合表，清空 logs 不影响。
 func (d *DB) ListSources() ([]SourceInfo, error) {
 	rows, err := d.conn.Query(`
-		SELECT s.id, s.name, s.user_agent, COUNT(l.id) AS cnt
+		SELECT s.id, s.name, s.user_agent, COALESCE(SUM(u.reqs), 0) AS cnt
 		FROM sources s
-		LEFT JOIN logs l ON l.source_id = s.id
+		LEFT JOIN usage_stats u ON u.source_id = s.id
 		GROUP BY s.id
 		ORDER BY cnt DESC, s.name ASC
 	`)
@@ -69,15 +70,16 @@ type SourceModelStat struct {
 	LastSeen string `json:"lastSeen"`
 }
 
-// QueryModelsBySource 查询某个 source name 历史请求过的模型（按次数降序）
+// QueryModelsBySource 查询某个 source name 历史请求过的模型（按次数降序）。
+// 读 usage_stats 聚合表（model_id 已存实际生效模型），lastSeen 用小时桶近似；清空 logs 不影响。
 func (d *DB) QueryModelsBySource(sourceName string) ([]SourceModelStat, error) {
 	rows, err := d.conn.Query(`
 		SELECT COALESCE(m.model_id, '') AS model,
-		       COUNT(*)               AS cnt,
-		       MAX(l.date_time)       AS last_seen
-		FROM logs l
-		JOIN sources s ON l.source_id = s.id
-		LEFT JOIN models m ON l.model_id = m.id
+		       SUM(u.reqs)          AS cnt,
+		       MAX(u.hour)          AS last_seen
+		FROM usage_stats u
+		JOIN sources s ON u.source_id = s.id
+		LEFT JOIN models m ON u.model_id = m.id
 		WHERE s.name = ?
 		  AND m.model_id != ''
 		GROUP BY m.model_id

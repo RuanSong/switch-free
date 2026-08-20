@@ -39,7 +39,15 @@ func (c *Config) Resolve(requestedModel string, userAgent string) []proxy.ModelR
 	if requestedModel == "" || strings.EqualFold(requestedModel, "auto") {
 		return c.expandAutoChainLocked()
 	}
-	return c.expandManualLocked(requestedModel)
+
+	// 只有 manual 模式才按「请求模型」展开降级链。
+	// auto 模式下无论客户端发什么具体模型名，都按用户配置的 auto 优先级链执行 —
+	// 否则未识别的模型名（如 Claude Code 发的 claude-*）会在 expandManualLocked 里
+	// 经 ResolveModel 兜底到 GlobalFallback，完全绕过 auto 链。
+	if c.Mode == "manual" {
+		return c.expandManualLocked(requestedModel)
+	}
+	return c.expandAutoChainLocked()
 }
 
 // expandUALocked ua 模式链展开：UA 规则命中的目标模型 + UA 全局兜底
@@ -105,23 +113,26 @@ func (c *Config) expandManual(requestedModel string) []proxy.ModelRef {
 }
 
 func (c *Config) expandManualLocked(requestedModel string) []proxy.ModelRef {
-	resolvedID := proxy.ResolveModel(requestedModel)
-	upstream := proxy.ResolveUpstream(requestedModel)
+	var result []proxy.ModelRef
 
-	result := []proxy.ModelRef{
-		{Upstream: upstream, Model: resolvedID},
-	}
+	if proxy.IsKnownModel(requestedModel) {
+		// 识别到的模型：以它自身为链首
+		resolvedID := proxy.ResolveModel(requestedModel)
+		upstream := proxy.ResolveUpstream(requestedModel)
+		result = append(result, proxy.ModelRef{Upstream: upstream, Model: resolvedID})
 
-	if fallbacks, ok := c.ManualFallbacks[resolvedID]; ok {
-		result = append(result, fallbacks...)
-	}
-	if !strings.EqualFold(requestedModel, resolvedID) {
-		if fallbacks, ok := c.ManualFallbacks[requestedModel]; ok {
+		if fallbacks, ok := c.ManualFallbacks[resolvedID]; ok {
 			result = append(result, fallbacks...)
 		}
+		if !strings.EqualFold(requestedModel, resolvedID) {
+			if fallbacks, ok := c.ManualFallbacks[requestedModel]; ok {
+				result = append(result, fallbacks...)
+			}
+		}
 	}
+	// 未识别的模型：不再硬编码落到 glm-5.1，而是直接用 GlobalFallback（若配置）
 
-	if !c.isInChain(result, c.GlobalFallback) {
+	if c.GlobalFallback.Upstream != "" && c.GlobalFallback.Model != "" && !c.isInChain(result, c.GlobalFallback) {
 		result = append(result, c.GlobalFallback)
 	}
 	return result
