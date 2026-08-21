@@ -157,10 +157,11 @@ func (s *Server) executeChain(ctx context.Context, body interface{}, chain []Mod
 		// 检查上游错误响应
 		if isUpstreamErrorResponse(resp) {
 			snippet := upstreamErrSnippet(resp)
+			friendly := friendlyUpstreamError(ref.Upstream, resp)
 			fmt.Printf("[switch-dev] %s/%s 上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, resp.StatusCode, snippet)
-			lastErr = fmt.Errorf("upstream error: %s", snippet)
+			lastErr = fmt.Errorf("%s", friendly)
 			lastUpstream = ref.Upstream
-			s.recordFallbackLog(requestedModel, ref, "upstream_error", snippet)
+			s.recordFallbackLog(requestedModel, ref, "upstream_error", friendly)
 			continue
 		}
 
@@ -265,9 +266,9 @@ func (s *Server) executeChainStream(ctx context.Context, body interface{}, chain
 				break
 			}
 			fmt.Printf("[switch-dev] %s/%s 流式上游错误 (status=%d %s)，降级\n", ref.Upstream, ref.Model, sr.StatusCode, snippet)
-			lastErr = fmt.Errorf("upstream error: %s", snippet)
+			lastErr = fmt.Errorf("%s", friendlyStreamError(ref.Upstream, snippet))
 			lastUpstream = ref.Upstream
-			s.recordFallbackLog(requestedModel, ref, "upstream_error", snippet)
+			s.recordFallbackLog(requestedModel, ref, "upstream_error", friendlyStreamError(ref.Upstream, snippet))
 			continue
 		}
 
@@ -560,6 +561,54 @@ func upstreamErrSnippet(resp *upstream.Response) string {
 		return trimmed[:120]
 	}
 	return trimmed
+}
+
+// friendlyUpstreamError 把已知上游错误转成可操作的友好文案；
+// 无法识别时回退到 snippet（脱敏截断）。up 为上游名（如 joycode），便于给出针对性提示。
+func friendlyUpstreamError(up string, resp *upstream.Response) string {
+	body := string(resp.Body)
+	// JoyCode 灰度门禁：账号未被开通该模型的独立访问。官方客户端在线时持有活跃会话
+	// 才能通过灰度；代理用静态 ptKey 游离调用被拒。这不是请求构造 bug，是账号/会话门禁。
+	if strings.Contains(body, "AI_GRAY_ACCESS_DENIED") ||
+		strings.Contains(body, "COLOR_FORWARD_EXCEPTION") ||
+		strings.Contains(body, "AI_GRAY_") {
+		return fmt.Sprintf(
+			"%s 当前账号未被开通该模型的独立访问（京东灰度门禁 AI_GRAY_ACCESS_DENIED）。"+
+				"请保持 JoyCode 官方客户端打开并登录后重试，或在 JoyCode 管理后台为该账号开通此模型权限。"+
+				"已自动尝试降级链中的下一个上游。",
+			upstreamDisplayName(up),
+		)
+	}
+	return upstreamErrSnippet(resp)
+}
+
+// upstreamDisplayName 上游友好名（错误文案用）
+func upstreamDisplayName(up string) string {
+	switch up {
+	case "joycode":
+		return "JoyCode"
+	case "deveco":
+		return "DevEco"
+	case "opencode":
+		return "OpenCode"
+	case "workbuddy":
+		return "WorkBuddy"
+	}
+	return up
+}
+
+// friendlyStreamError 流式路径的友好化（输入为已截断的错误文本 snippet）
+func friendlyStreamError(up, snippet string) string {
+	if strings.Contains(snippet, "AI_GRAY_ACCESS_DENIED") ||
+		strings.Contains(snippet, "COLOR_FORWARD_EXCEPTION") ||
+		strings.Contains(snippet, "AI_GRAY_") {
+		return fmt.Sprintf(
+			"%s 当前账号未被开通该模型的独立访问（京东灰度门禁 AI_GRAY_ACCESS_DENIED）。"+
+				"请保持 JoyCode 官方客户端打开并登录后重试，或在 JoyCode 管理后台为该账号开通此模型权限。",
+			upstreamDisplayName(up),
+		)
+	}
+	return snippet
 }
 
 // isEmptyUpstreamResponse 判断 200 响应是否为空内容：body 空，或能解析为 OpenAI JSON

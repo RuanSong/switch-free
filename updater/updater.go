@@ -3,10 +3,13 @@ package updater
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/minio/selfupdate"
@@ -72,6 +75,15 @@ func (u *Updater) ApplyUpdate(ctx context.Context, info *UpdateInfo, progress fu
 	if info == nil {
 		return fmt.Errorf("无更新信息")
 	}
+	// B1: 下载前先探测当前 exe 所在目录是否可写。自我更新是同目录原子替换
+	// （selfupdate 写 <exe>.new 再 rename），若装在 Program Files 等无写权限目录，
+	// 会在下载 100% 后才报 raw Access denied。提前失败并给出可操作指引。
+	if err := ensureInstallDirWritable(); err != nil {
+		if progress != nil {
+			progress(UpdateStatus{State: "error", Message: err.Error()})
+		}
+		return err
+	}
 	if progress != nil {
 		progress(UpdateStatus{State: "downloading", Message: "开始下载"})
 	}
@@ -100,6 +112,8 @@ func (u *Updater) ApplyUpdate(ctx context.Context, info *UpdateInfo, progress fu
 	defer file.Close()
 	err = selfupdate.Apply(file, selfupdate.Options{})
 	if err != nil {
+		// B2: 权限类错误归类为可操作指引，而非 raw OS 错误
+		err = classifyPermissionError(err)
 		if progress != nil {
 			progress(UpdateStatus{State: "error", Message: err.Error()})
 		}
@@ -157,4 +171,66 @@ func fetchBytes(ctx context.Context, url string) ([]byte, error) {
 // openFile 打开文件
 func openFile(path string) (*os.File, error) {
 	return os.Open(path)
+}
+
+// ensureInstallDirWritable 探测当前可执行文件所在目录是否可写。
+// 自我更新需在同目录写临时文件再原子替换；不可写（典型：旧版装在 Program Files）
+// 时提前返回带指引的错误，避免下载完成后才失败。
+func ensureInstallDirWritable() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil // 拿不到路径就不预检，交给后续流程
+	}
+	// macOS .app 包内 / 开发环境（go run 临时目录）跳过预检：
+	// .app 更新走 DMG/安装器而非自替换；go run 二进制在系统临时目录，无参考意义
+	resolved, rerr := filepath.EvalSymlinks(exe)
+	if rerr == nil {
+		exe = resolved
+	}
+	if strings.Contains(exe, ".app/Contents/MacOS") {
+		return nil
+	}
+	dir := filepath.Dir(exe)
+	probe, err := os.CreateTemp(dir, ".switch-dev-writable-*")
+	if err != nil {
+		return permissionDeniedError(dir, err)
+	}
+	name := probe.Name()
+	probe.Close()
+	os.Remove(name)
+	return nil
+}
+
+// permissionDeniedError 构造权限不足的可操作指引错误
+func permissionDeniedError(dir string, cause error) error {
+	return fmt.Errorf(
+		"当前安装目录无写权限，无法完成自我更新：%s\n\n"+
+			"这通常是因为本应用是以管理员身份安装到 Program Files 的。请改用最新安装器重装到用户目录：\n"+
+			"1. 托盘右键退出 Switch Dev\n"+
+			"2. 到「应用和功能」卸载旧版 Switch Dev\n"+
+			"3. 下载并运行最新安装器（按用户安装，无需管理员权限）：https://github.com/rosanruan/switch-dev/releases/latest\n\n"+
+			"（原始错误：%v）",
+		dir, cause,
+	)
+}
+
+// classifyPermissionError 把 selfupdate 的权限类错误归类为可操作指引；
+// 其它错误原样返回。
+func classifyPermissionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	// 覆盖常见权限错误：errno 级 + 文案匹配（Windows "Access is denied"）
+	if errors.Is(err, os.ErrPermission) {
+		exe, _ := os.Executable()
+		return permissionDeniedError(filepath.Dir(exe), err)
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "access is denied") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "access denied") {
+		exe, _ := os.Executable()
+		return permissionDeniedError(filepath.Dir(exe), err)
+	}
+	return err
 }

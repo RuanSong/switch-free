@@ -81,6 +81,11 @@ func (c *Config) matchUARule(requestedModel, userAgent string) (proxy.ModelRef, 
 				return m.Target, true
 			}
 		}
+		// UA 命中但请求模型未命中任何 mapping：用规则级默认目标（若配置）。
+		// 请求模型 id 原样透传给该目标上游，免维护客户端的模型清单。
+		if rule.DefaultTarget.Upstream != "" && rule.DefaultTarget.Model != "" {
+			return rule.DefaultTarget, true
+		}
 	}
 	return proxy.ModelRef{}, false
 }

@@ -454,6 +454,14 @@ export class UARule {
     "enabled": boolean;
     "mappings": UAModelMap[];
 
+    /**
+     * DefaultTarget 规则级默认目标：UA 命中但请求模型未命中任何 mapping 时，
+     * 整个请求路由到该目标（请求模型 id 原样透传给上游，由上游/代理处理）。
+     * 留空则回退到 UA 全局兜底（uaGlobalFallback）/正常降级链。
+     * 这是「cc-switch 式」的免维护方案——无需为每个客户端枚举请求模型列表。
+     */
+    "defaultTarget"?: proxy$0.ModelRef;
+
     /** Creates a new UARule instance. */
     constructor($$source: Partial<UARule> = {}) {
         if (!("id" in $$source)) {
@@ -480,9 +488,13 @@ export class UARule {
      */
     static createFrom($$source: any = {}): UARule {
         const $$createField4_0 = $$createType16;
+        const $$createField5_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("mappings" in $$parsedSource) {
             $$parsedSource["mappings"] = $$createField4_0($$parsedSource["mappings"]);
+        }
+        if ("defaultTarget" in $$parsedSource) {
+            $$parsedSource["defaultTarget"] = $$createField5_0($$parsedSource["defaultTarget"]);
         }
         return new UARule($$parsedSource as Partial<UARule>);
     }

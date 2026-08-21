@@ -8,6 +8,13 @@
       "bonusRule": "新用户注册赠送$100额度"
     },
      {
+      "id": "agnes-ai",
+      "name": "agnes-ai",
+      "baseUrl": "https://apihub.agnes-ai.com/v1",
+      "registerUrl": "https://agnes-ai.com/",
+      "bonusRule": "个人免费用户"
+    },
+     {
       "id": "sensenova",
       "name": "商汤科技",
       "baseUrl": "https://token.sensenova.cn/v1",

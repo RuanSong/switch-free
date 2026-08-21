@@ -82,7 +82,7 @@ export default function UpdatePanel() {
       </div>
 
       {msg && (
-        <div className={`mb-3 px-4 py-2 rounded-lg text-sm ${msg.type === "ok" ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"}`}>
+        <div className={`mb-3 px-4 py-2 rounded-lg text-sm whitespace-pre-wrap leading-relaxed ${msg.type === "ok" ? "bg-[var(--color-success)]/20 text-[var(--color-success)]" : "bg-[var(--color-danger)]/20 text-[var(--color-danger)]"}`}>
           {msg.text}
         </div>
       )}
@@ -98,6 +98,9 @@ export default function UpdatePanel() {
 
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm">发现新版本：</span>
+            {/* 当前版本 -> 新版本，标签化避免把当前版本误读为检测到的版本 */}
+            <span className="font-mono text-sm text-[var(--color-text-dim)]">{currentVersion || "-"}</span>
+            <span className="text-[var(--color-text-dim)]">→</span>
             <span className="font-mono text-sm font-bold text-[var(--color-primary)]">{updateInfo.version}</span>
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded-full ${

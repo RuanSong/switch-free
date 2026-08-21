@@ -27,11 +27,16 @@ type UAModelMap struct {
 
 // UARule 单条 User-Agent 路由规则
 type UARule struct {
-	ID       string        `json:"id"`
-	Name     string        `json:"name"`
-	Pattern  string        `json:"pattern"`
-	Enabled  bool          `json:"enabled"`
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`
+	Pattern  string       `json:"pattern"`
+	Enabled  bool         `json:"enabled"`
 	Mappings []UAModelMap `json:"mappings"`
+	// DefaultTarget 规则级默认目标：UA 命中但请求模型未命中任何 mapping 时，
+	// 整个请求路由到该目标（请求模型 id 原样透传给上游，由上游/代理处理）。
+	// 留空则回退到 UA 全局兜底（uaGlobalFallback）/正常降级链。
+	// 这是「cc-switch 式」的免维护方案——无需为每个客户端枚举请求模型列表。
+	DefaultTarget proxy.ModelRef `json:"defaultTarget,omitempty"`
 }
 
 // Preset 运行模式方案快照
@@ -80,10 +85,11 @@ func copyUARules(src []UARule) []UARule {
 	dst := make([]UARule, len(src))
 	for i, r := range src {
 		dst[i] = UARule{
-			ID:      r.ID,
-			Name:    r.Name,
-			Pattern: r.Pattern,
-			Enabled: r.Enabled,
+			ID:            r.ID,
+			Name:          r.Name,
+			Pattern:       r.Pattern,
+			Enabled:       r.Enabled,
+			DefaultTarget: r.DefaultTarget,
 		}
 		if r.Mappings != nil {
 			dst[i].Mappings = make([]UAModelMap, len(r.Mappings))
@@ -368,6 +374,9 @@ func (c *Config) Validate() error {
 			if m.Target.Upstream != "" && !isValidUpstream(m.Target.Upstream) {
 				return fmt.Errorf("uaRules[%d].mappings[%d] 的 upstream 无效: %s", i, j, m.Target.Upstream)
 			}
+		}
+		if rule.DefaultTarget.Upstream != "" && !isValidUpstream(rule.DefaultTarget.Upstream) {
+			return fmt.Errorf("uaRules[%d] 的 defaultTarget upstream 无效: %s", i, rule.DefaultTarget.Upstream)
 		}
 	}
 

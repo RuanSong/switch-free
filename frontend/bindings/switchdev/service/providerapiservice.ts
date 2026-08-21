@@ -226,6 +226,14 @@ export function RemoveProvider(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * ResetForAutoLockout 自动加密锁死时的温和自愈：保留供应商列表，清空 apiKey 重新初始化。
+ * 仅在从未设主密码且自动解锁全失败时可用，成功后进入空密钥状态让用户重填 Key。
+ */
+export function ResetForAutoLockout(): $CancellablePromise<void> {
+    return $Call.ByID(3826594660);
+}
+
+/**
  * ResetVault 销毁本地加密配置（忘记密码兜底，数据会丢失）
  */
 export function ResetVault(): $CancellablePromise<void> {

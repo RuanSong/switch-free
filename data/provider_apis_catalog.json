@@ -4669,6 +4669,831 @@
           "structured_output": true
         }
       ]
+    },
+    {
+      "id": "api-airforce",
+      "name": "API Airforce",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.airforce",
+      "registration": "",
+      "get_api_key_url": "https://api.airforce",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "1 RPM / 1000 RPD，需注册（循环免费，约 2400 万 Token/月）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 7,
+      "free_models": [
+        {
+          "id": "llama-3.1-70b",
+          "name": "Llama 3.1 70B",
+          "context": "128K",
+          "rate_limit": "1 RPM / 1000 RPD",
+          "tool_call": true
+        },
+        {
+          "id": "gpt-4o-mini",
+          "name": "GPT-4o Mini",
+          "context": "128K",
+          "rate_limit": "1 RPM / 1000 RPD",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "bluesminds",
+      "name": "BluesMinds",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.bluesminds.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://doc.bluesminds.com/",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "500 pi 积分，20 RPM，300 RPD（循环免费，约 700 万 Token/月）ToS 状态不明",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 22,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "Auto (BluesMinds Pool)",
+          "context": "",
+          "rate_limit": "20 RPM / 300 RPD"
+        }
+      ]
+    },
+    {
+      "id": "arcee-ai",
+      "name": "Arcee AI",
+      "region": "international",
+      "website": "",
+      "base_url": "https://models.arcee.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://models.arcee.ai",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "Trinity Large Thinking 模型免费（循环免费，约 500 万 Token/月）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "trinity-large-thinking",
+          "name": "Trinity Large Thinking",
+          "context": "128K",
+          "rate_limit": "",
+          "reasoning": true,
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "bazaarlink",
+      "name": "Bazaarlink",
+      "region": "international",
+      "website": "",
+      "base_url": "https://bazaarlink.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://bazaarlink.ai",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "auto:free 路由，10-20 RPM（循环免费，约 400 万 Token/月）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 32,
+      "free_models": [
+        {
+          "id": "auto:free",
+          "name": "Auto (Free Route)",
+          "context": "",
+          "rate_limit": "10-20 RPM"
+        }
+      ]
+    },
+    {
+      "id": "morph",
+      "name": "Morph",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.morphllm.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://morphllm.com/dashboard/api-keys",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "25 万积分/月，200 请求/月（循环免费，约 40 万 Token/月）ToS 允许",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "16K",
+      "free_models_count": 2,
+      "free_models": [
+        {
+          "id": "morph-v3-large",
+          "name": "Morph V3 Large",
+          "context": "16K",
+          "rate_limit": "200 req/mo",
+          "tool_call": true
+        },
+        {
+          "id": "morph-v3-fast",
+          "name": "Morph V3 Fast",
+          "context": "16K",
+          "rate_limit": "200 req/mo",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "huggingchat",
+      "name": "HuggingChat",
+      "region": "international",
+      "website": "",
+      "base_url": "https://huggingface.co/chat",
+      "registration": "",
+      "get_api_key_url": "https://huggingface.co/chat",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "免费聊天，$0.10/月额度，速率限制（循环免费，约 50 万 Token/月）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 4,
+      "free_models": [
+        {
+          "id": "meta-llama/Llama-3.3-70B-Instruct",
+          "name": "Llama 3.3 70B Instruct",
+          "context": "32K",
+          "rate_limit": "rate limited",
+          "tool_call": true
+        },
+        {
+          "id": "Qwen/Qwen2.5-72B-Instruct",
+          "name": "Qwen2.5 72B Instruct",
+          "context": "32K",
+          "rate_limit": "rate limited",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "baidu-qianfan",
+      "name": "Baidu (百度千帆)",
+      "region": "domestic",
+      "website": "https://cloud.baidu.com/product/wenxinworkshop",
+      "base_url": "https://qianfan.baidubce.com/v2",
+      "registration": "",
+      "get_api_key_url": "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "ERNIE Speed/Lite/Tiny 永久免费，需实名认证（无 Token 上限，受速率限制）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "ernie-speed-128k",
+          "name": "ERNIE Speed 128K",
+          "context": "128K",
+          "rate_limit": "rate limited",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "tencent-hunyuan",
+      "name": "Tencent Hunyuan (腾讯混元)",
+      "region": "domestic",
+      "website": "https://cloud.tencent.com/product/hunyuan",
+      "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://console.cloud.tencent.com/hunyuan/api-key",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "混元 Lite 永久免费，需实名认证（无 Token 上限，受速率限制）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "256K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "hunyuan-lite",
+          "name": "Hunyuan Lite",
+          "context": "256K",
+          "rate_limit": "rate limited",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "vertex-ai",
+      "name": "Vertex (Google Cloud)",
+      "region": "international",
+      "website": "https://cloud.google.com/vertex-ai",
+      "base_url": "https://us-central1-aiplatform.googleapis.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://console.cloud.google.com/vertex-ai",
+      "auth_method": "OAuth / Service Account",
+      "auth_header": "Authorization: Bearer {access_token}",
+      "free_tier": "需 Google Cloud 账号，注册赠送约 3 亿 Token（一次性）",
+      "credit_card_required": true,
+      "openai_compatible": true,
+      "max_context": "1M",
+      "free_models_count": 6,
+      "free_models": [
+        {
+          "id": "gemini-2.5-flash",
+          "name": "Gemini 2.5 Flash",
+          "context": "1M",
+          "rate_limit": "",
+          "reasoning": true,
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "agentrouter",
+      "name": "AgentRouter",
+      "region": "international",
+      "website": "",
+      "base_url": "https://agentrouter.org/v1",
+      "registration": "",
+      "get_api_key_url": "https://agentrouter.org",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册即送 $100（一次性，约 2 亿 Token）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "200K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "AgentRouter Auto",
+          "context": "200K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "predibase",
+      "name": "Predibase",
+      "region": "international",
+      "website": "",
+      "base_url": "https://serving.app.predibase.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://app.predibase.com/settings",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册赠送约 2500 万 Token，30 天有效（一次性）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "Predibase Auto",
+          "context": "32K",
+          "rate_limit": "30 days"
+        }
+      ]
+    },
+    {
+      "id": "together-ai",
+      "name": "Together AI",
+      "region": "international",
+      "website": "https://www.together.ai",
+      "base_url": "https://api.together.xyz/v1",
+      "registration": "",
+      "get_api_key_url": "https://api.together.xyz/settings/api-keys",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册赠送约 2500 万 Token，约 80 个永久免费模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 80,
+      "free_models": [
+        {
+          "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+          "name": "Llama 3.3 70B Turbo (Free)",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        },
+        {
+          "id": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
+          "name": "DeepSeek R1 Distill 70B (Free)",
+          "context": "128K",
+          "rate_limit": "",
+          "reasoning": true
+        }
+      ]
+    },
+    {
+      "id": "doubao",
+      "name": "Doubao (豆包/字节跳动)",
+      "region": "domestic",
+      "website": "https://www.volcengine.com/product/doubao",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "registration": "",
+      "get_api_key_url": "https://console.volcengine.com/ark",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "2M Token/天免费，注册赠送约 1500 万 Token（ToS 状态不明，需实名）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "256K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "doubao-lite-128k",
+          "name": "Doubao Lite 128K",
+          "context": "128K",
+          "rate_limit": "2M tokens/day",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "longcat",
+      "name": "LongCat (美团)",
+      "region": "domestic",
+      "website": "",
+      "base_url": "https://api.longcat.chat/openai/v1",
+      "registration": "",
+      "get_api_key_url": "https://longcat.chat",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "一次性 10M Token（约 1000 万），需 KYC 验证",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "LongCat-Flash-Chat",
+          "name": "LongCat Flash Chat",
+          "context": "128K",
+          "rate_limit": "one-time 10M",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "hyperbolic",
+      "name": "Hyperbolic",
+      "region": "international",
+      "website": "https://hyperbolic.xyz",
+      "base_url": "https://api.hyperbolic.xyz/v1",
+      "registration": "",
+      "get_api_key_url": "https://app.hyperbolic.xyz/settings",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "$1 试用额度（约 500 万 Token）ToS 允许",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+          "name": "Llama 3.1 8B Instruct",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "bytez",
+      "name": "Bytez",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.bytez.com/models/v2",
+      "registration": "",
+      "get_api_key_url": "https://bytez.com/dashboard",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册赠送约 100 万 Token（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "Bytez Auto",
+          "context": "32K",
+          "rate_limit": ""
+        }
+      ]
+    },
+    {
+      "id": "deepinfra",
+      "name": "DeepInfra",
+      "region": "international",
+      "website": "https://deepinfra.com",
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "registration": "",
+      "get_api_key_url": "https://deepinfra.com/dash/api_keys",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册赠送约 100 万 Token",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+          "name": "Llama 3.1 8B Instruct",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "qoder",
+      "name": "Qoder",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.qoder.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://qoder.com",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "14 天 / 300 积分 Pro 试用（约 100 万 Token）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "Qoder Auto",
+          "context": "",
+          "rate_limit": "14 days / 300 credits"
+        }
+      ]
+    },
+    {
+      "id": "scaleway",
+      "name": "Scaleway",
+      "region": "international",
+      "website": "https://www.scaleway.com/en/generative-apis/",
+      "base_url": "https://api.scaleway.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://console.scaleway.com/iam/api-keys",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "注册赠送约 100 万 Token（ToS 允许）",
+      "credit_card_required": true,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "llama-3.3-70b-instruct",
+          "name": "Llama 3.3 70B Instruct",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "pollinations",
+      "name": "Pollinations",
+      "region": "international",
+      "website": "https://pollinations.ai",
+      "base_url": "https://text.pollinations.ai/openai",
+      "registration": "",
+      "get_api_key_url": "https://auth.pollinations.ai",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "MIT 协议，匿名访问，无需 Key，~1 请求/6-15 秒",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 31,
+      "free_models": [
+        {
+          "id": "openai",
+          "name": "OpenAI (proxied)",
+          "context": "128K",
+          "rate_limit": "~1 req/6-15s",
+          "tool_call": true
+        },
+        {
+          "id": "mistral",
+          "name": "Mistral",
+          "context": "128K",
+          "rate_limit": "~1 req/6-15s"
+        }
+      ]
+    },
+    {
+      "id": "inference-net",
+      "name": "Inference Net",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.inference.net/v1",
+      "registration": "",
+      "get_api_key_url": "https://inference.net",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "免费访问，3 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 3,
+      "free_models": [
+        {
+          "id": "meta-llama/llama-3.1-8b-instruct",
+          "name": "Llama 3.1 8B Instruct",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "publicai",
+      "name": "PublicAI",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.publicai.co/v1",
+      "registration": "",
+      "get_api_key_url": "https://publicai.co",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "社区推理层，免费访问，3 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 3,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "PublicAI Auto",
+          "context": "128K",
+          "rate_limit": ""
+        }
+      ]
+    },
+    {
+      "id": "uncloseai",
+      "name": "UncloseAI",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.uncloseai.com/v1",
+      "registration": "",
+      "get_api_key_url": "",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "永久免费，无需注册，3 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 3,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "UncloseAI Auto",
+          "context": "",
+          "rate_limit": ""
+        }
+      ]
+    },
+    {
+      "id": "reka",
+      "name": "Reka",
+      "region": "international",
+      "website": "https://www.reka.ai",
+      "base_url": "https://api.reka.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://platform.reka.ai",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "免费访问，2 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 2,
+      "free_models": [
+        {
+          "id": "reka-flash",
+          "name": "Reka Flash",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "nous-research",
+      "name": "Nous Research",
+      "region": "international",
+      "website": "https://nousresearch.com",
+      "base_url": "https://inference-api.nousresearch.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://portal.nousresearch.com",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "代理服务的代理，2 模型（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 2,
+      "free_models": [
+        {
+          "id": "Hermes-3-Llama-3.1-70B",
+          "name": "Hermes 3 Llama 3.1 70B",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "freemodel-dev",
+      "name": "FreeModel Dev",
+      "region": "international",
+      "website": "",
+      "base_url": "https://api.freemodel.dev/v1",
+      "registration": "",
+      "get_api_key_url": "https://freemodel.dev",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "$300 一次性试用，4 模型（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 4,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "FreeModel Auto",
+          "context": "",
+          "rate_limit": "one-time $300"
+        }
+      ]
+    },
+    {
+      "id": "hackclub",
+      "name": "HackClub",
+      "region": "international",
+      "website": "https://ai.hackclub.com",
+      "base_url": "https://ai.hackclub.com/proxy/v1",
+      "registration": "",
+      "get_api_key_url": "https://docs.ai.hackclub.com",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "仅限 Hack Club 青少年会员，3 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 3,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "HackClub Auto",
+          "context": "",
+          "rate_limit": "members only"
+        }
+      ]
+    },
+    {
+      "id": "sparkdesk",
+      "name": "SparkDesk",
+      "region": "domestic",
+      "website": "",
+      "base_url": "https://spark-api-open.xf-yun.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://console.xfyun.cn",
+      "auth_method": "None",
+      "auth_header": "",
+      "free_tier": "仅限个人非商用，1 模型",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "SparkDesk Auto",
+          "context": "",
+          "rate_limit": ""
+        }
+      ]
+    },
+    {
+      "id": "sensenova",
+      "name": "SenseNova (商汤)",
+      "region": "domestic",
+      "website": "https://platform.sensenova.cn",
+      "base_url": "https://api.sensenova.cn/compatible-mode/v1",
+      "registration": "",
+      "get_api_key_url": "https://console.sensenova.cn",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "限时公测免费，1 模型，需实名",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "128K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "SenseChat-Turbo",
+          "name": "SenseChat Turbo",
+          "context": "128K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "baichuan",
+      "name": "Baichuan (百川)",
+      "region": "domestic",
+      "website": "https://www.baichuan-ai.com",
+      "base_url": "https://api.baichuan-ai.com/v1",
+      "registration": "",
+      "get_api_key_url": "https://platform.baichuan-ai.com",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "80 CNY 一次性试用，需实名（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "Baichuan4-Air",
+          "name": "Baichuan4 Air",
+          "context": "32K",
+          "rate_limit": "one-time 80 CNY",
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "monsterapi",
+      "name": "MonsterAPI",
+      "region": "international",
+      "website": "https://monsterapi.ai",
+      "base_url": "https://api.monsterapi.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://monsterapi.ai",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "一次性试用积分，1 模型（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "auto",
+          "name": "MonsterAPI Auto",
+          "context": "32K",
+          "rate_limit": "one-time credits"
+        }
+      ]
+    },
+    {
+      "id": "liquid",
+      "name": "Liquid",
+      "region": "international",
+      "website": "https://www.liquid.ai",
+      "base_url": "https://api.liquid.ai/v1",
+      "registration": "",
+      "get_api_key_url": "https://labs.liquid.ai",
+      "auth_method": "Bearer Token",
+      "auth_header": "Authorization: Bearer {api_key}",
+      "free_tier": "开源模型，1 模型（ToS 状态不明）",
+      "credit_card_required": false,
+      "openai_compatible": true,
+      "max_context": "32K",
+      "free_models_count": 1,
+      "free_models": [
+        {
+          "id": "lfm-40b",
+          "name": "LFM 40B",
+          "context": "32K",
+          "rate_limit": "",
+          "tool_call": true
+        }
+      ]
     }
   ],
   "deprecated": [

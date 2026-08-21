@@ -87,6 +87,23 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+
+   # 旧版（<=0.1.1）是 admin 装到 Program Files 并写 HKLM 卸载项；0.1.2 起改为按用户装到
+   # %LOCALAPPDATA%\Programs（写 HKCU）。两者卸载项 key 相同但 hive 不同，不会互相覆盖。
+   # 检测到旧版残留时提示用户：避免「应用和功能」里出现两个 Switch Dev、以及 Program Files
+   # 下残留旧二进制。仅提示不强制（静默安装 /S 时跳过弹窗）。
+   IfSilent +13
+   SetRegView 64
+   ReadRegStr $0 HKLM "${UNINST_KEY}" "InstallLocation"
+   StrCmp $0 "" done_legacy_check
+   # 旧版 InstallLocation 指向 Program Files 才提示（新安装位置不在 PF，理论上 HKLM 此 key 仅旧版会写）
+   MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL \
+     "检测到旧版本 Switch Dev 安装在：$\r$\n$0$\r$\n$\r$\n旧版为管理员安装（Program Files），与本次按用户安装（%LOCALAPPDATA%\Programs）互不冲突，但「应用和功能」里会同时存在两个卸载项。$\r$\n$\r$\n建议：先点「取消」，到「应用和功能」卸载旧版 Switch Dev，再重新运行本安装器；或点「确定」继续安装（旧版残留需自行卸载清理）。$\r$\n$\r$\n注意：若看到 “Error opening file for writing ...\Program Files\...” 报错，说明你运行的是旧版安装器，请改用本次下载的最新安装包。" \
+     /SD IDOK IDCANCEL abort_install
+   Goto done_legacy_check
+   abort_install:
+     Abort
+   done_legacy_check:
 FunctionEnd
 
 Section

@@ -71,12 +71,17 @@ Switch Dev 只搬运你已有的登录态，**不代注册、不代登录**。�
 
 | 工具 | 安装 | 登录 / 前置条件 |
 |------|------|----------------|
-| **JoyCode** | [官网下载](https://joycode.jd.com) | 客户端扫码登录，确认 JoyCode 内能正常发起对话 |
+| **JoyCode** | [官网下载](https://joycode.jd.com) | 客户端扫码登录，确认 JoyCode 内能正常发起对话；⚠️ **使用时需保持 JoyCode 客户端在线**（见下方说明） |
 | **DevEco Code** | `npm i -g @deveco/deveco-code` | ⚠️ 需先[注册华为开发者账号并完成实名认证](https://developer.huawei.com)，再 `deveco auth login` 登录；确认 DevEco Studio / DevEco Code 内可正常调用模型 |
 | **WorkBuddy** | [官网下载](https://workbuddy.app) | 客户端登录，确认 WorkBuddy 内能正常发起对话 |
 
 > 装一个就能用；四个全装就是「全家桶」。首次启动会自动探测安装状态并引导登录。
 > 若某上游单独使用时就无法调用（未登录、未实名、额度耗尽），Switch Dev 里同样会失败——请先在原工具里排查。
+
+> **JoyCode 特别提示：调用时需保持 JoyCode 官方客户端打开并登录。**
+> JoyCode 的推理网关采用「活跃会话」放行机制：官方客户端运行时会维持一条到京东后端的 WebSocket 长连接（约 25 秒心跳保活），网关据此判定账号有活跃客户端会话才放行 `chat_completions`。
+> 若 JoyCode 客户端未运行，Switch Dev 用本地静态凭据发起的独立请求会被网关拒绝，报 `AI_GRAY_ACCESS_DENIED`（访问受限，请联系管理员开通）。
+> 这不是 Switch Dev 的 bug，也无法通过修改请求绕过——**请在使用 JoyCode 上游时保持其官方客户端在线**；未在线时建议在 auto 降级链中于 JoyCode 之后配置 DevEco 或已验证的免费供应商兜底，避免中断对话。
 
 ### 2. 启动
 

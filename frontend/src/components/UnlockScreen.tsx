@@ -3,10 +3,12 @@ import { ProviderAPIService } from "../../bindings/switchdev/service";
 
 interface Props {
   onUnlocked: () => void;
+  // 自动加密锁死：用户从未设主密码，更新后本机密钥不可用，弹密码框无意义。
+  autoLockout?: boolean;
 }
 
 // 启动锁界面：钥匙串读不到主密码时显示，要求输入主密码解锁。
-export default function UnlockScreen({ onUnlocked }: Props) {
+export default function UnlockScreen({ onUnlocked, autoLockout }: Props) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -21,6 +23,22 @@ export default function UnlockScreen({ onUnlocked }: Props) {
   // 销毁配置二次确认
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+
+  // 自动加密锁死：温和重配（保留供应商列表，仅清空 apiKey）
+  const [reconfiguring, setReconfiguring] = useState(false);
+
+  const doReconfigure = async () => {
+    setReconfiguring(true);
+    setError("");
+    try {
+      await ProviderAPIService.ResetForAutoLockout();
+      onUnlocked(); // 进入空密钥状态，用户逐个重填 API Key
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReconfiguring(false);
+    }
+  };
 
   const doReset = async () => {
     setResetting(true);
@@ -74,6 +92,56 @@ export default function UnlockScreen({ onUnlocked }: Props) {
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
       <div className="w-full max-w-sm p-6 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+        {autoLockout ? (
+          <>
+            <h2 className="text-base font-semibold mb-1">⚠️ 自动加密密钥不可用</h2>
+            <p className="text-xs text-[var(--color-text-dim)] mb-4 leading-relaxed">
+              应用更新后，原本存在系统钥匙串里的随机加密密钥无法读取（你从未设置过主密码，因此没有密码可输入）。
+              <br />
+              供应商列表会被保留，只需在重新配置后为各供应商重新填入 API Key。
+            </p>
+            {error && <p className="text-xs text-[var(--color-danger)] mb-2">{error}</p>}
+            <button
+              onClick={doReconfigure}
+              disabled={reconfiguring}
+              className="w-full px-3 py-2 text-sm rounded-lg bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50"
+            >
+              {reconfiguring ? "重新配置中..." : "重新配置（保留供应商列表）"}
+            </button>
+
+            {!confirmReset ? (
+              <button
+                onClick={() => setConfirmReset(true)}
+                className="w-full mt-2 text-xs text-[var(--color-danger)]/80 hover:text-[var(--color-danger)]"
+              >
+                不再需要这些供应商？销毁现有配置
+              </button>
+            ) : (
+              <div className="mt-3 p-2.5 rounded-md border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/5">
+                <p className="text-xs text-[var(--color-danger)] mb-2 leading-relaxed">
+                  确认销毁？所有已保存的供应商和 API Key 将被永久删除，无法恢复。
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setConfirmReset(false)}
+                    disabled={resetting}
+                    className="flex-1 px-2 py-1.5 text-xs rounded-md bg-[var(--color-surface-2)] hover:bg-[var(--color-border)]"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={doReset}
+                    disabled={resetting}
+                    className="flex-1 px-2 py-1.5 text-xs rounded-md bg-[var(--color-danger)] text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {resetting ? "销毁中..." : "确认销毁"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+        <>
         <h2 className="text-base font-semibold mb-1">🔒 解锁凭据</h2>
         <p className="text-xs text-[var(--color-text-dim)] mb-4">
           本地 API Key 已加密，请输入主密码解锁。
@@ -177,6 +245,8 @@ export default function UnlockScreen({ onUnlocked }: Props) {
               返回
             </button>
           </>
+        )}
+        </>
         )}
       </div>
     </div>

@@ -18,6 +18,18 @@ const UPSTREAM_LABEL: Record<string, string> = {
   workbuddy: "WorkBuddy",
 };
 
+// 运行模式 tab 中，第三方供应商（非内置四上游）的模型不展示「免费」徽章——
+// 它们是用户自带 Key 接入的，后端虽然统一标了 free:true，但对用户没有「免费」语义，
+// 反而与内置免费档混淆。内置上游（joycode/deveco/opencode/workbuddy）保留该标识。
+function stripFreeForProviders(list: UpstreamModels[]): UpstreamModels[] {
+  const BUILTIN = new Set(["joycode", "deveco", "opencode", "workbuddy"]);
+  return list.map((u) =>
+    BUILTIN.has(u.upstream)
+      ? u
+      : { ...u, models: (u.models ?? []).map((m) => ({ ...m, free: false })) }
+  );
+}
+
 type SettingsTab = "general" | "mode" | "pricing" | "update" | "about";
 
 // modeFingerprint 运行模式四字段的规范化指纹，用于判断当前配置是否已偏离所选方案
@@ -118,7 +130,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   const load = async () => {
     // config 用 props 的（App 已提前拉），只拉模型列表（后端有缓存，快）
     const a = await ConfigService.GetAvailableModels();
-    setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null));
+    setAvailable(stripFreeForProviders((a ?? []).filter((x): x is UpstreamModels => x !== null)));
     loadProviderNames();
     loadUaSources();
   };
@@ -158,12 +170,12 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
   useWailsEvent("providerapi:change", () => {
     loadProviderNames();
     ConfigService.RefreshModels()
-      .then((a) => setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null)))
+      .then((a) => setAvailable(stripFreeForProviders((a ?? []).filter((x): x is UpstreamModels => x !== null))))
       .catch(() => {});
   });
   useWailsEvent("cred:change", () => {
     ConfigService.RefreshModels()
-      .then((a) => setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null)))
+      .then((a) => setAvailable(stripFreeForProviders((a ?? []).filter((x): x is UpstreamModels => x !== null))))
       .catch(() => {});
   });
 
@@ -300,7 +312,7 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
     setRefreshingModels(true);
     try {
       const a = await ConfigService.RefreshModels();
-      setAvailable((a ?? []).filter((x): x is UpstreamModels => x !== null));
+      setAvailable(stripFreeForProviders((a ?? []).filter((x): x is UpstreamModels => x !== null)));
       flash("ok", "模型列表已刷新");
     } catch (e) {
       flash("err", `刷新失败: ${e}`);
@@ -1044,8 +1056,8 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
         </div>
         <p className="text-xs text-[var(--color-text-dim)] mb-3">
           {cfg.mode === "ua"
-            ? "ua 模式：根据 User-Agent + 请求模型路由到目标上游，未命中走 UA 兜底。"
-            : "auto/manual 叠加层：根据 User-Agent 将特定模型名路由到指定上游，匹配成功时优先走目标模型，失败后仍按当前模式降级。"}
+            ? "ua 模式：根据 User-Agent 分流。命中具体 mapping 用映射目标，否则走该规则的「默认目标」，最后才用 UA 兜底。"
+            : "auto/manual 叠加层：根据 User-Agent 分流。命中具体 mapping 用映射目标，否则走该规则的「默认目标」，最后回退正常降级链。"}
         </p>
 
         <div className="space-y-3">
@@ -1083,6 +1095,54 @@ export default function Settings({ creds, config }: { creds: AllCredStatus | nul
                   >
                     ✕
                   </ConfirmPopover>
+                </div>
+
+                {/* 规则级默认目标：UA 命中但未命中具体 mapping 时整 UA 路由到此（免维护模型清单） */}
+                <div className="flex items-center gap-2 flex-wrap ml-6 mb-2 text-xs">
+                  <span className="text-[var(--color-text-dim)] shrink-0">默认目标</span>
+                  {(() => {
+                    const dt = rule.defaultTarget ?? ({} as ModelRef);
+                    const has = !!(dt.upstream && dt.model);
+                    const dispUp = has ? dt.upstream : validUpstreams[0]?.upstream || "";
+                    const models = validUpstreams.find((u) => u.upstream === dispUp)?.models ?? [];
+                    const dispModel = has ? dt.model : models[0]?.id || "";
+                    return (
+                      <>
+                        <select
+                          value={dispUp}
+                          onChange={(e) => {
+                            const first = validUpstreams.find((u) => u.upstream === e.target.value)?.models[0];
+                            updateUaRule(rule.id, { defaultTarget: { upstream: e.target.value, model: first?.id ?? "" } as ModelRef });
+                          }}
+                          className="px-2 py-1 text-xs rounded-md bg-[var(--color-surface-2)] border border-[var(--color-border)]"
+                        >
+                          {validUpstreams.length === 0 && <option value="">无可用凭据</option>}
+                          {validUpstreams.map((u) => (
+                            <option key={u.upstream} value={u.upstream}>{labelOf(u.upstream)}</option>
+                          ))}
+                        </select>
+                        <ModelSelect
+                          options={models}
+                          value={dispModel}
+                          onChange={(id) => updateUaRule(rule.id, { defaultTarget: { upstream: dispUp, model: id } as ModelRef })}
+                          placeholder="目标模型..."
+                          className="w-48"
+                        />
+                        {has && (
+                          <button
+                            onClick={() => updateUaRule(rule.id, { defaultTarget: undefined })}
+                            title="清除默认目标（回退 UA 全局兜底）"
+                            className="w-5 h-5 rounded hover:bg-[var(--color-danger)]/20 text-[var(--color-danger)]"
+                          >
+                            ✕
+                          </button>
+                        )}
+                        {!has && (
+                          <span className="text-[var(--color-text-dim)]">（未设置，未命中 mapping 时走 UA 兜底）</span>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* 映射列表 */}

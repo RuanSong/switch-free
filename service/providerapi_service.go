@@ -678,6 +678,17 @@ func (s *ProviderAPIService) ResetVault() error {
 	return nil
 }
 
+// ResetForAutoLockout 自动加密锁死时的温和自愈：保留供应商列表，清空 apiKey 重新初始化。
+// 仅在从未设主密码且自动解锁全失败时可用，成功后进入空密钥状态让用户重填 Key。
+func (s *ProviderAPIService) ResetForAutoLockout() error {
+	if err := s.mgr.ResetForAutoLockout(); err != nil {
+		return err
+	}
+	go s.refresh()
+	s.emitProviderChange()
+	return nil
+}
+
 // GetBonusProviders 获取注册送 token 的供应商列表（远程优先，回退本地）
 func (s *ProviderAPIService) GetBonusProviders() ([]providerapi.BonusProvider, error) {
 	return providerapi.FetchBonusProviders()

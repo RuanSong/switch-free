@@ -11,12 +11,12 @@ import (
 
 // ProviderModel 单个免费模型（模型级 verified/healthy 状态，支持逐个评测 + 健康监控）
 type ProviderModel struct {
-	ID         string  `json:"id"`         // 原始 model id（如 "llama-3.3-70b"）
-	Context    int     `json:"context"`    // 上下文窗口
-	Verified   bool    `json:"verified"`   // 是否评测通过（未通过不参与路由）
-	Healthy    bool    `json:"healthy"`    // 后台监控状态（每 5 分钟探测；false=权重降级）
-	FailCount  int     `json:"failCount"`  // 连续失败次数（监控用）
-	TPS        float64 `json:"tps"`        // 最近一次评测的输出速度（tok/s）
+	ID        string  `json:"id"`        // 原始 model id（如 "llama-3.3-70b"）
+	Context   int     `json:"context"`   // 上下文窗口
+	Verified  bool    `json:"verified"`  // 是否评测通过（未通过不参与路由）
+	Healthy   bool    `json:"healthy"`   // 后台监控状态（每 5 分钟探测；false=权重降级）
+	FailCount int     `json:"failCount"` // 连续失败次数（监控用）
+	TPS       float64 `json:"tps"`       // 最近一次评测的输出速度（tok/s）
 }
 
 // ProviderConfig 单个免费 API 供应商配置
@@ -64,11 +64,12 @@ type Config struct {
 
 // onDiskFile 是落盘结构（v2）：apiKey 字段加密
 type onDiskFile struct {
-	Version    int                       `json:"version"`
-	MasterSet  bool                      `json:"masterSet,omitempty"` // 用户是否主动设置了主密码（false=自动加密，随机密码存钥匙串）
-	KDF        *kdfParams                `json:"kdf,omitempty"`
-	WrappedDEK *sealed                   `json:"wrappedDEK,omitempty"`
-	Recovery   *recoveryBlob             `json:"recovery,omitempty"`
+	Version    int                        `json:"version"`
+	MasterSet  bool                       `json:"masterSet,omitempty"` // 用户是否主动设置了主密码（false=自动加密，随机密码存钥匙串）
+	KDF        *kdfParams                 `json:"kdf,omitempty"`
+	WrappedDEK *sealed                    `json:"wrappedDEK,omitempty"`
+	Recovery   *recoveryBlob              `json:"recovery,omitempty"`
+	Machine    *machineWrap               `json:"machine,omitempty"` // 机器码包裹层（无密码解锁的抗自更新兜底；omitempty 向后兼容）
 	Providers  map[string]*onDiskProvider `json:"providers"`
 }
 
@@ -101,17 +102,18 @@ type onDiskProvider struct {
 
 // Manager 免费 API 配置管理器（线程安全）
 type Manager struct {
-	mu       sync.RWMutex
-	config   *Config
-	path     string
-	dek      []byte // 数据密钥（解锁后非空）；nil 表示未解锁
-	kdfSalt  []byte
+	mu      sync.RWMutex
+	config  *Config
+	path    string
+	dek     []byte // 数据密钥（解锁后非空）；nil 表示未解锁
+	kdfSalt []byte
 	// 密钥封装元数据（解锁/初始化后常驻内存，Save 时写入文件头）
-	kdfMeta        *kdfParams
-	wrappedDEK     *sealed
-	recoveryMeta   *recoveryBlob
-	masterSet      bool // 用户是否主动设置了主密码（false=自动加密，随机密码存钥匙串）
-	uiLocked       bool // UI 层锁定：前端显示解锁界面，不影响代理调用
+	kdfMeta      *kdfParams
+	wrappedDEK   *sealed
+	recoveryMeta *recoveryBlob
+	machineWrap  *machineWrap // 机器码包裹层（DEK 的另一份包裹，允许无密码解锁时存在）
+	masterSet    bool         // 用户是否主动设置了主密码（false=自动加密，随机密码存钥匙串）
+	uiLocked     bool         // UI 层锁定：前端显示解锁界面，不影响代理调用
 }
 
 // NewManager 创建并加载配置（文件不存在时用空配置）。

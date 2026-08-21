@@ -321,6 +321,12 @@ export class LocksetInfo {
      */
     "remembered": boolean;
 
+    /**
+     * AutoLockout 自动加密模式（masterSet=false）下所有无密码解锁路径都失败：
+     * 用户从未设过主密码，弹密码框无意义。前端据此显示「重新配置」自愈入口。
+     */
+    "autoLockout": boolean;
+
     /** Creates a new LocksetInfo instance. */
     constructor($$source: Partial<LocksetInfo> = {}) {
         if (!("isSet" in $$source)) {
@@ -337,6 +343,9 @@ export class LocksetInfo {
         }
         if (!("remembered" in $$source)) {
             this["remembered"] = false;
+        }
+        if (!("autoLockout" in $$source)) {
+            this["autoLockout"] = false;
         }
 
         Object.assign(this, $$source);

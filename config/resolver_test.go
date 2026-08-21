@@ -168,3 +168,72 @@ func TestUpstreamEnabledPersists(t *testing.T) {
 		t.Fatal("持久化失败：重载后 workbuddy 开关丢失")
 	}
 }
+
+// TestUARuleDefaultTarget 路A：UA 命中但请求模型未命中任何 mapping 时，
+// 整 UA 路由到规则级默认目标（cc-switch 式，免维护客户端模型清单）。
+func TestUARuleDefaultTarget(t *testing.T) {
+	c := newResolveConfig()
+	c.Mode = "ua"
+	c.UAGlobalFallback = proxy.ModelRef{Upstream: "workbuddy", Model: "wb/glm-5.0"}
+	c.UARules = []UARule{
+		{
+			ID:      "ua-cc",
+			Name:    "Claude Code",
+			Pattern: "claude-cli",
+			Enabled: true,
+			// 只映射 opus，sonnet/haiku 走默认目标
+			Mappings: []UAModelMap{
+				{RequestedModel: "claude-opus-4-8", Target: proxy.ModelRef{Upstream: "joycode", Model: "JoyAI-Code-1.5"}},
+			},
+			DefaultTarget: proxy.ModelRef{Upstream: "deveco", Model: "glm-5.1"},
+		},
+	}
+
+	// 1. 命中具体 mapping：优先用映射目标
+	chain := c.Resolve("claude-opus-4-8", "claude-cli/1.0.0")
+	got := refs(chain)
+	if got[0] != [2]string{"joycode", "JoyAI-Code-1.5"} {
+		t.Fatalf("应命中 mapping 目标 joycode/JoyAI-Code-1.5，实际 %v", got)
+	}
+
+	// 2. UA 命中但模型未命中 mapping：路由到规则默认目标，UA 全局兜底殿后
+	chain = c.Resolve("claude-sonnet-4-6", "claude-cli/1.0.0")
+	got = refs(chain)
+	if got[0] != [2]string{"deveco", "glm-5.1"} {
+		t.Fatalf("未命中 mapping 应走默认目标 deveco/glm-5.1，实际 %v", got)
+	}
+	if got[len(got)-1] != [2]string{"workbuddy", "wb/glm-5.0"} {
+		t.Fatalf("UA 全局兜底应殿后，实际 %v", got)
+	}
+
+	// 3. 规则无默认目标：直接落到 UA 全局兜底
+	c.UARules[0].DefaultTarget = proxy.ModelRef{}
+	chain = c.Resolve("claude-sonnet-4-6", "claude-cli/1.0.0")
+	got = refs(chain)
+	if len(got) != 1 || got[0] != [2]string{"workbuddy", "wb/glm-5.0"} {
+		t.Fatalf("无默认目标应只走 UA 全局兜底，实际 %v", got)
+	}
+}
+
+// TestCloneIsolatesUARuleDefaultTarget Clone/copyUARules 必须拷贝 DefaultTarget，
+// 否则编辑克隆会丢字段（Clone 是手写逐字段的）。
+func TestCloneIsolatesUARuleDefaultTarget(t *testing.T) {
+	c := newResolveConfig()
+	c.UARules = []UARule{
+		{
+			ID:            "ua-cc",
+			Pattern:       "claude-cli",
+			Enabled:       true,
+			DefaultTarget: proxy.ModelRef{Upstream: "deveco", Model: "glm-5.1"},
+		},
+	}
+	cp := c.Clone()
+	if cp.UARules[0].DefaultTarget.Upstream != "deveco" || cp.UARules[0].DefaultTarget.Model != "glm-5.1" {
+		t.Fatalf("Clone 丢失 DefaultTarget: %+v", cp.UARules[0].DefaultTarget)
+	}
+	// 改克隆不影响原对象
+	cp.UARules[0].DefaultTarget = proxy.ModelRef{Upstream: "joycode", Model: "JoyAI-Code-1.5"}
+	if c.UARules[0].DefaultTarget.Upstream != "deveco" {
+		t.Fatal("Clone 未隔离：改克隆的 DefaultTarget 影响了原配置")
+	}
+}

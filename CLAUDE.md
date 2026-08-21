@@ -1,18 +1,25 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Switch Dev (Wails v3 版)
 
 ## 项目性质
-把 JoyCode/DevEco/OpenCode/WorkBuddy 四套 AI 编程工具的模型能力，通过本地代理暴露为标准 Anthropic/OpenAI 接口，供 Claude Code/cc-switch 复用。带 Wails v3 桌面 GUI。
+把 JoyCode/DevEco/OpenCode/WorkBuddy 四套 AI 编程工具的登录态模型能力，外加可接入的第三方 OpenAI/Anthropic 兼容供应商（免费 API / 自带 Key），通过本地代理暴露为标准 Anthropic/OpenAI 接口，供 Claude Code/Codex/cc-switch 复用。带 Wails v3 桌面 GUI。
 
 ## 关键架构
 - 代理 HTTP 服务独立运行在 `127.0.0.1:8787`（`proxy.Server`），与 Wails 窗口共存
 - 四上游统一实现 `upstream.Upstream` 接口（Call/VerifyCreds/EnsureCreds/InvalidateCreds/CredStatus）
 - 凭据动态读取，不硬编码：JoyCode 从 state.vscdb（用 `modernc.org/sqlite` 纯 Go 驱动，无需外部 sqlite3 CLI），DevEco 三层 AES-256-GCM 解密，OpenCode 明文 auth.json，WorkBuddy 明文 info + refreshToken 续期
 - 凭据路径跨平台解析（`paths.*Candidates()`，单一真相）：macOS `~/Library/Application Support`、Linux `~/.config`、Windows `%APPDATA%`；`IsAgentInstalled` 探测与 `EnsureCreds` 加载共用同一套候选路径，环境变量 `JOYCODE_VSCDB`/`WORKBUDDY_INFO_PATH`/`OPENCODE_AUTH_PATH` 等可覆盖
-- 运行模式分 auto / manual，降级链均可通过前端 Settings 自由配置
-- auto 模式：`Config.AutoChain []AgentModels` 按优先级排列，每个 AgentModels 按 upstream 分组包含模型列表；`expandAutoChain()` 扁平化为 `[]ModelRef` 执行，末尾追加 `GlobalFallback`（去重）
-- manual 模式：`Config.ManualFallbacks map[string][]ModelRef` 为每个模型单独配降级链，`expandManual()` 解析请求模型 → 查链 → 追加 GlobalFallback
-- 全局兜底：`Config.GlobalFallback ModelRef`，两种模式共享，所有链都失败时的最终保底
-- 方案（Preset）：`Config.Presets []Preset` + `Config.ActivePreset string`，把运行模式四字段（mode/autoChain/manualFallbacks/globalFallback）存为命名**快照**
+- 运行模式分 auto / manual / ua 三种，均可通过前端 Settings 自由配置
+- auto 模式：`Config.AutoChain []AgentModels` 按优先级排列，每个 AgentModels 按 upstream 分组包含模型列表；`expandAutoChain()` 扁平化为 `[]ModelRef` 执行，末尾追加 `GlobalFallback`（去重）；客户端发任意具体模型名也按此链执行（不再按模型名硬路由）
+- manual 模式：`Config.ManualFallbacks map[string][]ModelRef` 为每个模型单独配降级链，`expandManual()` 解析请求模型 → 查链 → 追加 GlobalFallback；未识别的模型名直接落到 GlobalFallback
+- ua 模式：完全由 User-Agent 规则驱动，不叠加 auto/manual 链。`Config.UARules []UARule` 按 UA 子串匹配，命中规则后：先匹配 `Mappings`（请求模型精确映射），未命中则用规则级 `DefaultTarget`（cc-switch 式默认目标，请求模型 id 原样透传，免维护客户端模型清单），整条链末尾追加 `UAGlobalFallback`
+  - auto/manual 模式下 UA 路由是叠加层（`UARoutingEnabled` 开关）：UA 命中时把目标插链首，正常降级链追加在后兜底；ua 模式下 UA 路由始终启用
+  - `UARule{ID,Name,Pattern,Enabled,Mappings,DefaultTarget}`、`UAModelMap{RequestedModel,Target}`、`UAGlobalFallback` 都属于方案快照字段（随 Preset 保存/切换）
+- 全局兜底：`Config.GlobalFallback ModelRef`，auto/manual 共享，所有链都失败时的最终保底；`UAGlobalFallback` 是 ua 模式专用兜底
+- 方案（Preset）：`Config.Presets []Preset` + `Config.ActivePreset string`，把运行模式路由字段（mode/autoChain/manualFallbacks/globalFallback/uaRoutingEnabled/uaRules/uaGlobalFallback）存为命名**快照**
   - 快照语义：保存冻结当前配置，切换覆盖回当前配置；切换后继续编辑**不回写方案**，需再次同名保存才更新
   - 方案**不含** port/apiKey/update（环境配置；apiKey 变了会让已接入客户端 401）
   - `ActivePreset` 仅作 UI 提示、不参与 `Resolve`；前端检测到当前配置偏离方案时置空（下拉显示「自定义」）
@@ -20,21 +27,32 @@
   - Manager 的 `SavePreset/ApplyPreset/DeletePreset/RenamePreset` 一律走 `Get()` 取克隆 → 改 → `SaveConfig`；**不能自己持锁再调 SaveConfig**（后者会 `m.mu.Lock()`，死锁）
   - 前端偏离检测的指纹（`Settings.tsx: modeFingerprint`）必须规范化：manualFallbacks 是 map，Go 序列化排序 key 而前端新增是插入顺序，直接 `JSON.stringify` 会把内容相同的误判为偏离；同时要归一 Go 空 slice 的 `null`
 - 降级执行：`router.executeChain` / `executeChainStream` 逐个尝试，跳过凭据无效的 upstream，任意成功即返回
-- 默认 auto 链为空（用户自行配置）；旧版硬编码的 DevEco→JoyCode 降级已废弃（`models.go` 中 `AutoModel`/`AutoModelJoyCodeFallback` 常量为遗留残留）
-- **改 `Config` 结构必须同步三处**：`Defaults()` / `Clone()` / `Update()` —— `Clone()` 是手写逐字段的，漏了新字段会静默丢数据（`config/preset_test.go: TestCloneIsolatesPresets` 守这条）
+- 默认 auto 链为空（用户自行配置）；旧版硬编码的 DevEco→JoyCode 降级及 `AutoModel*` 常量已移除
+- **改 `Config` 结构必须同步三处**：`Defaults()` / `Clone()` / `Update()` —— `Clone()` 与 `copyUARules()`/`copyChain()`/`copyFallbacks()` 都是手写逐字段的，漏了新字段会静默丢数据（`config/preset_test.go: TestCloneIsolatesPresets`、`resolver_test.go: TestCloneIsolatesUARuleDefaultTarget` 守这条）
 - 上游统一非流式；下游要流式时代理把完整响应拆成 SSE（伪流式）
 - **WorkBuddy 例外**：上游强制 stream:true（非流式返回 `code:11101`），`Call` 内部读 SSE 流经 `aggregateOpenAISSE` 聚合成完整 OpenAIResponse JSON，对上层透明，复用非流式处理逻辑
 - 模型 id 隔离：WorkBuddy 模型用 `wb/` 前缀（如 `wb/glm-5.0`），避免与 DevEco 的 glm-5.1 重名；`ResolveUpstream` 识别前缀路由，发上游前 `stripWbPrefix` 还原
 - service.Core 实现 proxy.EventLogger，记录日志 + 通过 `application.Get().Event.Emit` 推送事件到前端
 
-## 构建
+## 构建与测试
 ```bash
-wails3 build          # 产物 bin/switch-dev
-wails3 dev            # 开发热重载
-wails3 task build:server  # 无 GUI 服务模式
-make build-binaries V=x.y.z  # 构建全平台裸二进制到 dist/（发布/自动更新用）
+wails3 dev                    # 开发热重载（前端 + Go 一起）
+wails3 build                  # 桌面产物 bin/switch-dev
+wails3 task build:server      # 无 GUI 纯服务模式（产物 bin/switch-dev-server）
+make build-binaries V=x.y.z   # 全平台裸二进制到 dist/（发布/自动更新用）
+make test                     # = go test ./...（注意会编译 build/ios 模板目录，其 "main undeclared" 报错可忽略）
+go test ./config/... -run TestUARuleDefaultTarget -v   # 跑单个包/单个测试
+gofmt -w <file>.go            # 或 make fmt（排除 frontend/node_modules 与 bindings）
+(cd frontend && npx tsc --noEmit)   # 前端类型检查；UI 改动后务必跑
 ```
-改了 Go service 签名后需重新生成绑定：`wails3 generate bindings -ts -d frontend/bindings ./...`
+改了 Go service 签名/结构体后需重新生成前端绑定：`wails3 generate bindings -ts -d frontend/bindings ./...`（生成的 `frontend/bindings/**` 勿手改）。
+前端是 React + TS + Tailwind v4（包管理器 npm，`frontend/package.json`），通过 Wails 生成的 bindings 调用后端 service。
+
+## 其它核心子系统
+- **providerapi（第三方供应商 + 凭据保险库）**：`providerapi/`。接入任意 OpenAI/Anthropic 兼容 API；`vault.go` 用 argon2id 派生 KEK + AES-256-GCM 加密 API Key 落 `credentials.json`，未设主密码时随机 DEK 存入系统钥匙串（`keystore/`）无感解锁；支持主密码 + 24 位恢复码、闲置锁定、`.sds` 加密分享文件（`share.go`）；`monitor.go` 每 5 分钟后台健康探测，不健康模型在降级链中自动降权。供应商 id 形如目录 slug（`groq`）或 `custom-xxxxxx`，由本子系统动态管理，config 层无法静态枚举——故 `config.isValidUpstream` 对非内置四上游的非空 id 一律放行，运行时 `pickUpstream` 找不到则安全跳过。
+- **db（SQLite 持久化，modernc.org/sqlite 纯 Go 驱动）**：`db/`。`db.Open()` 打开 `switch-dev.db`，`migrate.go` 建表。日志 `logs` 与统计 `usage_stats`（按小时桶聚合，`usagestats.go`，清空 logs 不影响统计）解耦；另有 `modelstore`/`sourcestore`/`upstreamstore` 做维度归一。日志写入走异步：`proxy.Server.recordLog -> service.Core.RecordLog -> db.InsertLog + UpsertUsageStat`。
+- **上游开关**：`Config.Upstreams map[string]UpstreamSettings`（key=upstream/provider id，缺省视为启用，保证升级非破坏）。停用时该上游下所有模型在 `executeChain*` 中被直接跳过；`IsUpstreamEnabled()` 线程安全读取。
+- **autostart / relaunch / logfile / pricing**：`autostart/` 跨平台开机自启（macOS LaunchAgent、Windows 注册表、Linux XDG）；`relaunch_{darwin,linux,windows}.go` 自更新后用 `setsid` 等方式脱离进程组重启新进程；`logfile/` 把控制台日志按天落地 + gzip 轮转；`pricing/` 内置费率库 + 估算费用。
 
 ## 自动更新机制
 - 版本号来源：`build/config.yml` 的 `info.version`，构建时 `make sync-version` 同步到 `version/config.yml`（Go embed 读取）
@@ -86,12 +104,12 @@ deploy 链：`build-binaries -> dist -> push -> tag -> release -> upload`
 ## 降级链关键文件
 | 文件 | 职责 |
 |---|---|
-| `config/config.go` | Config 数据结构（AutoChain/ManualFallbacks/GlobalFallback/Presets）、默认值、Validate 校验、加载/保存、copyChain/copyFallbacks 深拷贝助手 |
-| `config/resolver.go` | Resolve/expandAutoChain/expandManual — 降级链展开逻辑 |
+| `config/config.go` | Config 数据结构（AutoChain/ManualFallbacks/GlobalFallback/UARules/UAGlobalFallback/Upstreams/Presets）、默认值、Validate 校验、加载/保存、copyChain/copyFallbacks/copyUARules 深拷贝助手 |
+| `config/resolver.go` | Resolve — 按模式分派；expandAutoChain/expandManual/expandUALocked 链展开；matchUARule（UA 子串匹配 → Mappings 精确映射 → DefaultTarget 默认目标） |
 | `config/manager.go` | Manager 线程安全包装、SaveConfig/ResetConfig、方案 CRUD（SavePreset/ApplyPreset/DeletePreset/RenamePreset） |
-| `config/preset_test.go` | 方案快照语义测试（快照不被后续编辑污染、Clone 隔离、持久化、重命名撞名） |
-| `proxy/router.go` | executeChain/executeChainStream — 降级链遍历执行、ModelRef/ConfigResolver 定义 |
-| `proxy/models.go` | ResolveModel/ResolveUpstream — 模型名解析、AutoModel 常量（遗留） |
+| `config/*_test.go` | 方案快照语义、Clone 隔离、UA 默认目标解析等守卫测试 |
+| `proxy/router.go` | executeChain/executeChainStream — 降级链遍历执行、ModelRef/ConfigResolver 定义、上游错误友好归类 |
+| `proxy/models.go` | ResolveModel/ResolveUpstream — 模型名解析、`wb/` 前缀路由 |
 | `service/config_service.go` | 前端-后端桥接，SaveConfig/GetConfig/GetAvailableModels + 四个方案方法 |
-| `frontend/src/components/Settings.tsx` | 降级链编辑 UI（auto 链拖排、手动降级链、全局兜底选择器）、配置项改动自动保存（debounce 600ms）、偏离检测 |
+| `frontend/src/components/Settings.tsx` | 降级链编辑 UI（auto 链、手动降级链、UA 规则含默认目标、兜底选择器）、配置项改动自动保存（debounce 600ms）、`modeFingerprint` 偏离检测、完整配置 JSON 实时预览 |
 | `frontend/src/components/PresetSwitcher.tsx` | 方案下拉（切换/重命名/删除）+ 保存方案弹窗 |

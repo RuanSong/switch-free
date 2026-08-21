@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +62,14 @@ var mainWindow *application.WebviewWindow
 var systemTray *application.SystemTray
 
 func main() {
+	// 自动更新重启：新进程带 --wait-for-pid=<oldpid> 启动时，先等旧进程完全退出
+	// （释放单实例锁/端口），再继续初始化。必须放在所有副作用之前，避免与旧进程冲突。
+	for _, a := range os.Args[1:] {
+		if strings.HasPrefix(a, "--wait-for-pid=") {
+			waitForProcessExit(a[len("--wait-for-pid="):], 15*time.Second)
+		}
+	}
+
 	// 开机自启以 --tray 启动：窗口创建后即隐藏，静默驻留托盘。
 	startHidden := false
 	for _, a := range os.Args[1:] {
@@ -183,6 +193,21 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
+		// 单实例：重复启动不再开第二个进程，改为激活已有窗口。
+		// Windows 用命名 Mutex、macOS 用 flock 锁文件、Linux 用 D-Bus；
+		// 第二实例在 application.New() 内通知第一实例后自行退出。
+		// 注意 mainWindow 在回调触发时（第二实例启动发生在本实例窗口创建之后）已赋值。
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "com.switchdev.app",
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				log.Printf("检测到重复启动，激活已有窗口（args=%v）", data.Args)
+				if mainWindow != nil {
+					mainWindow.Show()
+					mainWindow.UnMinimise()
+					mainWindow.Focus()
+				}
+			},
+		},
 		// 拦截退出请求：仅托盘「退出」(realQuit=true) 放行；
 		// Dock 右键退出 / Cmd+Q 改为隐藏窗口到托盘
 		ShouldQuit: func() bool {
@@ -207,7 +232,7 @@ func main() {
 		MinWidth:         800,
 		MinHeight:        600,
 		BackgroundColour: application.NewRGB(15, 23, 42), // 深色背景
-		Hidden:           startHidden,                   // --tray 开机自启时静默到托盘
+		Hidden:           startHidden,                    // --tray 开机自启时静默到托盘
 		URL:              "/",
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
@@ -284,13 +309,17 @@ func relaunchForUpdate(server *proxy.Server, app *application.App) {
 	if err != nil {
 		log.Printf("⚠️ 更新重启：无法获取可执行路径: %v", err)
 	} else {
-		// 剥离 --tray：更新是用户主动触发的，重启后显示主窗口，而非静默托盘
-		args := make([]string, 0, len(os.Args)-1)
+		// 剥离 --tray（更新是用户主动触发的，重启后显示主窗口）和任何旧的
+		// --wait-for-pid（链式重启不应继承），再追加当前 PID：新进程会在 main()
+		// 开头等本进程退出、释放单实例锁后再初始化，避免被当成"第二实例"自杀。
+		args := make([]string, 0, len(os.Args))
 		for _, a := range os.Args[1:] {
-			if a != "--tray" {
-				args = append(args, a)
+			if a == "--tray" || strings.HasPrefix(a, "--wait-for-pid=") {
+				continue
 			}
+			args = append(args, a)
 		}
+		args = append(args, "--wait-for-pid="+strconv.Itoa(os.Getpid()))
 		// 用平台相关方式启动并脱离当前进程组，否则 app.Quit() 会把子进程一起带走
 		if err := startNewInstance(exe, args); err != nil {
 			log.Printf("⚠️ 更新重启：启动新进程失败: %v", err)

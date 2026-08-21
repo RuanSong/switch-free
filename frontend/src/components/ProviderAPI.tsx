@@ -80,6 +80,7 @@ export default function ProviderAPI() {
 
   // 安全：启动锁 + 设置
   const [locked, setLocked] = useState(false);
+  const [autoLockout, setAutoLockout] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   // 通用配置（是否进入编辑时自动拉取并测评模型）
   const [autoBenchOnEdit, setAutoBenchOnEdit] = useState(false);
@@ -128,6 +129,13 @@ export default function ProviderAPI() {
     try {
       const info = await ProviderAPIService.GetLockStatus();
       setHasMaster(!!info?.masterSet);
+      // 自动加密锁死（更新后随机密钥丢失）：走专门的「重新配置」界面，不弹密码框。
+      if (info?.autoLockout) {
+        setAutoLockout(true);
+        setLocked(true);
+        return;
+      }
+      setAutoLockout(false);
       if (info?.isLocked && info?.remembered) {
         // 钥匙串记住密码：尝试自动解锁，成功则无感进入
         const ok = await ProviderAPIService.TryAutoUnlock();
@@ -984,7 +992,9 @@ export default function ProviderAPI() {
   if (locked) {
     return (
       <UnlockScreen
+        autoLockout={autoLockout}
         onUnlocked={() => {
+          setAutoLockout(false);
           checkLock();
           load();
         }}

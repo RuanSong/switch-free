@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,31 +54,27 @@ func (m *Manager) loadV2(disk *onDiskFile) error {
 	if disk.WrappedDEK == nil {
 		return errors.New("加密配置缺少 wrappedDEK")
 	}
-	// 尝试用记住的主密码自动解锁。keystore.Recover 以钥匙串为主、文件副本兜底，
-	// 用「能否解开 DEK」作为校验：任一副本正确即返回，且若是文件副本正确会回填钥匙串自愈。
-	// 注意：任何副本解不开都【不删除】——自动加密模式下记住的密码是唯一凭证，
-	// 删除会导致磁盘密文永久无法解开（历史上曾因此造成凭据丢失）。
-	if disk.KDF != nil {
-		mp := keystore.Recover(keystore.Account, func(pw string) bool {
-			_, err := m.unwrapDEK(pw, disk.KDF, disk.WrappedDEK)
-			return err == nil
-		})
-		if mp != "" {
-			if dek, err := m.unwrapDEK(mp, disk.KDF, disk.WrappedDEK); err == nil {
-				m.mu.Lock()
-				m.dek = dek
-				m.kdfSalt, _ = base64.StdEncoding.DecodeString(disk.KDF.Salt)
-				m.kdfMeta = disk.KDF
-				m.wrappedDEK = disk.WrappedDEK
-				m.recoveryMeta = disk.Recovery
-				m.masterSet = disk.MasterSet || disk.Recovery != nil
-				m.config = m.decryptConfig(disk)
-				m.uiLocked = false
-				m.mu.Unlock()
-				return nil
-			}
-		}
+
+	// 依次尝试「机器包裹」和「钥匙串记住的主密码」自动解锁。
+	// 机器包裹不依赖系统钥匙串/DPAPI，因此不受 macOS 自更新后二进制签名变化导致
+	// 钥匙串 ACL 失效的影响，是抗自更新锁死的主路径。
+	// 任何副本解不开都【不删除】——自动加密模式下记住的密码是唯一凭证，删除会导致
+	// 磁盘密文永久无法解开（历史上曾因此造成凭据丢失）。
+	dek, via, err := m.unlockFromDisk(disk)
+	if err == nil {
+		m.mu.Lock()
+		m.installUnlockedLocked(disk, dek)
+		m.config = m.decryptConfig(disk)
+		m.uiLocked = false
+		m.machineWrap = disk.Machine
+		m.mu.Unlock()
+		log.Printf("[providerapi] 自动解锁成功 via=%s", via)
+		// 解锁成功后 best-effort 补/刷新机器包裹（老文件无 machine，或换机后机器码变了）。
+		m.ensureMachineWrap(disk, via)
+		return nil
 	}
+	log.Printf("[providerapi] 自动解锁失败: %v", err)
+
 	// 未能自动解锁：保留磁盘上的加密元数据，但仍加载供应商的明文元数据
 	// （id/名称/baseURL/模型列表/verified 等在磁盘上本就是明文，仅 apiKey 加密），
 	// 这样锁定状态下也能列出/选择模型，只是没有 apiKey 无法真正发起调用。
@@ -86,12 +83,129 @@ func (m *Manager) loadV2(disk *onDiskFile) error {
 	m.kdfMeta = disk.KDF
 	m.wrappedDEK = disk.WrappedDEK
 	m.recoveryMeta = disk.Recovery
+	m.machineWrap = disk.Machine
 	m.masterSet = disk.MasterSet || disk.Recovery != nil
 	m.dek = nil
 	m.uiLocked = true
 	m.config = m.decryptConfig(disk) // dek==nil：元数据照常填充，apiKey 留空
 	m.mu.Unlock()
 	return nil
+}
+
+// installUnlockedLocked 在已解出 DEK 后，把磁盘上的密钥元数据装载进 Manager 常驻字段。
+// 调用方必须持 m.mu。
+func (m *Manager) installUnlockedLocked(disk *onDiskFile, dek []byte) {
+	m.dek = dek
+	if disk.KDF != nil {
+		m.kdfSalt, _ = base64.StdEncoding.DecodeString(disk.KDF.Salt)
+	}
+	m.kdfMeta = disk.KDF
+	m.wrappedDEK = disk.WrappedDEK
+	m.recoveryMeta = disk.Recovery
+	m.masterSet = disk.MasterSet || disk.Recovery != nil
+}
+
+// unlockFromDisk 按「机器包裹 → 钥匙串记住的主密码」顺序尝试解开 DEK。
+// 成功返回 DEK 及使用的路径（"machine" / "keystore"）；两者都失败返回 error。
+func (m *Manager) unlockFromDisk(disk *onDiskFile) ([]byte, string, error) {
+	// 1. 机器包裹
+	if disk.Machine != nil {
+		if id, err := machineID(); err == nil && id != "" {
+			if dek, err := openMachineWrap(disk.Machine, id); err == nil {
+				return dek, "machine", nil
+			} else {
+				log.Printf("[providerapi] 机器包裹解锁失败（可能换机/重装）: %v", err)
+			}
+		} else {
+			log.Printf("[providerapi] 机器码不可用，跳过机器包裹: %v", err)
+		}
+	}
+	// 2. 钥匙串记住的主密码（keystore.Recover 以钥匙串为主、文件副本兜底，
+	//    用「能否解开 DEK」作校验，正确副本会双向自愈）。
+	if disk.KDF != nil {
+		mp := keystore.Recover(keystore.Account, func(pw string) bool {
+			_, err := m.unwrapDEK(pw, disk.KDF, disk.WrappedDEK)
+			return err == nil
+		})
+		if mp != "" {
+			if dek, err := m.unwrapDEK(mp, disk.KDF, disk.WrappedDEK); err == nil {
+				return dek, "keystore", nil
+			}
+		}
+	}
+	return nil, "", errors.New("机器包裹与记住的密码均不可用")
+}
+
+// shouldHaveMachineWrap 在当前内存状态下是否应保留机器包裹：
+// 自动加密（masterSet=false）或钥匙串里有记住的主密码时，本就允许无密码解锁，
+// 机器包裹与之同信任边界；否则（用户显式设主密码且不记住）不应有机器包裹。
+// 调用方持 m.mu。
+func (m *Manager) shouldHaveMachineWrap() bool {
+	if !m.masterSet {
+		return true
+	}
+	if mp, err := keystore.Get(keystore.Account); err == nil && mp != "" {
+		return true
+	}
+	return false
+}
+
+// ensureMachineWrap 在成功解锁后 best-effort 补建/刷新/移除机器包裹并落盘。
+// 失败只记日志，不影响本次解锁结果。
+func (m *Manager) ensureMachineWrap(disk *onDiskFile, via string) {
+	m.mu.Lock()
+	want := m.shouldHaveMachineWrap()
+	have := disk.Machine != nil
+	// 机器包裹在「换机/重装导致机器码变化」时可能存在但解不开（via != "machine"），
+	// 此时需要用新机器码重新包裹。
+	stale := have && via != "machine" && want
+	m.mu.Unlock()
+
+	if !want {
+		// 不应有机器包裹（用户设了主密码且不记住）：若磁盘上残留则移除。
+		if have {
+			m.mu.Lock()
+			m.machineWrap = nil
+			cfg := m.config
+			m.mu.Unlock()
+			if err := m.saveConfig(cfg); err != nil {
+				log.Printf("[providerapi] 移除残留机器包裹失败: %v", err)
+			} else {
+				log.Printf("[providerapi] 已移除残留机器包裹（需要主密码解锁）")
+			}
+		}
+		return
+	}
+
+	if have && !stale {
+		return // 机器包裹存在且当前机器码可用，无需补
+	}
+
+	// 需要补建/刷新
+	m.mu.Lock()
+	if m.dek == nil {
+		m.mu.Unlock()
+		return
+	}
+	mw := m.buildMachineWrapLocked()
+	cfg := m.config
+	m.mu.Unlock()
+	if mw == nil {
+		log.Printf("[providerapi] 补机器包裹跳过：机器码不可用")
+		return
+	}
+	m.mu.Lock()
+	m.machineWrap = mw
+	m.mu.Unlock()
+	if err := m.saveConfig(cfg); err != nil {
+		log.Printf("[providerapi] 补机器包裹落盘失败: %v", err)
+		// 回滚内存，避免与磁盘不一致
+		m.mu.Lock()
+		m.machineWrap = disk.Machine
+		m.mu.Unlock()
+		return
+	}
+	log.Printf("[providerapi] 已补建机器包裹 via=%s", via)
 }
 
 // unwrapDEK 用密码派生 KEK 并解开 DEK
@@ -138,26 +252,71 @@ func (m *Manager) Lock() {
 	m.uiLocked = true
 }
 
-// TryAutoUnlock 尝试用记住的密码（钥匙串为主、文件副本兜底）自动解锁。
-// 任一副本能解开 DEK 即成功；正确的文件副本会回填钥匙串自愈。
+// TryAutoUnlock 尝试自动解锁（机器包裹优先，钥匙串记住的密码兜底）。
+// 任一路径能解开 DEK 即成功；正确的文件副本会回填钥匙串自愈。
 // 任何副本都解不开时返回错误，但【不删除】已存储的密码，避免自动加密模式下
 // 唯一凭证被清除导致磁盘密文永久不可解。
 func (m *Manager) TryAutoUnlock() error {
 	m.mu.RLock()
-	kdfMeta := m.kdfMeta
-	wrappedDEK := m.wrappedDEK
+	dekInMemory := m.dek != nil
+	kdfInMemory := m.kdfMeta
 	m.mu.RUnlock()
-	if kdfMeta == nil || wrappedDEK == nil {
+
+	// DEK 已在内存（UI 锁定）：UI 只是一道门，代理调用照常。若当前允许无密码解锁
+	// （自动加密或记住了密码），直接解除 UI 锁定，无需再去磁盘解一次。
+	if dekInMemory {
+		m.mu.RLock()
+		allowed := m.masterSet == false || m.machineWrap != nil
+		m.mu.RUnlock()
+		// masterSet=true 时仍走钥匙串校验（与历史行为一致）。
+		if !allowed {
+			mp := keystore.Recover(keystore.Account, func(pw string) bool {
+				_, err := m.unwrapDEK(pw, kdfInMemory, m.wrappedDEKRef())
+				return err == nil
+			})
+			if mp == "" {
+				return errors.New("没有可用的记住密码，或记住的密码与配置不匹配")
+			}
+			return m.Unlock(mp)
+		}
+		m.mu.Lock()
+		m.uiLocked = false
+		m.mu.Unlock()
+		return nil
+	}
+
+	// DEK 不在内存（应用重启）：从磁盘走机器包裹 → 钥匙串。
+	data, err := os.ReadFile(m.path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var disk onDiskFile
+	if err := json.Unmarshal(data, &disk); err != nil {
+		return fmt.Errorf("读取配置失败: %w", err)
+	}
+	if disk.Version < 2 || disk.WrappedDEK == nil {
 		return errors.New("配置未加密，无需解锁")
 	}
-	mp := keystore.Recover(keystore.Account, func(pw string) bool {
-		_, err := m.unwrapDEK(pw, kdfMeta, wrappedDEK)
-		return err == nil
-	})
-	if mp == "" {
+	dek, via, err := m.unlockFromDisk(&disk)
+	if err != nil {
 		return errors.New("没有可用的记住密码，或记住的密码与配置不匹配")
 	}
-	return m.Unlock(mp)
+	m.mu.Lock()
+	m.installUnlockedLocked(&disk, dek)
+	m.config = m.decryptConfig(&disk)
+	m.uiLocked = false
+	m.machineWrap = disk.Machine
+	m.mu.Unlock()
+	log.Printf("[providerapi] TryAutoUnlock 成功 via=%s", via)
+	m.ensureMachineWrap(&disk, via)
+	return nil
+}
+
+// wrappedDEKRef 在 RLock 下返回当前 wrappedDEK 指针（供解锁校验用）。
+func (m *Manager) wrappedDEKRef() *sealed {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.wrappedDEK
 }
 
 // syncRememberedPassword 解锁成功后防御性同步钥匙串：
@@ -216,11 +375,15 @@ func (m *Manager) Unlock(password string) error {
 	m.kdfMeta = disk.KDF
 	m.wrappedDEK = disk.WrappedDEK
 	m.recoveryMeta = disk.Recovery
+	m.machineWrap = disk.Machine
 	m.masterSet = disk.MasterSet || disk.Recovery != nil
 	m.config = m.decryptConfig(&disk)
 	m.uiLocked = false
 	m.mu.Unlock()
 	m.syncRememberedPassword(password)
+	// 用户用密码解锁成功：若该用户「记住密码」，补建机器包裹作为抗自更新兜底；
+	// 若不记住密码，ensureMachineWrap 会移除任何残留机器包裹以维持「必须输密码」边界。
+	m.ensureMachineWrap(&disk, "password")
 	return nil
 }
 
@@ -232,6 +395,7 @@ func (m *Manager) ResetVault() error {
 	m.kdfMeta = nil
 	m.wrappedDEK = nil
 	m.recoveryMeta = nil
+	m.machineWrap = nil
 	m.masterSet = false
 	m.uiLocked = false
 	m.config = &Config{Providers: map[string]*ProviderConfig{}}
@@ -244,6 +408,60 @@ func (m *Manager) ResetVault() error {
 	if err := os.Remove(m.path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	return nil
+}
+
+// ResetForAutoLockout 自动加密锁死时的温和自愈：
+// 保留供应商列表元数据（id/名称/baseURL/模型清单），只清空 apiKey 并把可用标记置 false，
+// 然后重新初始化加密（新 DEK + 机器包裹 + 随机主密码），解锁进入空密钥状态，让用户重填 Key。
+//
+// 仅允许在「从未设主密码 + UI 锁定 + DEK 不在内存 + 已有加密元数据」时调用。
+// 主密码用户（masterSet=true）应走密码/恢复码，不能用此方法绕过。
+// 比 ResetVault 温和：不删供应商。
+func (m *Manager) ResetForAutoLockout() error {
+	m.mu.Lock()
+	if m.masterSet {
+		m.mu.Unlock()
+		return errors.New("已设置主密码，请用主密码或恢复码解锁")
+	}
+	if !m.uiLocked || m.dek != nil || m.kdfMeta == nil {
+		m.mu.Unlock()
+		return errors.New("当前不是自动加密锁死状态，无需重配")
+	}
+	// 复用已加载的元数据配置（apiKey 本就为空），清空可用标记。
+	cleaned := m.config
+	if cleaned == nil {
+		cleaned = &Config{Providers: map[string]*ProviderConfig{}}
+	}
+	for _, p := range cleaned.Providers {
+		if p == nil {
+			continue
+		}
+		p.APIKey = ""
+		p.Verified = false
+		for i := range p.Models {
+			p.Models[i].Verified = false
+			p.Models[i].Healthy = false
+			p.Models[i].FailCount = 0
+		}
+	}
+	// 重置加密字段，让 Save 走全新初始化路径（生成 DEK + 机器包裹 + 随机主密码，
+	// 并严格「先写钥匙串成功再写磁盘」）。
+	m.dek = nil
+	m.kdfSalt = nil
+	m.kdfMeta = nil
+	m.wrappedDEK = nil
+	m.recoveryMeta = nil
+	m.machineWrap = nil
+	m.masterSet = false
+	m.uiLocked = false
+	m.config = cleaned
+	m.mu.Unlock()
+
+	if err := m.Save(); err != nil {
+		return err
+	}
+	log.Printf("[providerapi] 自动加密锁死自愈完成：已保留 %d 个供应商元数据，密钥已清空待重填", len(cleaned.Providers))
 	return nil
 }
 
@@ -330,6 +548,7 @@ func (m *Manager) Save() error {
 	disk.KDF = m.kdfMeta
 	disk.WrappedDEK = m.wrappedDEK
 	disk.Recovery = m.recoveryMeta
+	disk.Machine = m.machineWrap
 	m.mu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
@@ -373,6 +592,7 @@ func (m *Manager) rollbackInit(wasInit bool) {
 	m.kdfSalt = nil
 	m.kdfMeta = nil
 	m.wrappedDEK = nil
+	m.machineWrap = nil
 	m.mu.Unlock()
 }
 
@@ -388,13 +608,25 @@ func (m *Manager) initializeEncryptionLocked() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := m.stageEncryptionLocked(dek, salt, wrapped); err != nil {
+		return "", err
+	}
+	return master, nil
+}
+
+// stageEncryptionLocked 装载给定 DEK + 主密码包裹，并生成机器包裹。
+// 调用方持锁。抽出供 initializeEncryptionLocked 与 ResetForAutoLockout 复用。
+func (m *Manager) stageEncryptionLocked(dek, salt []byte, wrapped *sealed) error {
 	m.dek = dek
 	m.kdfSalt = salt
 	// 写入内存元数据（Save 会一并落盘）；钥匙串由调用方在写盘后处理
 	if err := m.stageKeyMetaLocked(salt, wrapped); err != nil {
-		return "", err
+		return err
 	}
-	return master, nil
+	// 自动加密初始化：同时生成机器码包裹（抗自更新锁死的主路径）。
+	// 取不到机器码时为 nil，仍可正常运行，仅少一条解锁路径。
+	m.machineWrap = m.buildMachineWrapLocked()
+	return nil
 }
 
 // stageKeyMetaLocked 把 KDF/wrappedDEK 写入管理器常驻字段，Save 时一并落盘。
@@ -421,11 +653,14 @@ func (m *Manager) stageKeyMetaLocked(salt []byte, wrappedDEK *sealed) error {
 
 // LocksetInfo 对外暴露的锁状态信息
 type LocksetInfo struct {
-	IsSet       bool   `json:"isSet"`       // 是否已初始化加密（kdf 存在，含自动加密）
-	MasterSet   bool   `json:"masterSet"`   // 用户是否主动设置了主密码（false=自动加密）
-	HasRecovery bool   `json:"hasRecovery"` // 是否已生成恢复码
-	IsLocked    bool   `json:"isLocked"`    // 当前是否锁定
-	Remembered  bool   `json:"remembered"`  // 主密码是否已在本机记住（钥匙串）
+	IsSet       bool `json:"isSet"`       // 是否已初始化加密（kdf 存在，含自动加密）
+	MasterSet   bool `json:"masterSet"`   // 用户是否主动设置了主密码（false=自动加密）
+	HasRecovery bool `json:"hasRecovery"` // 是否已生成恢复码
+	IsLocked    bool `json:"isLocked"`    // 当前是否锁定
+	Remembered  bool `json:"remembered"`  // 主密码是否已在本机记住（钥匙串）
+	// AutoLockout 自动加密模式（masterSet=false）下所有无密码解锁路径都失败：
+	// 用户从未设过主密码，弹密码框无意义。前端据此显示「重新配置」自愈入口。
+	AutoLockout bool `json:"autoLockout"`
 }
 
 // GetLocksetInfo 返回锁状态（供设置页判断显示）
@@ -435,18 +670,23 @@ func (m *Manager) GetLocksetInfo() LocksetInfo {
 	recovery := m.recoveryMeta != nil
 	masterSet := m.masterSet
 	locked := hasVault && m.uiLocked
+	dek := m.dek
 	m.mu.RUnlock()
 	// 钥匙串是否有记住的主密码（不暴露密码本身）
 	remembered := false
 	if mp, err := keystore.Get(keystore.Account); err == nil && mp != "" {
 		remembered = true
 	}
+	// 自动加密锁死：从未设主密码 + 锁着 + DEK 不在内存（重启后解不开）。
+	// 注意：DEK 仍在内存的 UI 锁定不算锁死（TryAutoUnlock 可直接解除）。
+	autoLockout := hasVault && !masterSet && locked && dek == nil
 	return LocksetInfo{
 		IsSet:       hasVault,
 		MasterSet:   masterSet,
 		HasRecovery: recovery,
 		IsLocked:    locked,
 		Remembered:  remembered,
+		AutoLockout: autoLockout,
 	}
 }
 
@@ -493,12 +733,20 @@ func (m *Manager) SetMasterPassword(password string, remember bool) (string, err
 		Salt:       base64.StdEncoding.EncodeToString(recSalt),
 		WrappedDEK: *recWrapped,
 	}
+	// 记住密码：保留机器包裹（与「记住密码」同信任边界，抗自更新）；
+	// 不记住：移除机器包裹，维持「必须输主密码」的安全边界。
+	if remember {
+		m.machineWrap = m.buildMachineWrapLocked()
+	} else {
+		m.machineWrap = nil
+	}
 	// 保存内存里的 providers 配置（apiKey 明文），Save 时会用 DEK 加密写盘
 	cfg := m.config
 	// 快照内存字段（用于 saveConfig 失败时回滚）
 	oldKdfMeta := m.kdfMeta
 	oldWrappedDEK := m.wrappedDEK
 	oldRecoveryMeta := m.recoveryMeta
+	oldMachineWrap := m.machineWrap
 	oldMasterSet := m.masterSet
 	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
@@ -510,6 +758,7 @@ func (m *Manager) SetMasterPassword(password string, remember bool) (string, err
 		m.kdfMeta = oldKdfMeta
 		m.wrappedDEK = oldWrappedDEK
 		m.recoveryMeta = oldRecoveryMeta
+		m.machineWrap = oldMachineWrap
 		m.masterSet = oldMasterSet
 		m.kdfSalt = oldKdfSalt
 		m.mu.Unlock()
@@ -529,9 +778,35 @@ func (m *Manager) SetMasterPassword(password string, remember bool) (string, err
 	return recCode, nil
 }
 
-// ClearRememberedPassword 清除"记住密码"（钥匙串），下次启动需手动输主密码。
+// ClearRememberedPassword 清除"记住密码"（钥匙串）及机器包裹，下次启动需手动输主密码。
+// 仅在已解锁（DEK 在内存）时有效；用空 DEK 时无法重写磁盘，回退为仅清钥匙串。
 func (m *Manager) ClearRememberedPassword() error {
-	return keystore.Delete(keystore.Account)
+	m.mu.Lock()
+	hadMachine := m.machineWrap != nil
+	if m.dek != nil {
+		m.machineWrap = nil
+	}
+	cfg := m.config
+	dek := m.dek
+	m.mu.Unlock()
+
+	if err := keystore.Delete(keystore.Account); err != nil {
+		// 钥匙串删除失败：回滚内存机器包裹，保持一致
+		if hadMachine && dek != nil {
+			m.mu.Lock()
+			m.machineWrap = m.buildMachineWrapLocked()
+			m.mu.Unlock()
+		}
+		return err
+	}
+	// 钥匙串已清：把「移除机器包裹」落盘，确保重启后必须输主密码。
+	if dek != nil {
+		if err := m.saveConfig(cfg); err != nil {
+			log.Printf("[providerapi] ClearRememberedPassword 落盘失败: %v", err)
+			return err
+		}
+	}
+	return nil
 }
 
 // ClearMasterPassword 清除用户设置的主密码，回到"自动加密"模式：
@@ -566,11 +841,14 @@ func (m *Manager) ClearMasterPassword() error {
 	m.wrappedDEK = wrapped
 	m.recoveryMeta = nil
 	m.masterSet = false
+	// 回到自动加密：重建机器包裹（抗自更新主路径）。
+	m.machineWrap = m.buildMachineWrapLocked()
 	cfg := m.config
 	// 快照内存字段（用于 saveConfig 失败时回滚）
 	oldKdfMeta := m.kdfMeta
 	oldWrappedDEK := m.wrappedDEK
 	oldRecoveryMeta := m.recoveryMeta
+	oldMachineWrap := m.machineWrap
 	oldMasterSet := m.masterSet
 	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
@@ -583,6 +861,7 @@ func (m *Manager) ClearMasterPassword() error {
 		m.kdfMeta = oldKdfMeta
 		m.wrappedDEK = oldWrappedDEK
 		m.recoveryMeta = oldRecoveryMeta
+		m.machineWrap = oldMachineWrap
 		m.masterSet = oldMasterSet
 		m.kdfSalt = oldKdfSalt
 		m.mu.Unlock()
@@ -595,6 +874,7 @@ func (m *Manager) ClearMasterPassword() error {
 		m.kdfMeta = oldKdfMeta
 		m.wrappedDEK = oldWrappedDEK
 		m.recoveryMeta = oldRecoveryMeta
+		m.machineWrap = oldMachineWrap
 		m.masterSet = oldMasterSet
 		m.kdfSalt = oldKdfSalt
 		rollbackCfg := m.config
@@ -664,11 +944,18 @@ func (m *Manager) RecoverWithCode(recoveryCode, newPassword string, remember boo
 	m.recoveryMeta = &recoveryBlob{
 		Salt: base64.StdEncoding.EncodeToString(newRecSalt), WrappedDEK: *newRecWrapped,
 	}
+	// 记住密码：保留机器包裹；不记住：移除（必须输主密码）。
+	if remember {
+		m.machineWrap = m.buildMachineWrapLocked()
+	} else {
+		m.machineWrap = nil
+	}
 	cfg := m.config
 	// 快照内存字段（用于 saveConfig 失败时回滚）
 	oldKdfMeta := m.kdfMeta
 	oldWrappedDEK := m.wrappedDEK
 	oldRecoveryMeta := m.recoveryMeta
+	oldMachineWrap := m.machineWrap
 	oldMasterSet := m.masterSet
 	oldKdfSalt := m.kdfSalt
 	m.mu.Unlock()
@@ -680,6 +967,7 @@ func (m *Manager) RecoverWithCode(recoveryCode, newPassword string, remember boo
 		m.kdfMeta = oldKdfMeta
 		m.wrappedDEK = oldWrappedDEK
 		m.recoveryMeta = oldRecoveryMeta
+		m.machineWrap = oldMachineWrap
 		m.masterSet = oldMasterSet
 		m.kdfSalt = oldKdfSalt
 		m.mu.Unlock()
@@ -707,6 +995,7 @@ func (m *Manager) saveConfig(cfg *Config) error {
 	disk.KDF = m.kdfMeta
 	disk.WrappedDEK = m.wrappedDEK
 	disk.Recovery = m.recoveryMeta
+	disk.Machine = m.machineWrap
 	m.mu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
